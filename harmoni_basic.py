@@ -144,8 +144,8 @@ def evaluate_wavefront_performance(N_zern, test_coef, guessed_coef, zern_list, t
     """
 
     # Transform the ordering to match the Zernike matrix
-    new_test_coef = 2*np.pi*transform_zemax_to_noll(test_coef, twisted=False)
-    new_guessed_coef = 2*np.pi*transform_zemax_to_noll(guessed_coef, twisted)
+    new_test_coef = transform_zemax_to_noll(test_coef, twisted=False)
+    new_guessed_coef = transform_zemax_to_noll(guessed_coef, twisted)
 
     x = np.linspace(-1, 1, 512, endpoint=True)
     xx, yy = np.meshgrid(x, x)
@@ -188,10 +188,13 @@ def evaluate_wavefront_performance(N_zern, test_coef, guessed_coef, zern_list, t
     if show_predic == True:
 
         plt.figure()
-        plt.scatter(range(N), initial_rms * wave_nom, c='blue', s=8, label='Initial')
-        plt.scatter(range(N), residual_rms * wave_nom, c='red', s=8, label='Residual')
+        plt.scatter(range(N), initial_rms * wave_nom, c='blue', s=6, label='Initial')
+        plt.scatter(range(N), residual_rms * wave_nom, c='red', s=6, label='Residual')
         plt.xlabel('Test PSF')
-        plt.title('RMS wavefront [nm]')
+        plt.xlim([0, N])
+        plt.ylim(bottom=0)
+        plt.ylabel('RMS wavefront [nm]')
+        plt.title(r'$\lambda=1.5$ $\mu$m (defocus: 0.20 waves)')
         plt.legend()
 
         N_ok = (np.argwhere(residual_rms * wave_nom < 100)).shape[0]
@@ -227,13 +230,15 @@ def evaluate_wavefront_performance(N_zern, test_coef, guessed_coef, zern_list, t
 
             plt.figure()
             ss = plt.scatter(coef, guess, c=colors, s=20)
-            x = np.linspace(coef.min(), coef.max(), 10)
+            x = np.linspace(-0.10, 0.10, 10)
             # plt.colorbar(ss)
             plt.plot(x, x, color='black', linestyle='--')
-            title = zern_list[k] + '  (N_train=%d, N_test=%d)' % (N_train - N, N)
+            title = zern_list[k]
             plt.title(title)
             plt.xlabel('True Value [waves]')
             plt.ylabel('Predicted Value [waves]')
+            plt.xlim([-0.10, 0.10])
+            plt.ylim([-0.10, 0.10])
 
 
     return initial_rms, residual_rms
@@ -345,27 +350,37 @@ class POP_Slicer(object):
 
 if __name__ == "__main__":
 
-    path_zemax = os.path.join('POP', 'NYQUIST')
+    path_zemax = os.path.join('POP', 'NYQUIST', 'FOC 0.05')
+
+    # Aberrations from -0.20 to 0.20 waves
+    path_nom = os.path.join(path_zemax, '-20_20')
+    zern_coefs_nom = generate_sampling(sampling, N_zern, delta, start=z_min)
+    i_nom = np.argwhere(np.linalg.norm(zern_coefs_nom, axis=-1) == 0.0)
+    PSFs_nom = load_files(path_nom, N=N_train, file_list=list_slices)
+
+    PEAK = np.max(PSFs_nom[1][i_nom, 0])
 
     # Random
     N_rand = 1000
-    path_rand1 = os.path.join(path_zemax, 'RANDOM')
+    path_rand1 = os.path.join(path_zemax, 'RANDOM 0')
     zern_coefs_rand1 = np.load(os.path.join(path_rand1, 'rand_coef.npy'))
     PSFs_rand1 = load_files(path_rand1, N=N_rand, file_list=list_slices)
 
-    path_rand2 = os.path.join(path_zemax, 'RANDOM_1')
+    path_rand2 = os.path.join(path_zemax, 'RANDOM 1')
     zern_coefs_rand2 = np.load(os.path.join(path_rand2, 'rand_coef.npy'))
     PSFs_rand2 = load_files(path_rand2, N=N_rand, file_list=list_slices)
 
     path_rand3 = os.path.join(path_zemax, 'RANDOM_2')
     zern_coefs_rand3 = np.load(os.path.join(path_rand3, 'rand_coef.npy'))
-    PSFs_rand3 = load_files(path_rand3, N=600, file_list=list_slices)
+    PSFs_rand3 = load_files(path_rand3, N=2*N_rand, file_list=list_slices)
 
-    PSFs = np.concatenate((PSFs_rand1[0], PSFs_rand2[0], PSFs_rand3[0]), axis=0)
-    PSFs_square = np.concatenate((PSFs_rand1[1], PSFs_rand2[1], PSFs_rand3[1]), axis=0)
+    PSFs = np.concatenate((PSFs_nom[0], PSFs_rand1[0], PSFs_rand2[0], PSFs_rand3[0]), axis=0)
+    PSFs_square = np.concatenate((PSFs_nom[1], PSFs_rand1[1], PSFs_rand2[1], PSFs_rand3[1]), axis=0)
 
-    zern_coefs = np.concatenate((zern_coefs_rand1, zern_coefs_rand2, zern_coefs_rand3[:600]), axis=0)
-    PEAK = np.max(PSFs_square[:, 0])
+    zern_coefs = np.concatenate((zern_coefs_nom, zern_coefs_rand1,
+                                 zern_coefs_rand2, zern_coefs_rand3), axis=0)
+
+    # PEAK = np.max(PSFs_square[:, 0])
 
     PSFs /= PEAK
     PSFs_square /= PEAK
@@ -373,16 +388,23 @@ if __name__ == "__main__":
     plt.figure()
     plt.plot(np.max(PSFs_square[:,0], axis=(1,2)))
 
-    random_choice = rand_state.choice(2*N_rand, 2*N_rand - n_test, replace=False)
-    for kk in random_choice[:5]:
+    random_choice = rand_state.choice(4*N_rand + N_train, 4*N_rand + N_train - n_test, replace=False)
+    slicer_extend = (-1.04, 1.04, -1.04/2, 1.04/2)
+    width = 0.133
+    for kk in random_choice[:20]:
         plt.figure()
-        plt.imshow(np.concatenate((PSFs_square[kk, 0], PSFs_square[kk, 1]), axis=1), cmap='viridis')
+        im = np.concatenate((PSFs_square[kk, 0], PSFs_square[kk, 1]), axis=1)
+        plt.imshow(im, extent=slicer_extend, cmap='viridis')
+        plt.axhline(y=width/2, color='white', linestyle='--', alpha=0.9)
+        plt.axhline(y=-width / 2, color='white', linestyle='--', alpha=0.9)
+        plt.axhline(y=3*width/2, color='white', linestyle='--', alpha=0.7)
+        plt.axhline(y=-3*width / 2, color='white', linestyle='--', alpha=0.7)
+        plt.axhline(y=5*width/2, color='white', linestyle='--', alpha=0.5)
+        plt.axhline(y=-5*width / 2, color='white', linestyle='--', alpha=0.5)
         # plt.title(title)
         plt.colorbar(orientation='horizontal')
         plt.axis('off')
         plt.tight_layout()
-
-
 
     # ============================================================================== #
     #                                TRAIN THE MODEL                                 #
@@ -391,13 +413,13 @@ if __name__ == "__main__":
     # PSFs = PSFs_rand1[0]
     # zern_coefs = zern_coefs_rand1
     # PSFs /= PSFs.max()
-    training, testing = generate_training_set(2*N_rand + 600, 100, PSFs, zern_coefs, True)
+    training, testing = generate_training_set(2*N_rand, 100, PSFs, zern_coefs, True)
 
     # low_training_noisy, low_coefs_noisy = train_with_noise(low_training[0], low_training[1], N_repeat=5)
     N_layer = (150, 100, 50)
     model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
                          solver='adam', max_iter=N_iter, verbose=True,
-                         batch_size='auto', shuffle=True, tol=1e-9,
+                         batch_size='auto', shuffle=True, tol=1e-12,
                          warm_start=True, alpha=1e-4, random_state=1234)
     model.fit(X=training[0], y=training[1])
 
@@ -417,7 +439,7 @@ if __name__ == "__main__":
 
     """ (1) Model with SAME PARAMETERS """
 
-    training, testing = generate_training_set(2*N_rand + 600, 100, PSFs, zern_coefs, True)
+    training, testing = generate_training_set(4*N_rand + N_train, 200, PSFs, zern_coefs, True)
     guesses = []
     errors, stds = [], []
 
@@ -459,6 +481,10 @@ if __name__ == "__main__":
     plt.xlabel('N combined predictions')
     plt.ylabel('RMS residual')
 
+    # ========================
+
+    # ========================
+    # ========================
 
     # ========================
     # Aberrations from -0.20 to 0.20 waves
