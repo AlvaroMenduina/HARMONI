@@ -350,7 +350,7 @@ class POP_Slicer(object):
 
 if __name__ == "__main__":
 
-    path_zemax = os.path.join('POP', 'NYQUIST', 'FOC 0.05')
+    path_zemax = os.path.join('POP', 'NYQUIST', 'FOC 0.20')
 
     # Aberrations from -0.20 to 0.20 waves
     path_nom = os.path.join(path_zemax, '-20_20')
@@ -370,15 +370,16 @@ if __name__ == "__main__":
     zern_coefs_rand2 = np.load(os.path.join(path_rand2, 'rand_coef.npy'))
     PSFs_rand2 = load_files(path_rand2, N=N_rand, file_list=list_slices)
 
-    path_rand3 = os.path.join(path_zemax, 'RANDOM_2')
+    N_max = 2*N_rand
+    path_rand3 = os.path.join(path_zemax, 'RANDOM 2')
     zern_coefs_rand3 = np.load(os.path.join(path_rand3, 'rand_coef.npy'))
-    PSFs_rand3 = load_files(path_rand3, N=2*N_rand, file_list=list_slices)
+    PSFs_rand3 = load_files(path_rand3, N=N_max, file_list=list_slices)
 
-    PSFs = np.concatenate((PSFs_nom[0], PSFs_rand1[0], PSFs_rand2[0], PSFs_rand3[0]), axis=0)
-    PSFs_square = np.concatenate((PSFs_nom[1], PSFs_rand1[1], PSFs_rand2[1], PSFs_rand3[1]), axis=0)
+    PSFs = np.concatenate((PSFs_rand1[0], PSFs_rand2[0], PSFs_rand3[0]), axis=0)
+    PSFs_square = np.concatenate((PSFs_rand1[1], PSFs_rand2[1], PSFs_rand3[1]), axis=0)
 
-    zern_coefs = np.concatenate((zern_coefs_nom, zern_coefs_rand1,
-                                 zern_coefs_rand2, zern_coefs_rand3), axis=0)
+    zern_coefs = np.concatenate((zern_coefs_rand1,
+                                 zern_coefs_rand2, zern_coefs_rand3[:N_max]), axis=0)
 
     # PEAK = np.max(PSFs_square[:, 0])
 
@@ -413,7 +414,7 @@ if __name__ == "__main__":
     # PSFs = PSFs_rand1[0]
     # zern_coefs = zern_coefs_rand1
     # PSFs /= PSFs.max()
-    training, testing = generate_training_set(2*N_rand, 100, PSFs, zern_coefs, True)
+    training, testing = generate_training_set(2*N_rand + N_max, 200, PSFs, zern_coefs, True)
 
     # low_training_noisy, low_coefs_noisy = train_with_noise(low_training[0], low_training[1], N_repeat=5)
     N_layer = (150, 100, 50)
@@ -439,11 +440,11 @@ if __name__ == "__main__":
 
     """ (1) Model with SAME PARAMETERS """
 
-    training, testing = generate_training_set(4*N_rand + N_train, 200, PSFs, zern_coefs, True)
+    training, testing = generate_training_set(2*N_rand + N_max, 200, PSFs, zern_coefs, True)
     guesses = []
     errors, stds = [], []
 
-    for i in range(30):
+    for i in range(20):
         print(i)
         model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
                              solver='adam', max_iter=N_iter, verbose=False,
@@ -480,6 +481,88 @@ if __name__ == "__main__":
     plt.scatter(N_comb, y)
     plt.xlabel('N combined predictions')
     plt.ylabel('RMS residual')
+
+
+    # ============================================================================== #
+    #                          DEFOCUS UNCERTAINTY ANALYSIS                          #
+    # ============================================================================== #
+
+    """ Load the files for an OPTIMUM defocus """
+    path_optimum = os.path.join('POP', 'NYQUIST', 'FOC 0.15')
+    f_opt = 0.15
+
+    N_rand = 1000
+    path_rand1 = os.path.join(path_optimum, 'RANDOM 0')
+    zern_coefs_rand1 = np.load(os.path.join(path_rand1, 'rand_coef.npy'))
+    PSFs_rand1 = load_files(path_rand1, N=N_rand, file_list=list_slices)
+
+    path_rand2 = os.path.join(path_optimum, 'RANDOM 1')
+    zern_coefs_rand2 = np.load(os.path.join(path_rand2, 'rand_coef.npy'))
+    PSFs_rand2 = load_files(path_rand2, N=N_rand, file_list=list_slices)
+
+    N_max = 2*N_rand
+    path_rand3 = os.path.join(path_optimum, 'RANDOM 2')
+    zern_coefs_rand3 = np.load(os.path.join(path_rand3, 'rand_coef.npy'))
+    PSFs_rand3 = load_files(path_rand3, N=N_max, file_list=list_slices)
+
+    PSFs_opt = np.concatenate((PSFs_rand1[0], PSFs_rand2[0], PSFs_rand3[0]), axis=0)
+    PSFs_square = np.concatenate((PSFs_rand1[1], PSFs_rand2[1], PSFs_rand3[1]), axis=0)
+
+    zern_coefs = np.concatenate((zern_coefs_rand1,
+                                 zern_coefs_rand2, zern_coefs_rand3[:N_max]), axis=0)
+
+    """ Load for a different defocus"""
+    path_f1 = os.path.join('POP', 'NYQUIST', 'FOC 0.05')
+    f1 = 0.10
+    eps_f = f1 - f_opt
+
+    path_rand1 = os.path.join(path_f1, 'RANDOM 0')
+    PSFs_rand1_f = load_files(path_rand1, N=N_rand, file_list=list_slices)
+
+    path_rand2 = os.path.join(path_f1, 'RANDOM 1')
+    PSFs_rand2_f = load_files(path_rand2, N=N_rand, file_list=list_slices)
+
+    path_rand3 = os.path.join(path_f1, 'RANDOM 2')
+    PSFs_rand3_f = load_files(path_rand3, N=N_max, file_list=list_slices)
+
+    PSFs_f = np.concatenate((PSFs_rand1_f[0], PSFs_rand2_f[0], PSFs_rand3_f[0]), axis=0)
+
+    # PEAK = np.max(PSFs_square[:, 0])
+
+    PSFs_opt /= PEAK
+    PSFs_f /= PEAK
+
+    """ Train the Model on the OPTIMUM value """
+    # Train with the OPTIMUM focus
+    training, testing = generate_training_set(2*N_rand + N_max, 200, PSFs_opt, zern_coefs, True)
+    # Test with the NON-OPTIMUM focus
+
+
+    model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
+                         solver='adam', max_iter=N_iter, verbose=True,
+                         batch_size='auto', shuffle=True, tol=1e-12,
+                         warm_start=True, alpha=1e-4, random_state=1234)
+    model.fit(X=training[0], y=training[1])
+
+    # Get the IDEAL performance with OPTIMUM defocus
+    guessed = model.predict(X=testing[0])
+    print("\nLOW model guesses:")
+    print(guessed[:5])
+    print("\nTrue Values")
+    print(testing[1][:5])
+
+    print('\nModel:')
+    _rms0, rms_ideal = evaluate_wavefront_performance(N_zern, testing[1], guessed,
+                                                   zern_list=zern_list_low, show_predic=True)
+
+    # Get the performance for the NON-OPTIMUM focus
+    _useless, testing_f = generate_training_set(2 * N_rand + N_max, 200, PSFs_f, zern_coefs, True)
+    guessed_f = model.predict(X=testing_f[0])
+    _rms00, rms_f = evaluate_wavefront_performance(N_zern, testing_f[1], guessed_f,
+                                                   zern_list=zern_list_low, show_predic=True)
+
+
+
 
     # ========================
 
