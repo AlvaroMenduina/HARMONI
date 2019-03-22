@@ -346,19 +346,54 @@ class POP_Slicer(object):
         self.beam_data = _data
         self.powers = _power
 
+def downsample_slicer_pixels(square_PSFs):
+    """
+    Raw PSF files sample the slice width with 2 pixels that can take different values
+    This is not exactly true, as the detector pixels are elongated at the slicer,
+    with only 1 true value covering 2 square pixels
+
+    This functions fixes that issue by taking the average value pairwise
+    :param array: PSF array
+    :return:
+    """
+
+    n_psf, n_pix = square_PSFs.shape[0], square_PSFs.shape[-1]
+    downsampled_PSFs = np.zeros_like(square_PSFs)
+    flat_PSFs = np.empty((n_psf, 2 * n_pix * n_pix))
+    for k in range(n_psf):
+        for i in np.arange(1, n_pix-1, 2):
+            # print(i)
+            row_foc = square_PSFs[k, 0, i, :]
+            next_row_foc = square_PSFs[k, 0, i+1, :]
+            mean_row_foc = 0.5*(row_foc + next_row_foc)
+
+            row_defoc = square_PSFs[k, 1, i, :]
+            next_row_defoc = square_PSFs[k, 1, i+1, :]
+            mean_row_defoc = 0.5*(row_defoc + next_row_defoc)
+
+            downsampled_PSFs[k, 0, i, :] = mean_row_foc
+            downsampled_PSFs[k, 0, i + 1, :] = mean_row_foc
+
+            downsampled_PSFs[k, 1, i, :] = mean_row_defoc
+            downsampled_PSFs[k, 1, i + 1, :] = mean_row_defoc
+
+        flat_PSFs[k] = np.concatenate((downsampled_PSFs[k, 0].flatten(), downsampled_PSFs[k, 1].flatten()))
+
+    return square_PSFs, downsampled_PSFs, flat_PSFs
 
 
 if __name__ == "__main__":
 
-    path_zemax = os.path.join('POP', 'NYQUIST', 'FOC 0.20')
+    path_zemax = os.path.join('POP', 'NYQUIST', 'FOC 0.40')
+    # path_zemax = os.path.join('POP', 'NYQUIST', 'DISPLACEMENT')
 
-    # Aberrations from -0.20 to 0.20 waves
-    path_nom = os.path.join(path_zemax, '-20_20')
-    zern_coefs_nom = generate_sampling(sampling, N_zern, delta, start=z_min)
-    i_nom = np.argwhere(np.linalg.norm(zern_coefs_nom, axis=-1) == 0.0)
-    PSFs_nom = load_files(path_nom, N=N_train, file_list=list_slices)
-
-    PEAK = np.max(PSFs_nom[1][i_nom, 0])
+    # # Aberrations from -0.20 to 0.20 waves
+    # path_nom = os.path.join(path_zemax, '-20_20')
+    # zern_coefs_nom = generate_sampling(sampling, N_zern, delta, start=z_min)
+    # i_nom = np.argwhere(np.linalg.norm(zern_coefs_nom, axis=-1) == 0.0)
+    # PSFs_nom = load_files(path_nom, N=N_train, file_list=list_slices)
+    #
+    # PEAK = np.max(PSFs_nom[1][i_nom, 0])
 
     # Random
     N_rand = 1000
@@ -381,20 +416,41 @@ if __name__ == "__main__":
     zern_coefs = np.concatenate((zern_coefs_rand1,
                                  zern_coefs_rand2, zern_coefs_rand3[:N_max]), axis=0)
 
-    # PEAK = np.max(PSFs_square[:, 0])
+    PEAK = np.max(PSFs_square[:, 0])
 
     PSFs /= PEAK
     PSFs_square /= PEAK
 
-    plt.figure()
-    plt.plot(np.max(PSFs_square[:,0], axis=(1,2)))
+    peaks = np.max(PSFs_square[:, 0], axis=(1,2))
+    peaks_defocus = np.max(PSFs_square[:, 1], axis=(1,2))
+    peak_ratios = peaks_defocus / peaks
+    print(np.mean(peak_ratios))
 
-    random_choice = rand_state.choice(4*N_rand + N_train, 4*N_rand + N_train - n_test, replace=False)
+    foc = np.array([0.01, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60, 0.70, 0.80, 1.0])
+    peak_ratios = np.array([0.998, 0.977, 0.918, 0.829, 0.720, 0.601, 0.484, 0.379, 0.299, 0.221, 0.174, 0.149, 0.118, 0.067])
+
+    plt.figure()
+    plt.plot(foc, peak_ratios)
+    plt.scatter(foc, peak_ratios)
+    plt.grid(True)
+    plt.xlim([0, 1])
+    plt.ylim([0, 1])
+    plt.xlabel(r'Defocus $f [\lambda]$')
+    plt.ylabel(r'Ratio of PSFs peak intensity $\overline{\gamma}$')
+    plt.title(r'$\frac{PSF(\Phi + f Z_f)}{PSF(\Phi)}$')
+
+    PSFs_square, downPSFs_square, downPSFs_flat = downsample_slicer_pixels(PSFs_square)
+
+    plt.figure()
+    plt.plot(np.max(downPSFs_square[:,0], axis=(1,2)))
+
+    random_choice = rand_state.choice(2*N_rand + N_max, 2*N_rand + N_max - 20, replace=False)
     slicer_extend = (-1.04, 1.04, -1.04/2, 1.04/2)
     width = 0.133
-    for kk in random_choice[:20]:
+    i = 1
+    for kk in random_choice[:5]:
         plt.figure()
-        im = np.concatenate((PSFs_square[kk, 0], PSFs_square[kk, 1]), axis=1)
+        im = np.concatenate((downPSFs_square[kk, 0], downPSFs_square[kk, 1]), axis=1)
         plt.imshow(im, extent=slicer_extend, cmap='viridis')
         plt.axhline(y=width/2, color='white', linestyle='--', alpha=0.9)
         plt.axhline(y=-width / 2, color='white', linestyle='--', alpha=0.9)
@@ -414,7 +470,7 @@ if __name__ == "__main__":
     # PSFs = PSFs_rand1[0]
     # zern_coefs = zern_coefs_rand1
     # PSFs /= PSFs.max()
-    training, testing = generate_training_set(2*N_rand + N_max, 200, PSFs, zern_coefs, True)
+    training, testing = generate_training_set(2*N_rand + N_max, 200, downPSFs_flat, zern_coefs, True)
 
     # low_training_noisy, low_coefs_noisy = train_with_noise(low_training[0], low_training[1], N_repeat=5)
     N_layer = (150, 100, 50)
@@ -440,11 +496,11 @@ if __name__ == "__main__":
 
     """ (1) Model with SAME PARAMETERS """
 
-    training, testing = generate_training_set(2*N_rand + N_max, 200, PSFs, zern_coefs, True)
+    training, testing = generate_training_set(2*N_rand + N_max, 200, downPSFs_flat, zern_coefs, True)
     guesses = []
     errors, stds = [], []
 
-    for i in range(20):
+    for i in range(15):
         print(i)
         model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
                              solver='adam', max_iter=N_iter, verbose=False,
@@ -482,16 +538,31 @@ if __name__ == "__main__":
     plt.xlabel('N combined predictions')
     plt.ylabel('RMS residual')
 
+    # Influence of DEFOCUS in the final performance
+    foc = np.array([0.01, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.80])
+    RMS_focs = np.array([13.1, 8.3, 4.5, 4.1, 3.9, 3.9, 3.6, 3.9, 3.0])
+    # Values for the case where we had 2 distinct pixels across the slice width
+    # RMS_focs = np.array([13.0, 7.2, 3.5, 3.0, 2.9, 3.0, 3.3, 3.3, 2.5, 2.9, 2.0, 2.2])
+
+    plt.figure()
+    plt.plot(foc, RMS_focs)
+    plt.scatter(foc, RMS_focs)
+    plt.grid(True)
+    plt.xlabel(r'Defocus $f [\lambda]$')
+    plt.ylabel('Final RMS residual [nm]')
+
 
     # ============================================================================== #
     #                          DEFOCUS UNCERTAINTY ANALYSIS                          #
     # ============================================================================== #
 
-    """ Load the files for an OPTIMUM defocus """
+    N_rand = 1000
+
+    """ (1) Load the files for an OPTIMUM defocus """
     path_optimum = os.path.join('POP', 'NYQUIST', 'FOC 0.15')
     f_opt = 0.15
 
-    N_rand = 1000
+    # N_rand = 1000
     path_rand1 = os.path.join(path_optimum, 'RANDOM 0')
     zern_coefs_rand1 = np.load(os.path.join(path_rand1, 'rand_coef.npy'))
     PSFs_rand1 = load_files(path_rand1, N=N_rand, file_list=list_slices)
@@ -509,12 +580,21 @@ if __name__ == "__main__":
     PSFs_square = np.concatenate((PSFs_rand1[1], PSFs_rand2[1], PSFs_rand3[1]), axis=0)
 
     zern_coefs = np.concatenate((zern_coefs_rand1,
-                                 zern_coefs_rand2, zern_coefs_rand3[:N_max]), axis=0)
+                                 zern_coefs_rand2, zern_coefs_rand3), axis=0)
+    # Add the DEFOCUS as known parameter
+    f_opt_arr = f_opt*np.ones((2*N_rand + N_max, 1))
+    zern_coefs_f_opt = np.concatenate((zern_coefs, f_opt_arr), axis=-1)
 
-    """ Load for a different defocus"""
-    path_f1 = os.path.join('POP', 'NYQUIST', 'FOC 0.05')
-    f1 = 0.10
-    eps_f = f1 - f_opt
+    PEAK = np.max(PSFs_square[:, 0])
+    PSFs_opt /= PEAK
+
+    # ============================================================================== #
+
+    """ (2) Load for a different defocus"""
+    path_f1 = os.path.join('POP', 'NYQUIST', 'FOC 0.20')
+    f1 = 0.20
+    f1_arr = f1 * np.ones((2 * N_rand + N_max, 1))
+    zern_coefs_f1 = np.concatenate((zern_coefs, f1_arr), axis=-1)
 
     path_rand1 = os.path.join(path_f1, 'RANDOM 0')
     PSFs_rand1_f = load_files(path_rand1, N=N_rand, file_list=list_slices)
@@ -525,18 +605,207 @@ if __name__ == "__main__":
     path_rand3 = os.path.join(path_f1, 'RANDOM 2')
     PSFs_rand3_f = load_files(path_rand3, N=N_max, file_list=list_slices)
 
-    PSFs_f = np.concatenate((PSFs_rand1_f[0], PSFs_rand2_f[0], PSFs_rand3_f[0]), axis=0)
+    PSFs_f1 = np.concatenate((PSFs_rand1_f[0], PSFs_rand2_f[0], PSFs_rand3_f[0]), axis=0)
+    PSFs_f1 /= PEAK
 
-    # PEAK = np.max(PSFs_square[:, 0])
+    # ============================================================================== #
 
-    PSFs_opt /= PEAK
-    PSFs_f /= PEAK
+    """ (3) Load for a different defocus"""
+    path_f2 = os.path.join('POP', 'NYQUIST', 'FOC 0.10')
+    f2 = 0.10
+    f2_arr = f2 * np.ones((2 * N_rand + N_max, 1))
+    zern_coefs_f2 = np.concatenate((zern_coefs, f2_arr), axis=-1)
 
+    path_rand1 = os.path.join(path_f2, 'RANDOM 0')
+    PSFs_rand1_f2 = load_files(path_rand1, N=N_rand, file_list=list_slices)
+
+    path_rand2 = os.path.join(path_f2, 'RANDOM 1')
+    PSFs_rand2_f2 = load_files(path_rand2, N=N_rand, file_list=list_slices)
+
+    path_rand3 = os.path.join(path_f2, 'RANDOM 2')
+    PSFs_rand3_f2 = load_files(path_rand3, N=N_max, file_list=list_slices)
+
+    PSFs_f2 = np.concatenate((PSFs_rand1_f2[0], PSFs_rand2_f2[0], PSFs_rand3_f2[0]), axis=0)
+    PSFs_f2 /= PEAK
+
+    # ============================================================================== #
+    # ============================================================================== #
+
+    # The previous ones are always with a FIXED focus
+    """ (4) Training sets with RANDOM Focus value """
+    N_FOC_RAND = 2500
+    path_foc_r1 = os.path.join('POP', 'NYQUIST', 'RANDOM FOC', 'TRAIN')
+    zern_coefs_foc_r1 = np.load(os.path.join(path_foc_r1, 'foc_coef.npy'))[:N_FOC_RAND]
+    PSFs_foc_r1 = load_files(path_foc_r1, N=N_FOC_RAND, file_list=list_slices)[0]
+    PSFs_foc_r1 /= PEAK
+
+    path_foc_r2 = os.path.join('POP', 'NYQUIST', 'RANDOM FOC', 'TRAIN 2')
+    zern_coefs_foc_r2 = np.load(os.path.join(path_foc_r2, 'foc_coef.npy'))[:N_FOC_RAND]
+    PSFs_foc_r2 = load_files(path_foc_r2, N=N_FOC_RAND, file_list=list_slices)[0]
+    PSFs_foc_r2 /= PEAK
+
+    all_PSFs = np.concatenate((PSFs_opt, PSFs_f1, PSFs_f2,
+                               PSFs_foc_r1, PSFs_foc_r2), axis=0)
+    all_zern_coefs = np.concatenate((zern_coefs_f_opt, zern_coefs_f1, zern_coefs_f2,
+                                     zern_coefs_foc_r1, zern_coefs_foc_r2), axis=0)
+    N_total = all_PSFs.shape[0]
+    n_test_foc = 50
+
+    training, testing = generate_training_set(N_total, n_test_foc, all_PSFs, all_zern_coefs, True)
+    model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
+                         solver='adam', max_iter=N_iter, verbose=True,
+                         batch_size='auto', shuffle=True, tol=1e-12,
+                         warm_start=True, alpha=1e-4, random_state=1234)
+    model.fit(X=training[0], y=training[1])
+    guessed = model.predict(X=testing[0])
+    print("\nLOW model guesses:")
+    print(guessed[:5])
+    print("\nTrue Values")
+    print(testing[1][:5])
+
+    # Remove the FOCUS value from the arrays
+    guessed_no_f = guessed[:, :5]
+    _rms0, rms_ideal = evaluate_wavefront_performance(N_zern, testing[1][:,:5], guessed_no_f,
+                                                   zern_list=zern_list_low, show_predic=True)
+
+    # ============================================================================== #
+    # Test with random focus
+    N_PSF = 250
+    sigma = 0.10
+    a_min, a_max = -0.15, 0.15
+    rand_coef = np.random.uniform(a_min, a_max, size=(N_PSF, N_zern))
+    random_focus = np.random.normal(loc=0.17, scale=sigma*f_opt, size=(N_PSF, 1))
+    coef = np.concatenate((rand_coef, random_focus), axis=-1)
+    path_test = os.path.join('POP', 'NYQUIST')
+    np.save(os.path.join(path_test, 'foc_coef'), coef)
+    np.savetxt(os.path.join(path_test, 'foc_coef.txt'), coef, fmt='%.5f')
+
+    # This path is for a TEST SET centred at 0.15 waves, the same as the nominal training
+    # path_t1 = os.path.join('POP', 'NYQUIST', 'RANDOM FOC', '0')
+
+    path_t1 = os.path.join('POP', 'NYQUIST', 'RANDOM FOC', 'SHIFTED', '0')
+    PSFs_t1 = load_files(path_t1, N=N_PSF, file_list=list_slices)
+    coef_t1 = np.loadtxt(os.path.join(path_t1, 'foc_coef.txt'))
+
+    path_t2 = os.path.join('POP', 'NYQUIST', 'RANDOM FOC', 'SHIFTED', '1')
+    PSFs_t2 = load_files(path_t2, N=N_PSF, file_list=list_slices)
+    coef_t2 = np.loadtxt(os.path.join(path_t2, 'foc_coef.txt'))
+
+    PSF_t = np.concatenate((PSFs_t1[0], PSFs_t2[0]), axis=0)
+    PSF_t /= PEAK
+    zern_t = np.concatenate((coef_t1, coef_t2), axis=0)
+
+    guessed_t = model.predict(X=PSF_t)
+    print("\nLOW model guesses:")
+    print(guessed_t[:5])
+    print("\nTrue Values")
+    print(zern_t[:5])
+
+    f_test = 0.17
+    focus_guesses = guessed_t[:, -1]
+    focus_truths = zern_t[:, -1]
+    residual = (focus_truths - focus_guesses) + f_test
+    res_focus = np.linalg.norm(focus_truths - focus_guesses) / np.linalg.norm(focus_truths)
+
+    guessed_t_no_f = guessed_t[:, :5]
+    _rms00, rms_t = evaluate_wavefront_performance(N_zern, zern_t[:,:5], guessed_t_no_f,
+                                                   zern_list=zern_list_low, show_predic=True)
+
+    plt.show()
+
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.hist(focus_truths, bins=10,  color='lightgreen',
+             label=r'$f_{k} \in \mathcal{N}(f_{test}, \sigma^2)$')
+    plt.hist(residual, bins=10, histtype='step', color='Blue', label=r'Residual $(f_{k} - \tilde{f}) + f_{test}$')
+    plt.axvline(x=0.10, color='red', linestyle='--')
+    plt.axvline(x=0.15, color='red', linestyle='--', label=r'Training $f_j$')
+    plt.axvline(x=0.20, color='red', linestyle='--')
+    plt.axvline(x=0.17, color='black', linestyle='-.', label='Testing $f_{test}$')
+    plt.xlim([0.095, 0.22])
+    plt.xlabel(r'True Defocus $f_{test}$')
+    plt.legend(loc=2)
+
+    x_min = 0.10
+    x_max = 0.22
+    d_x = (x_max - x_min)
+    def line(x):
+        return 1 / d_x * x - 1 / d_x * x_min
+
+    plt.subplot(1, 2, 2)
+
+    plt.scatter(focus_truths, focus_guesses, s=10)
+    plt.axvline(x=0.15, ymax=line(0.15), color='red', linestyle='--', label=r'Training $f_j$')
+    plt.axvline(x=0.20, ymax=line(0.20), color='red', linestyle='--')
+    plt.axvline(x=0.17, ymax=line(0.17), color='black', linestyle='-.', label='Testing $f_{test}$')
+    x_x = np.linspace(0.09, 0.22, 10)
+    plt.plot(x_x, x_x, color='black', linestyle='--')
+    plt.xlim([0.10, x_max])
+    plt.ylim([0.10, x_max])
+    plt.xlabel(r'True Defocus $f_{test}$')
+    plt.ylabel(r'Estimated Defocus $\tilde{f}$')
+
+    plt.show()
+
+    # +=======================================================================
+
+    # ENSEMBLE training
+
+    guesses = []
+    errors, stds = [], []
+
+    for i in range(10):
+        print(i)
+        model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
+                             solver='adam', max_iter=N_iter, verbose=False,
+                             batch_size='auto', shuffle=True, tol=1e-9,
+                             warm_start=True, alpha=1e-4)
+        model.fit(X=training[0], y=training[1])
+
+        guessed = model.predict(X=PSF_t)
+        guesses.append(guessed)
+
+    g = np.array(guesses)
+    g = np.mean(g, axis=0)
+    g_no_f = g[:, :5]
+    _rms00, rms_t_ens = evaluate_wavefront_performance(N_zern, zern_t[:, :5], g_no_f,
+                                                       zern_list=zern_list_low, show_predic=True)
+
+    focus_guesses = g[:, -1]
+    focus_truths = zern_t[:, -1]
+    residual = (focus_truths - focus_guesses) + f_opt
+
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.hist(focus_truths, bins=15, histtype='step', color='Green',
+             label=r'$f_{test} \in \mathcal{N}(f_{train}, \sigma^2)$')
+    plt.hist(residual, bins=10, histtype='step', color='Blue', label=r'Residual $(f_{test} - \tilde{f}) + f_{train}$')
+    plt.xlim([0.10, 0.20])
+    plt.xlabel(r'True Defocus $f_{test}$')
+    plt.legend(loc=2)
+
+    plt.subplot(1, 2, 2)
+    plt.scatter(focus_truths, focus_guesses, s=10)
+    x_x = np.linspace(0.10, 0.20, 10)
+    plt.plot(x_x, x_x, color='black', linestyle='--')
+    plt.xlim([0.10, 0.20])
+    plt.ylim([0.10, 0.20])
+    plt.xlabel(r'True Defocus $f_{test}$')
+    plt.ylabel('Estimated Defocus')
+
+    plt.show()
+
+
+
+
+
+
+    # ============================================================================== #
+    #                          DEFOCUS UNCERTAINTY ANALYSIS                          #
+    # ============================================================================== #
     """ Train the Model on the OPTIMUM value """
     # Train with the OPTIMUM focus
     training, testing = generate_training_set(2*N_rand + N_max, 200, PSFs_opt, zern_coefs, True)
-    # Test with the NON-OPTIMUM focus
-
 
     model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
                          solver='adam', max_iter=N_iter, verbose=True,
@@ -563,7 +832,18 @@ if __name__ == "__main__":
 
 
 
+    delta_f = np.array([-0.10, -0.05, 0.0, 0.05, 0.10])
+    dp_daj = np.array([0.30, 0.75, 1.0, 1.25, 1.33])
 
+    plt.figure()
+    plt.plot(delta_f, dp_daj)
+    plt.scatter(delta_f, dp_daj)
+    plt.grid(True)
+    plt.xlabel(r'Defocus bias $\Delta f [\lambda]$')
+    plt.ylabel('Prediction vs True slope (Astigmatism Y)')
+    # plt.xlim(xmin=0)
+    # plt.ylim(ymin=0)
+    # plt.title(r'$\frac{\partial p_{a^j}}{\partial a^j}$')
     # ========================
 
     # ========================
