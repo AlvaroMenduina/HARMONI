@@ -908,7 +908,6 @@ if __name__ == "__main__":
 
 
 
-
     """ (2) Model with different PARAMETERS """
     guesses = []
     errors, stds = [], []
