@@ -415,7 +415,9 @@ def train_with_noise(PSF, coefs, N_repeat):
 
 if __name__ == "__main__":
 
-    path_files = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TRAIN')
+    path_files = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/TRAIN')
+
+    # os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TRAIN')
 
     # ============================================================================== #
     #                              GENERATE TRAINING SETS                            #
@@ -641,7 +643,8 @@ if __name__ == "__main__":
     # ============================================================================== #
 
     # The Test Set contains both LOW and HIGH order coefficients
-    path_test = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TEST', '0')
+    # path_test = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TEST', '0')
+    path_test = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/TEST/0')
     N_test = 250
     # coef_test = create_rand_coef(a_max, N_PSFs=N_test, N_repeat=1, N_zern=N_low + N_high)
     # np.save(os.path.join(path_test, '0', 'coef_test'), coef_test)
@@ -690,7 +693,8 @@ if __name__ == "__main__":
         print('\nRemaining aberrations after LOW correction')
         print(remaining[:5])
 
-        coef_path = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TEST', '%dLOW' %(k+1))
+        # coef_path = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TEST', '%dLOW' %(k+1))
+        coef_path = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/TEST_NO_AE/%dLOW' %(k+1))
         file_name = os.path.join(coef_path, 'remaining_iter%d_%d.txt' %(k+1, 1))
         np.savetxt(file_name, remaining, fmt='%.5f')
 
@@ -698,7 +702,7 @@ if __name__ == "__main__":
 
         # coef_high = remaining.copy()
         coef_high = np.loadtxt(file_name)
-        PSF_high = load_files(coef_path, N=N_test, file_list=list_slices)
+        PSF_high = load_files(coef_path, N=7, file_list=list_slices)
         PSF_high[0] /= PEAK
         PSF_high[1] /= PEAK
 

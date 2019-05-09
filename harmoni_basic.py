@@ -188,14 +188,14 @@ def evaluate_wavefront_performance(N_zern, test_coef, guessed_coef, zern_list, t
     if show_predic == True:
 
         plt.figure()
-        plt.scatter(range(N), initial_rms * wave_nom, c='blue', s=6, label='Initial')
-        plt.scatter(range(N), residual_rms * wave_nom, c='red', s=6, label='Residual')
+        plt.scatter(range(N), initial_rms * wave_nom, c='red', s=6, label='Before')
+        plt.scatter(range(N), residual_rms * wave_nom, c='blue', s=6, label='After')
         plt.xlabel('Test PSF')
         plt.xlim([0, N])
         plt.ylim(bottom=0)
         plt.ylabel('RMS wavefront [nm]')
-        plt.title(r'$\lambda=1.5$ $\mu$m (defocus: 0.20 waves)')
-        plt.legend()
+        # plt.title(r'$\lambda=1.5$ $\mu$m (defocus: 0.20 waves)')
+        plt.legend(title='Calibration stage')
 
         N_ok = (np.argwhere(residual_rms * wave_nom < 100)).shape[0]
         plt.figure()
@@ -384,8 +384,7 @@ def downsample_slicer_pixels(square_PSFs):
 
 if __name__ == "__main__":
 
-    path_zemax = os.path.join('POP', 'NYQUIST', 'FOC 0.40')
-    # path_zemax = os.path.join('POP', 'NYQUIST', 'DISPLACEMENT')
+    path_zemax = os.path.abspath('H:/POP/NYQUIST/FOC 0.15')
 
     # # Aberrations from -0.20 to 0.20 waves
     # path_nom = os.path.join(path_zemax, '-20_20')
@@ -470,7 +469,7 @@ if __name__ == "__main__":
     # PSFs = PSFs_rand1[0]
     # zern_coefs = zern_coefs_rand1
     # PSFs /= PSFs.max()
-    training, testing = generate_training_set(2*N_rand + N_max, 200, downPSFs_flat, zern_coefs, True)
+    training, testing = generate_training_set(2*N_rand + N_max, 500, downPSFs_flat, zern_coefs, True)
 
     # low_training_noisy, low_coefs_noisy = train_with_noise(low_training[0], low_training[1], N_repeat=5)
     N_layer = (150, 100, 50)
@@ -496,7 +495,7 @@ if __name__ == "__main__":
 
     """ (1) Model with SAME PARAMETERS """
 
-    training, testing = generate_training_set(2*N_rand + N_max, 200, downPSFs_flat, zern_coefs, True)
+    training, testing = generate_training_set(2*N_rand + N_max, 500, downPSFs_flat, zern_coefs, True)
     guesses = []
     errors, stds = [], []
 
