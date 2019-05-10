@@ -143,7 +143,6 @@ class FocalPlaneSharpening(object):
         self.strehl_evolution = []
         self.images = []
 
-
         ### Global Iteration
         for i in range(max_iter):
 
@@ -165,7 +164,6 @@ class FocalPlaneSharpening(object):
 
             ### Nested iteration over the aberrations
             for j in range(self.N_zern):
-
 
                 correction = np.zeros(self.N_zern)
                 correction[j] = stroke
@@ -192,11 +190,18 @@ class FocalPlaneSharpening(object):
 
         N_runs = rand_coef.shape[0]
         stroke, max_iter, threshold= options
+        num_iters = []
+        initial_strehl, final_strehl = [], []
 
         for i in range(N_runs):
             print("\nRun: ", i)
             states, strehls, _images = self.run(rand_coef[i], stroke, max_iter,
                                                 threshold, statistics=False, silent=True)
+            num_iters.append(len(strehls))
+            initial_strehl.append(strehls[0])
+            final_strehl.append(strehls[-1])
+
+        return num_iters, initial_strehl, final_strehl
 
 
     def statistics(self):
@@ -220,32 +225,54 @@ class FocalPlaneSharpening(object):
 
         ### PSF images
         n_images = len(self.images)
-        M = int(np.sqrt(n_images)) + 1
-        plt.figure()
-        for i, img in enumerate(self.images):
+        n_pix = self.images[0].shape[0]
+        M = int(np.ceil(np.sqrt(n_images)))
+        images = self.images.copy()
+        if M**2 - n_images != M:
+            extra_images = [np.zeros((n_pix, n_pix)) for i in range(M**2 - n_images)]
+            images.extend(extra_images)
+            large_image = [np.concatenate(images[i * M:i * M + M], axis=-1) for i in range(M)]
+            large_image = np.concatenate(large_image, axis=0)
 
-            ax = plt.subplot(M + 1, M, i + 1)
+        if M ** 2 - n_images == M:
+            large_image = [np.concatenate(images[i * M:i * M + M], axis=-1) for i in range(M-1)]
+            large_image = np.concatenate(large_image, axis=0)
+
+        plt.figure()
+        plt.imshow(large_image)
+        plt.colorbar()
+        plt.clim(vmin=0, vmax=1)
+
+        plt.figure()
+        for i, img in enumerate(images):
+
+            ax = plt.subplot(M, M, i + 1)
             plt.imshow(img)
             plt.colorbar()
             plt.clim(vmin=0, vmax=1)
             ax.get_xaxis().set_visible(False)
             ax.get_yaxis().set_visible(False)
-            ax.set_title("i:%d (s:%.3f)" %(i, self.strehl_evolution[i]))
+            s = self.strehl_evolution[i] if i < n_images else -1.0
+            ax.set_title("i:%d (s:%.3f)" %(i, s))
+
 
 
 if __name__ == "__main__":
 
-    N_zern = 15
-    coef = np.random.uniform(-1.2, 1.2, size=N_zern)
+    N_zern = 20
+    coef = np.random.uniform(-1.25, 1.25, size=N_zern)
 
     FPS = FocalPlaneSharpening(coef)
     states, strehls, images = FPS.run(coef, stroke=0.05, max_iter=50,
-                                      threshold=0.90, statistics=True, silent=True)
+                                      threshold=0.90, statistics=True, silent=False)
 
-    ### Multiple runs
-    N_runs = 5
-    rand_coef = np.random.uniform(-1.2, 1.2, size=(N_runs, N_zern))
-    FPS.run_batch(rand_coef, options=(0.05, 25, 0.90))
+    # ### Multiple runs
+    # N_runs = 50
+    # rand_coef = np.random.uniform(-1.2, 1.2, size=(N_runs, N_zern))
+    # n_iter, initial, final = FPS.run_batch(rand_coef, options=(0.05, 25, 0.90))
+    #
+    # plt.figure()
+    # plt.scatter(initial, n_iter, s=5)
 
     plt.show()
 

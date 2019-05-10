@@ -415,7 +415,7 @@ def train_with_noise(PSF, coefs, N_repeat):
 
 if __name__ == "__main__":
 
-    path_files = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/TRAIN')
+    path_files = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TRAIN')
 
     # os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TRAIN')
 
@@ -466,8 +466,8 @@ if __name__ == "__main__":
                              batch_size='auto', shuffle=False, tol=1e-9,
                              warm_start=True, alpha=1e-2, random_state=1234)
 
-    # low_model.fit(X=low_training[0], y=low_training[1])
-    low_model.fit(X=low_training_noisy, y=low_coefs_noisy)
+    low_model.fit(X=low_training[0], y=low_training[1])
+    # low_model.fit(X=low_training_noisy, y=low_coefs_noisy)
 
     low_guessed = low_model.predict(X=low_testing[0])
     print("\nLOW model guesses:")
@@ -476,11 +476,11 @@ if __name__ == "__main__":
     print(low_testing[1][:5])
 
     r = low_testing[1] - low_guessed
-    print(r[:4])
+    # print(r[:4])
 
     print('\n LOW order Model:')
     low_rms0, low_rms = evaluate_wavefront_performance(N_low, low_testing[1], low_guessed,
-                                                       zern_list=zern_list_low, show_predic=False)
+                                                       zern_list=zern_list_low, show_predic=True)
     print(wave_nom * np.std(low_rms))
 
 

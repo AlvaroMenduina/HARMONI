@@ -111,7 +111,7 @@ class PSFEnv(gym.Env):
     def compute_reward(self, current_state, updated_state):
         old_peak = self.compute_PSF(current_state)
         new_peak = self.compute_PSF(updated_state)
-        print("\nCurrent Strehl ratio: ", old_peak)
+        print("\nInitial Strehl ratio: %.4f" %old_peak)
         # print("Update Strehl: ", new_peak)
         if new_peak > old_peak:
             return (new_peak - old_peak)
@@ -145,7 +145,7 @@ def createEpsilonGreedyPolicy(Q, epsilon, num_actions):
     return policyFunction
 
 
-def q_learning(env, num_episodes, discount_factor=1.0, alpha=0.5, epsilon=0.1, max_correct=300):
+def q_learning(env, num_episodes, discount_factor=1.0, alpha=0.5, epsilon=0.1, max_correct=5):
     """
     Q-Learning algorithm: Off-policy TD control. Finds the optimal greedy policy
     while following an epsilon-greedy policy
@@ -194,7 +194,9 @@ def q_learning(env, num_episodes, discount_factor=1.0, alpha=0.5, epsilon=0.1, m
             best_next_action = np.argmax(Q[next_state])
             td_target = reward + discount_factor * Q[next_state][best_next_action]
             td_delta = td_target - Q[state][action]
+            print(Q[state][action])
             Q[state][action] += alpha * td_delta
+            print(Q[state])
 
             if done:
                 break
