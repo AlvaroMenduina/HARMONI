@@ -98,6 +98,14 @@ class FocalPlaneSharpening(object):
         self.PSF = PointSpreadFunction(N_zern=self.N_zern)
 
     def policy(self, strehls, j, silent=True):
+        """
+        Method to determine how to actuate the DM given the Strehl ratios
+        at each side [- stroke, 0, + stroke]
+        :param strehls: list of Strehl ratios for each position of actuator
+        :param j: current aberration index
+        :param silent: whether to print info
+        :return: intensity of the stroke
+        """
 
         i_nom = len(strehls) // 2
 
@@ -142,6 +150,7 @@ class FocalPlaneSharpening(object):
         self.states = [coef0.copy()]
         self.strehl_evolution = []
         self.images = []
+        self.actuator = []
 
         ### Global Iteration
         for i in range(max_iter):
@@ -160,9 +169,10 @@ class FocalPlaneSharpening(object):
             if strehl_nom > threshold:
                 if statistics:
                     self.statistics()
-                return self.states, self.strehl_evolution, self.images
+                return self.states, self.strehl_evolution, self.images, self.actuator
 
             ### Nested iteration over the aberrations
+            action = np.zeros(self.N_zern)
             for j in range(self.N_zern):
 
                 correction = np.zeros(self.N_zern)
@@ -176,6 +186,10 @@ class FocalPlaneSharpening(object):
 
                 decision = self.policy(strehls, j, silent)
                 current_state += decision * correction
+                action += decision * correction
+
+            # Save the corrections applied at each iteration
+            self.actuator.append(action)
 
             # Update the state list
             updated_state = current_state
@@ -184,25 +198,24 @@ class FocalPlaneSharpening(object):
         if statistics:
             self.statistics()
 
-        return self.states, self.strehl_evolution, self.images
+        return self.states, self.strehl_evolution, self.images, self.actuator
 
     def run_batch(self, rand_coef, options):
 
         N_runs = rand_coef.shape[0]
-        stroke, max_iter, threshold= options
+        stroke, max_iter, threshold = options
         num_iters = []
         initial_strehl, final_strehl = [], []
 
         for i in range(N_runs):
             print("\nRun: ", i)
-            states, strehls, _images = self.run(rand_coef[i], stroke, max_iter,
+            states, strehls, _images, actuators = self.run(rand_coef[i], stroke, max_iter,
                                                 threshold, statistics=False, silent=True)
             num_iters.append(len(strehls))
             initial_strehl.append(strehls[0])
             final_strehl.append(strehls[-1])
 
         return num_iters, initial_strehl, final_strehl
-
 
     def statistics(self):
 
@@ -218,8 +231,8 @@ class FocalPlaneSharpening(object):
         ### Norm of aberrations
         aberr = [np.linalg.norm(x) for x in self.states]
         plt.figure()
-        plt.scatter(range(n_iters), aberr, color='red')
-        plt.plot(range(n_iters), aberr, color='red')
+        plt.scatter(range(len(aberr)), aberr, color='red')
+        plt.plot(range(len(aberr)), aberr, color='red')
         plt.xlabel('Iteration')
         plt.ylabel('Norm |Aberrations|')
 
@@ -255,24 +268,67 @@ class FocalPlaneSharpening(object):
             s = self.strehl_evolution[i] if i < n_images else -1.0
             ax.set_title("i:%d (s:%.3f)" %(i, s))
 
+    def create_log(self):
 
+        states = self.states.copy()
+        corrections = self.actuator.copy()
+        n_iter = len(corrections)
+        strehls = self.strehl_evolution.copy()
+
+        with open('log.txt', 'w') as file:
+            file.write("Focal Plane Sharpening")
+
+            cum_actuator = np.zeros_like(corrections[0])
+            for i in range(n_iter):
+                file.write('\n-------------------------------------------------------\n')
+                file.write("At iteration: %d     (Strehl: %.3f)\n" %(i, strehls[i]))
+
+                # Write the STATE
+                file.write('\nState: \n')
+                state = str(['%.4f' %x for x in states[i]])
+                file.write(state)
+
+                # Write the CORRECTION applied
+                file.write('\nActuator: \n')
+                actuator = str(['%.3f' %x for x in corrections[i]])
+                file.write(actuator)
+
+                # Write the CUMULATIVE CORRECTION
+                cum_actuator += corrections[i]
+                cum = str(['%.3f' %x for x in cum_actuator])
+                file.write('\nCumulative: \n')
+                file.write(cum)
+
+            file.write('\n-------------------------------------------------------\n')
+            file.write("Final Iteration:     (Strehl: %.3f)\n" %strehls[n_iter])
+
+            file.close()
 
 if __name__ == "__main__":
 
-    N_zern = 20
+    N_zern = 5
     coef = np.random.uniform(-1.25, 1.25, size=N_zern)
 
     FPS = FocalPlaneSharpening(coef)
-    states, strehls, images = FPS.run(coef, stroke=0.05, max_iter=50,
+    states, strehls, images, actuator = FPS.run(coef, stroke=0.025, max_iter=50,
                                       threshold=0.90, statistics=True, silent=False)
 
+    FPS.create_log()
+
     # ### Multiple runs
-    # N_runs = 50
-    # rand_coef = np.random.uniform(-1.2, 1.2, size=(N_runs, N_zern))
-    # n_iter, initial, final = FPS.run_batch(rand_coef, options=(0.05, 25, 0.90))
+    # N_runs = 20
     #
-    # plt.figure()
-    # plt.scatter(initial, n_iter, s=5)
+    # Z = [5, 10, 15, 20, 25, 30]
+    # N = []
+    # for z in Z:
+    #     FPS = FocalPlaneSharpening(np.zeros(z))
+    #     print("\nNumber of Aberrations: ", z)
+    #     rand_coef = np.random.uniform(-1.2, 1.2, size=(N_runs, z))
+    #     n_iter, initial, final = FPS.run_batch(rand_coef, options=(0.05, 25, 0.90))
+    #     print("Average N iterations: ", np.mean(n_iter))
+    #     N.append(np.mean(n_iter))
+
+
 
     plt.show()
 
