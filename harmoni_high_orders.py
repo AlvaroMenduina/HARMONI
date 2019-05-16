@@ -535,8 +535,8 @@ if __name__ == "__main__":
     ae_low_coef, ae_high_coef = ae_coef[:, :N_low], ae_coef[:, N_low:]
     extra_zeros = np.zeros((N_auto, N_low))
     only_high = np.concatenate((extra_zeros, ae_high_coef), axis=1)
-    np.save(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_high_coef1'), only_high)
-    np.savetxt(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_high_coef1.txt'), only_high, fmt='%.5f')
+    np.save(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_high_coef2'), only_high)
+    np.savetxt(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_high_coef2.txt'), only_high, fmt='%.5f')
 
     # Define the AUTOENCODER
     from keras.layers import Dense
@@ -600,7 +600,7 @@ if __name__ == "__main__":
     j_mid = 2
     for i, img_idx in enumerate(random_images):
 
-        ax1 = plt.subplot(4, num_images, i + 1)
+        ax1 = plt.subplot(5, num_images, i + 1)
         im1 = test_clean[img_idx, N_crop**2:].reshape((N_crop, N_crop))
         plt.imshow(im1, cmap=cmap)
         plt.colorbar()
@@ -609,7 +609,7 @@ if __name__ == "__main__":
         if i == j_mid:
             ax1.set_title('Ground Truth: Only HIGH orders')
 
-        ax2 = plt.subplot(4, num_images, num_images + i + 1)
+        ax2 = plt.subplot(5, num_images, num_images + i + 1)
         im2 = test_noisy[img_idx, N_crop**2:].reshape((N_crop, N_crop))
         plt.imshow(im2, cmap=cmap)
         plt.colorbar()
@@ -618,7 +618,7 @@ if __name__ == "__main__":
         if i == j_mid:
             ax2.set_title('Input: Both LOW and HIGH orders')
 
-        ax3 = plt.subplot(4, num_images, 2*num_images + i + 1)
+        ax3 = plt.subplot(5, num_images, 2*num_images + i + 1)
         im3 = decoded[img_idx, N_crop**2:].reshape((N_crop, N_crop))
         plt.imshow(im3, cmap=cmap)
         plt.colorbar()
@@ -627,7 +627,7 @@ if __name__ == "__main__":
         if i == j_mid:
             ax3.set_title('Prediction: PSF after Autoencoder')
 
-        ax4 = plt.subplot(4, num_images, 3*num_images + i + 1)
+        ax4 = plt.subplot(5, num_images, 3*num_images + i + 1)
         res = (test_clean - decoded)
         im4 = res[img_idx, N_crop**2:].reshape((N_crop, N_crop))
         plt.imshow(im4, cmap='bwr')
@@ -636,7 +636,51 @@ if __name__ == "__main__":
         ax4.get_yaxis().set_visible(False)
         if i == j_mid:
             ax4.set_title('Residuals: Ground Truth - Prediction')
+
+        ax5 = plt.subplot(5, num_images, 4 * num_images + i + 1)
+        diff = (test_noisy - decoded)
+        im5 = diff[img_idx, N_crop ** 2:].reshape((N_crop, N_crop))
+        plt.imshow(im5, cmap='bwr')
+        plt.colorbar()
+        ax5.get_xaxis().set_visible(False)
+        ax5.get_yaxis().set_visible(False)
+        if i == j_mid:
+            ax5.set_title('Removed: Noisy - Decoded')
     plt.show()
+
+    ### What FEATURES does the AUTOENCODER REMOVE?
+    for i, img_idx in enumerate(random_images):
+
+        ax1 = plt.subplot(3, num_images, i + 1)
+        im1 = test_noisy[img_idx, N_crop**2:].reshape((N_crop, N_crop))
+        plt.imshow(im1, cmap=cmap)
+        plt.colorbar()
+        ax1.get_xaxis().set_visible(False)
+        ax1.get_yaxis().set_visible(False)
+        if i == j_mid:
+            ax1.set_title('Input: Both LOW and HIGH orders')
+
+        ax2 = plt.subplot(3, num_images, num_images + i + 1)
+        im2 = decoded[img_idx, N_crop**2:].reshape((N_crop, N_crop))
+        plt.imshow(im2, cmap=cmap)
+        plt.colorbar()
+        ax2.get_xaxis().set_visible(False)
+        ax2.get_yaxis().set_visible(False)
+        if i == j_mid:
+            ax2.set_title('Prediction: PSF after Autoencoder')
+
+        ax3 = plt.subplot(3, num_images, 2*num_images + i + 1)
+        diff = (test_noisy - decoded)
+        im3 = diff[img_idx, N_crop**2:].reshape((N_crop, N_crop))
+        plt.imshow(im3, cmap='bwr')
+        plt.colorbar()
+        cmax = max(im3.max(), -1*im3.min())
+        plt.clim(-cmax, cmax)
+        ax3.get_xaxis().set_visible(False)
+        ax3.get_yaxis().set_visible(False)
+        if i == j_mid:
+            ax3.set_title('Features: Noisy - Decoded')
+
 
 
     # ============================================================================== #
@@ -766,6 +810,108 @@ if __name__ == "__main__":
     plt.hist(RMS_AE[-1], color='lightgreen', edgecolor='black')
     plt.xlim([0, 40])
     plt.xlabel('RMS [nm]')
+    plt.show()
+
+    # Print Comparison between initial and final values
+    _rms, final_rms = evaluate_wavefront_performance(N_low + N_high, coef_test, coef_test - remaining,
+                                                    zern_list=zern_list_low + zern_list_high, show_predic=True)
+
+    # ============================================================================== #
+    #                              SINGLE STEP - AUTOENCODER                         #
+    # ============================================================================== #
+
+    rms_single = []
+    rms_single.append(rms00)
+
+    path_single = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST_SINGLE_STEP/0')
+
+    coef_test = np.loadtxt(os.path.join(path_single, 'coef_test.txt'))
+    PSFs_test = load_files(path_single, N=N_test, file_list=list_slices)
+
+    PSFs_test[0] /= PEAK
+    PSFs_test[1] /= PEAK
+
+    # Don't forget to downsample the pixels across the slicer width
+    _PSFs_test, downPSFs_test, downPSFs_test_flat = downsample_slicer_pixels(PSFs_test[1])
+
+    coef_single = coef_test
+    downPSFs_low_flat = downPSFs_test_flat
+    for k in range(iterations):
+
+        ### LOW Newtork Guess
+        low_guessed = low_model.predict(X=downPSFs_low_flat)
+        print("\nLOW model guesses:")
+        print(low_guessed[:5])
+        print("\nTrue Values")
+        print(coef_single[:5, :5])
+
+        ### AUTOENCODER
+        decoded_high = AE.predict(downPSFs_low_flat)
+
+        ### HIGh Network Guess
+        high_guessed = high_model.predict(X=decoded_high)
+        print("\nHIGH model guesses:")
+        print(high_guessed[:5])
+        print("\nTrue Values")
+        print(coef_single[:5, 5:])
+
+        complete_guess = np.concatenate((low_guessed, high_guessed), axis=1)
+
+        _rms, rms = evaluate_wavefront_performance(N_low + N_high, coef_single, complete_guess,
+                                                       zern_list=zern_list_low+zern_list_high, show_predic=True)
+
+        rms_single.append(rms)
+
+        ### Save REMAINING for next iteration
+        remaining = coef_single - complete_guess
+        print('\nRemaining aberrations')
+        print(remaining[:5])
+
+        coef_path = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST_SINGLE_STEP/%d' %(k+1))
+        file_name = os.path.join(coef_path, 'remaining_iter%d.txt' %(k+1))
+        np.savetxt(file_name, remaining, fmt='%.5f')
+
+        ### Load the files for the next iteration
+        coef_single = np.loadtxt(file_name)
+        PSF_low = load_files(coef_path, N=N_test, file_list=list_slices)
+        PSF_low[0] /= PEAK
+        PSF_low[1] /= PEAK
+
+        _PSFs_low, downPSFs_low, downPSFs_low_flat = downsample_slicer_pixels(PSF_low[1])
+
+
+    RMS_single = wave_nom * np.array(rms_single)
+    mean_rms_single = np.mean(RMS_single, axis=-1)
+    labels = ['0', '1 LOW', '1 HIGH (AE)', '2 LOW', '2 HIGH (AE)']
+    colors_AE = cm.coolwarm(np.linspace(0, 1, N_test))
+
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    # plt.plot(np.arange(5), mean_rms)
+    for i in range(5):
+        if i == 0:
+            plt.scatter(i * np.ones(N_test), np.sort(RMS_AE[i]), color=colors_AE, s=3, label='Standard Multi-Network')
+        else:
+            plt.scatter(i * np.ones(N_test), np.sort(RMS_AE[i]), color=colors_AE, s=3)
+
+    for i in range(5):
+        if i==2:
+            plt.scatter(i * np.ones(N_test) + 0.075, np.sort(RMS_single[i//2]), color='black', s=3)
+        if i==4:
+            plt.scatter(i * np.ones(N_test) + 0.075, np.sort(RMS_single[i//2]), color='black', s=3, label='Single-Step Multi-Network')
+
+    plt.xlabel('Iteration')
+    plt.xticks(np.arange(5), labels)
+    plt.ylabel('RMS [nm]')
+    plt.ylim([0, 200])
+    plt.legend()
+
+    plt.subplot(1, 2, 2)
+    plt.hist(RMS_AE[-1], color='blue', histtype='step', label='Standard Multi-Network')
+    plt.hist(RMS_single[-1], color='black', histtype='step', label='Single-Step Multi-Network')
+    plt.xlim([0, 40])
+    plt.xlabel('RMS [nm]')
+    plt.legend()
     plt.show()
 
 
