@@ -499,12 +499,12 @@ if __name__ == "__main__":
     # Train the HIGH order network
     high_training, high_testing = generate_training_set(N_PSF, n_test, downPSFs_high_flat, zern_coefs_high, True)
 
-    high_training_noisy, high_coefs_noisy = train_with_noise(high_training[0], high_training[1], N_repeat=5)
+    high_training_noisy, high_coefs_noisy = train_with_noise(high_training[0], high_training[1], N_repeat=7)
 
     high_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
                              solver='adam', max_iter=N_iter, verbose=True,
                              batch_size='auto', shuffle=True, tol=1e-9,
-                             warm_start=True, alpha=1e-2, random_state=1234)
+                             warm_start=False, alpha=1e-2, random_state=1234)
 
     # high_model.fit(X=high_training[0], y=high_training[1])
     high_model.fit(X=high_training_noisy, y=high_coefs_noisy)
@@ -525,17 +525,18 @@ if __name__ == "__main__":
 
     N_auto = 2500
     N_ext = N_auto - 50
-    ae_coef = np.random.uniform(-a_max/4, a_max/4, size=(N_auto, N_low + N_high))
-    path_auto = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'AUTOENCODER')
-    # np.save(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef3'), ae_coef)
-    # np.savetxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef3.txt'), ae_coef, fmt='%.5f')
+    ae_coef = np.random.uniform(-a_max, a_max, size=(N_auto, N_low + N_high))
+    # path_auto = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'AUTOENCODER')
+    path_auto = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE')
+    np.save(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef1'), ae_coef)
+    np.savetxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef1.txt'), ae_coef, fmt='%.5f')
 
     # Subtract the LOW orders
     ae_low_coef, ae_high_coef = ae_coef[:, :N_low], ae_coef[:, N_low:]
     extra_zeros = np.zeros((N_auto, N_low))
     only_high = np.concatenate((extra_zeros, ae_high_coef), axis=1)
-    # np.save(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_high_coef3'), only_high)
-    # np.savetxt(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_high_coef3.txt'), only_high, fmt='%.5f')
+    np.save(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_high_coef1'), only_high)
+    np.savetxt(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_high_coef1.txt'), only_high, fmt='%.5f')
 
     # Define the AUTOENCODER
     from keras.layers import Dense
@@ -685,7 +686,7 @@ if __name__ == "__main__":
 
         complete_low_guess = np.concatenate((low_guessed, extra_high), axis=1)
         rms0, low_rms = evaluate_wavefront_performance(N_low + N_high, coef_low, complete_low_guess,
-                                                       zern_list=zern_list_low+zern_list_high, show_predic=True)
+                                                       zern_list=zern_list_low+zern_list_high, show_predic=False)
 
         rms_evolution.append(low_rms)
 
@@ -702,7 +703,7 @@ if __name__ == "__main__":
 
         # coef_high = remaining.copy()
         coef_high = np.loadtxt(file_name)
-        PSF_high = load_files(coef_path, N=N_PSF, file_list=list_slices)
+        PSF_high = load_files(coef_path, N=N_test, file_list=list_slices)
         PSF_high[0] /= PEAK
         PSF_high[1] /= PEAK
 
@@ -710,6 +711,7 @@ if __name__ == "__main__":
 
         # USE THE AUTOENCODER to "clean" the PSF from LOW order features
         decoded_high = AE.predict(downPSF_high_flat)
+        # decoded_high = downPSF_high_flat
 
         high_guessed = high_model.predict(X=decoded_high)
         print("\nHIGH model guesses:")
@@ -727,9 +729,10 @@ if __name__ == "__main__":
         print('\nRemaining aberrations after HIGH correction')
         print(remaining2[:5])
 
-        coef_path = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TEST', '%dHIGH' %(k+1))
+        # coef_path = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'TEST', '%dHIGH' %(k+1))
+        coef_path = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST/%dHIGH' % (k + 1))
         file_name = os.path.join(coef_path, 'remaining_iter%d_%d.txt' %(k+1, 2))
-        # np.savetxt(file_name, remaining2, fmt='%.5f')
+        np.savetxt(file_name, remaining2, fmt='%.5f')
 
         # ============================================================================== #
         # coef_low = remaining2.copy()
@@ -743,7 +746,7 @@ if __name__ == "__main__":
     RMS_AE = wave_nom * np.array(rms_evolution)
     mean_rms = np.mean(RMS_AE, axis=-1)
     labels = ['0', '1 LOW', '1 HIGH (AE)', '2 LOW', '2 HIGH (AE)']
-    colors_AE = cm.jet(np.linspace(0, 1, N_test))
+    colors_AE = cm.coolwarm(np.linspace(0, 1, N_test))
 
     plt.figure(figsize=(12, 6))
     plt.subplot(1, 2, 1)
@@ -760,9 +763,9 @@ if __name__ == "__main__":
     final_std = np.std(RMS_AE[-1])
     n_bins = 15
     plt.subplot(1, 2, 2)
-    plt.hist(RMS_AE[-1],  histtype='step', color='navy', label=r'Final RMS: %.1f $\pm$ %.1f nm' %(final_mean, final_std))
+    plt.hist(RMS_AE[-1], color='lightgreen', edgecolor='black')
+    plt.xlim([0, 40])
     plt.xlabel('RMS [nm]')
-    plt.legend()
     plt.show()
 
 
