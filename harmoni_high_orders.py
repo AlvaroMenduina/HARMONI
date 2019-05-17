@@ -540,9 +540,10 @@ if __name__ == "__main__":
 
     # Define the AUTOENCODER
     from keras.layers import Dense
-    from keras.models import Sequential
+    from keras.models import Sequential, Model, Input
     from keras import backend as K
     from numpy.linalg import norm as norm
+    from keras.utils.vis_utils import plot_model
 
     input_dim = 2*N_crop**2
     encoding_dim = 32
@@ -561,6 +562,8 @@ if __name__ == "__main__":
     AE.add(Dense(input_dim, activation='sigmoid'))
     AE.summary()
     AE.compile(optimizer='adam', loss='binary_crossentropy')
+
+    plot_model(AE, to_file='model_plot.png', show_shapes=True, show_layer_names=True)
 
     ### Train the AUTOENCODER
     PSFs_AE = load_files(os.path.join(path_auto, 'TRAINING_BOTH'), N=N_auto, file_list=list_slices)
@@ -592,6 +595,31 @@ if __name__ == "__main__":
     total = np.mean(norm(np.abs(test_clean), axis=-1))
     print(residuals / total * 100)
 
+    ### ENCODED images
+    input_img = Input(shape=(input_dim,))
+    encoded_layer1 = AE.layers[0]
+    encoded_layer2 = AE.layers[1]
+    encoded_layer3 = AE.layers[2]
+    encoded_layer4 = AE.layers[3]
+
+    encoder = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
+
+    encoder.summary()
+    encoded_images = encoder.predict(train_noisy)
+
+    N_samples = 50
+    f, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
+    im1 = ax1.imshow(encoded_images[:N_samples, :16], cmap='hot', origin='lower')
+    ax1.set_title('Nominal PSF')
+    ax1.set_ylabel('Sample')
+    ax1.set_xlabel('Pixel Feature')
+    plt.colorbar(im1, ax=ax1)
+
+    im2 = ax2.imshow(encoded_images[:N_samples, 16:], cmap='hot', origin='lower')
+    ax2.set_title('Defocused PSF')
+    ax2.set_xlabel('Pixel Feature')
+    plt.colorbar(im2)
+    plt.show()
 
 
     from sklearn.decomposition import PCA
