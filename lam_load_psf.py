@@ -76,6 +76,21 @@ if __name__ == "__main__":
             plot_slices(ls)
             plt.title(fold + r' ($a =$%.3f $\lambda$)' %coef[j])
 
+    # Plot residuals
+    for i, fold in enumerate(aberrations):
+        print('\nAberration: ' + fold)
+
+        for j in [-1]:
+            print(coef[j])
+            image = aberrated_psf[i][j] - aberrated_psf[i][N_points//2]
+            cmin = min(image.min(), -image.max())
+
+            plt.figure()
+            plt.imshow(image, extent=resampled_extend, origin='lower', cmap='seismic')
+            plt.colorbar()
+            plt.clim(cmin, -cmin)
+            plt.title(fold + r' ($a =$%.3f $\lambda$)' %coef[j])
+
     # ============================================================================== #
     # Plot the Peak Intensity vs Aberration Coefficient
     peaks = np.max(aberrated_psf, axis=(2, 3))

@@ -484,7 +484,7 @@ if __name__ == "__main__":
     print(wave_nom * np.std(low_rms))
 
 
-    # ============================================================================== #
+    # ================================================================================================================ #
 
     path_high = os.path.join(path_files, 'HIGH')
     zern_coefs_high = np.loadtxt(os.path.join(path_high, 'coef_high.txt'))
@@ -549,6 +549,7 @@ if __name__ == "__main__":
     epochs = 2500
     batch = 32
 
+    ### Autoencoder architecture
     K.clear_session()
     AE = Sequential()
     AE.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
@@ -561,8 +562,7 @@ if __name__ == "__main__":
     AE.summary()
     AE.compile(optimizer='adam', loss='binary_crossentropy')
 
-    # Train the AUTOENCODER
-
+    ### Train the AUTOENCODER
     PSFs_AE = load_files(os.path.join(path_auto, 'TRAINING_BOTH'), N=N_auto, file_list=list_slices)
     PSFs_AE[0] /= PEAK
     PSFs_AE[1] /= PEAK
@@ -587,9 +587,199 @@ if __name__ == "__main__":
 
     decoded = AE.predict(test_noisy)
 
+    # Make sure the training has succeeded by checking the residuals
     residuals = np.mean(norm(np.abs(decoded - test_clean), axis=-1))
     total = np.mean(norm(np.abs(test_clean), axis=-1))
     print(residuals / total * 100)
+
+
+
+    from sklearn.decomposition import PCA
+    from scipy.optimize import least_squares as lsq
+
+    def features_training(num_images=1):
+        """
+        Function to analyse the features of the TRAINING set of the autoencoder
+        """
+
+        coefs = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef1.txt'))
+        norm_coef = []
+        losses_focus, peaks_focus, mins_focus = [], [], []
+        losses_defocus, peaks_defocus, mins_defocus = [], [], []
+
+        ### Light Loss - see how the Low Orders modify the total intensity
+        for j in range(N_ext):
+
+            low_orders = coefs[j, :N_low]
+            norm_coef.append(np.linalg.norm(low_orders))
+
+            input_focus = train_noisy[j, :N_crop**2].reshape((N_crop, N_crop))
+            output_focus = train_clean[j, :N_crop**2].reshape((N_crop, N_crop))
+            removed_features_focus = input_focus - output_focus
+            loss_focus = np.sum(removed_features_focus)
+            losses_focus.append(loss_focus)
+            peaks_focus.append(np.max(removed_features_focus))
+            mins_focus.append(np.min(removed_features_focus))
+
+            input_defocus = train_noisy[j, N_crop**2:].reshape((N_crop, N_crop))
+            output_defocus = train_clean[j, N_crop**2:].reshape((N_crop, N_crop))
+            removed_features_defocus = input_defocus - output_defocus
+            loss_defocus = np.sum(removed_features_defocus)
+            losses_defocus.append(loss_defocus)
+            peaks_defocus.append(np.max(removed_features_defocus))
+            mins_defocus.append(np.min(removed_features_defocus))
+        norm_coef = np.array(norm_coef)
+
+        f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, sharey=True)
+        # Focused PSF
+        p_sort = np.argsort(peaks_focus)
+        ax1.scatter(norm_coef[p_sort], np.sort(peaks_focus),
+                    color=cm.bwr(np.linspace(0.5 + np.min(peaks_focus), 1, N_ext)), s=4, label='Maxima')
+        m_sort = np.argsort(mins_focus)
+        ax1.scatter(norm_coef[m_sort], np.sort(mins_focus),
+                    color=cm.bwr(np.linspace(0, 0.5, N_ext)), s=4, label='Minima')
+        loss_sort = np.argsort(losses_focus)
+        ax1.legend(loc=2)
+        leg = ax1.get_legend()
+        leg.legendHandles[0].set_color('red')
+        leg.legendHandles[1].set_color('blue')
+
+        ax1.axhline(y=0.0, linestyle='--', color='black')
+        ax1.set_title('Nominal PSF')
+        ax1.set_ylabel(r'Light loss')
+        ax1.set_ylim([-0.5, 0.5])
+
+        ax3.scatter(norm_coef[loss_sort], np.sort(losses_focus), color='black', s=3, label='Total')
+        ax3.legend(loc=2)
+        ax3.axhline(y=0.0, linestyle='--', color='black')
+        ax3.set_xlabel(r'Norm of low orders $\Vert a_{low} \Vert$')
+        ax3.set_ylabel(r'Light loss')
+
+        # Defocused PSF
+        p_sort = np.argsort(losses_defocus)
+        ax2.scatter(norm_coef[p_sort], np.sort(peaks_defocus),
+                    color=cm.bwr(np.linspace(0.5 + np.min(peaks_defocus), 1, N_ext)), s=4, label='Maxima')
+        m_sort = np.argsort(mins_defocus)
+        ax2.scatter(norm_coef[m_sort], np.sort(mins_defocus),
+                    color=cm.bwr(np.linspace(0, 0.5, N_ext)), s=4, label='Minima')
+        loss_sort = np.argsort(losses_defocus)
+        ax2.legend(loc=2)
+        leg = ax2.get_legend()
+        leg.legendHandles[0].set_color('red')
+        leg.legendHandles[1].set_color('blue')
+
+        ax2.axhline(y=0.0, linestyle='--', color='black')
+        ax2.set_title('Defocused PSF')
+
+        ax4.scatter(norm_coef[loss_sort], np.sort(losses_defocus), color='black', s=3, label='Total')
+        ax4.legend(loc=2)
+        ax4.axhline(y=0.0, linestyle='--', color='black')
+        ax4.set_xlabel(r'Norm of low orders $\Vert a_{low} \Vert$')
+
+        ### PCA analysis of the removed features
+        # Focused PSF
+        N_comp = N_low
+        removed_features = train_noisy[:, :N_crop ** 2] - train_clean[:, :N_crop ** 2]
+        pca = PCA(n_components=N_comp)
+        pca.fit(X=removed_features)
+        components = pca.components_.reshape((N_comp, N_crop, N_crop))
+        variance_ratio = pca.explained_variance_ratio_
+        total_variance = np.sum(variance_ratio)
+
+        plt.figure()
+        for i in range(N_comp):
+            ax = plt.subplot(2, N_comp, i+1)
+            plt.imshow(components[i], cmap='seismic', origin='lower')
+            ax.set_title(r'PCA #%d [$\sigma^2_r=%.2f/%.2f$]' %(i+1, variance_ratio[i], total_variance))
+            plt.colorbar(orientation="horizontal")
+            cmin = min(components[i].min(), -components[i].max())
+            plt.clim(cmin, -cmin)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+
+        removed_features_defocus = train_noisy[:, N_crop ** 2:] - train_clean[:, N_crop ** 2:]
+        pca_defocus = PCA(n_components=N_comp)
+        pca_defocus.fit(X=removed_features_defocus)
+        components_defocus = pca_defocus.components_.reshape((N_comp, N_crop, N_crop))
+        variance_ratio_defocus = pca_defocus.explained_variance_ratio_
+        total_variance_defocus = np.sum(variance_ratio_defocus)
+
+        for i in range(N_comp):
+            ax = plt.subplot(2, N_comp, i+1+N_comp)
+            plt.imshow(components_defocus[i], cmap='seismic', origin='lower')
+            ax.set_title(r'PCA #%d [$\sigma^2_r=%.2f/%.2f$]' %(i+1, variance_ratio_defocus[i], total_variance_defocus))
+            plt.colorbar(orientation="horizontal")
+            cmin = min(components_defocus[i].min(), -components_defocus[i].max())
+            plt.clim(cmin, -cmin)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+
+        ### Least Squares fit of the removed features
+        def residuals_lsq(x, image_data, pca_components):
+            model_image = np.dot(x, pca_components)
+            return image_data - model_image
+
+        random_images = np.random.randint(train_noisy.shape[0], size=num_images)
+        for j in random_images:
+            im = removed_features[j]
+            res_lsq = lsq(fun=residuals_lsq, x0=np.zeros(N_comp), args=(im, pca.components_))
+            x_fit = res_lsq['x']
+            im_fit = (np.dot(x_fit, pca.components_)).reshape((N_crop, N_crop))
+            im = im.reshape((N_crop, N_crop))
+            vmin_im = min(im.min(), -im.max())
+            vmin_fit = min(im_fit.min(), -im_fit.max())
+            vmin = min(vmin_im, vmin_fit)
+
+            error = np.sum(np.abs(im_fit - im)) / np.sum(np.abs(im))
+
+            plt.figure()
+            cmap = 'seismic'
+            ax1 = plt.subplot(1, 3, 1)
+            plt.imshow(im, cmap=cmap)
+            plt.colorbar(orientation="horizontal")
+            plt.clim(vmin, -vmin)
+            ax1.get_xaxis().set_visible(False)
+            ax1.get_yaxis().set_visible(False)
+            ax1.set_title(r'Removed features: $PSF(\Phi_{low} + \Phi_{high}) - PSF(\Phi_{high})$')
+
+            ax2 = plt.subplot(1, 3, 2)
+            plt.imshow(im_fit, cmap=cmap)
+            plt.colorbar(orientation="horizontal")
+            plt.clim(vmin, -vmin)
+            ax2.get_xaxis().set_visible(False)
+            ax2.get_yaxis().set_visible(False)
+            ax2.set_title(r'Least-Squares fit from PCA: $x_{lsq} \cdot PCA$')
+
+            res = im_fit - im
+            ax3 = plt.subplot(1, 3, 3)
+            plt.imshow(res, cmap='bwr')
+            plt.colorbar(orientation="horizontal")
+            min_res = min(res.min(), -res.max())
+            plt.clim(min_res, -min_res)
+            ax3.get_xaxis().set_visible(False)
+            ax3.get_yaxis().set_visible(False)
+            ax3.set_title(r'Residuals ($\epsilon = %.2f$)' %error)
+
+        random_images = np.random.choice(train_noisy.shape[0], size=48, replace=False)
+        print(random_images)
+        plt.figure()
+        for i, img_j in enumerate(random_images):
+            ax = plt.subplot(6, 8, i + 1)
+            im = removed_features[img_j].reshape((N_crop, N_crop))
+            plt.imshow(im, cmap='seismic')
+            min_im = min(im.min(), -im.max())
+            plt.clim(min_im, -min_im)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+
+        plt.show()
+
+        return pca
+
+    pca_features = features_training()
+
+
+    ### --------------------------------------------------------------
 
     num_images = 5
     # np.random.seed(1234)
@@ -654,33 +844,52 @@ if __name__ == "__main__":
         ax1 = plt.subplot(3, num_images, i + 1)
         im1 = test_noisy[img_idx, N_crop**2:].reshape((N_crop, N_crop))
         plt.imshow(im1, cmap=cmap)
-        plt.colorbar()
+        plt.colorbar(orientation="horizontal")
         ax1.get_xaxis().set_visible(False)
         ax1.get_yaxis().set_visible(False)
         if i == j_mid:
-            ax1.set_title('Input: Both LOW and HIGH orders')
+            ax1.set_title('Noisy Input: Both LOW and HIGH orders')
 
         ax2 = plt.subplot(3, num_images, num_images + i + 1)
         im2 = decoded[img_idx, N_crop**2:].reshape((N_crop, N_crop))
         plt.imshow(im2, cmap=cmap)
-        plt.colorbar()
+        plt.colorbar(orientation="horizontal")
         ax2.get_xaxis().set_visible(False)
         ax2.get_yaxis().set_visible(False)
         if i == j_mid:
-            ax2.set_title('Prediction: PSF after Autoencoder')
+            ax2.set_title('Clean Output: PSF after Autoencoder')
 
         ax3 = plt.subplot(3, num_images, 2*num_images + i + 1)
         diff = (test_noisy - decoded)
         im3 = diff[img_idx, N_crop**2:].reshape((N_crop, N_crop))
         plt.imshow(im3, cmap='bwr')
-        plt.colorbar()
+        plt.colorbar(orientation="horizontal")
         cmax = max(im3.max(), -1*im3.min())
         plt.clim(-cmax, cmax)
         ax3.get_xaxis().set_visible(False)
         ax3.get_yaxis().set_visible(False)
         if i == j_mid:
-            ax3.set_title('Features: Noisy - Decoded')
+            ax3.set_title('Removed features: Noisy - Clean')
 
+    # ============================================================================== #
+    #                                LOW ORDERS FEATURES                             #
+    # ============================================================================== #
+    path_feat = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE/ONLY_LOWS')
+    PSFs_feat = load_files(path_feat, N=6, file_list=list_slices)
+
+    # downPSFs_feat = PSFs_feat[1]
+    _PSFs_feat, downPSFs_feat, downPSFs_feat_flat = downsample_slicer_pixels(PSFs_feat[1])
+    peak_perf = np.max(downPSFs_feat[0, 0])
+    downPSFs_feat /= peak_perf
+
+    for i in range(5):
+        res = downPSFs_feat[i+1,0] - downPSFs_feat[0,0]
+        mm = min(res.min(), -res.max())
+        plt.figure()
+        plt.imshow(res, cmap='seismic')
+        plt.colorbar()
+        plt.clim(mm, -mm)
+    plt.show()
 
 
     # ============================================================================== #
