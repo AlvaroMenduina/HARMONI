@@ -197,7 +197,7 @@ if __name__ == "__main__":
     ae_coefs = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef1.txt'))
 
     # Subtract the LOW orders
-    ae_low_coef, ae_high_coef = path_auto[:, :N_low], path_auto[:, N_low:]
+    ae_low_coef, ae_high_coef = ae_coefs[:, :N_low], ae_coefs[:, N_low:]
     extra_zeros = np.zeros((N_auto, N_low))
     only_high = np.concatenate((extra_zeros, ae_high_coef), axis=1)
 
@@ -290,7 +290,37 @@ if __name__ == "__main__":
     # ================================================================================================================ #
 
     from sklearn.decomposition import PCA
+    from sklearn.neighbors import NearestNeighbors
     from scipy.optimize import least_squares as lsq
+
+    knn = NearestNeighbors(n_neighbors=10)
+    knn_samples = (train_noisy[:, :N_crop**2] - train_clean[:, :N_crop**2])
+    knn.fit(knn_samples)
+
+    n_neigh = 5
+    j = 1
+    test = (test_noisy[j, :N_crop**2] - test_clean[j, :N_crop**2])
+    coef_test = ae_coefs[N_ext + j]
+    distance, neigh_index = knn.kneighbors(X=test.reshape(1, -1), n_neighbors=n_neigh)
+
+    coef_neigh = ae_coefs[neigh_index]
+    print("\nCoefficient of Test Data Point: ", coef_test[:N_low])
+    print("\nNearest Neighbours: ")
+
+
+    plt.figure()
+    plt.imshow(test.reshape((N_crop, N_crop)), cmap='seismic')
+
+    for i in range(n_neigh):
+        print(coef_neigh[0, i][:N_low])
+        plt.figure()
+        plt.imshow(knn_samples[neigh_index[0][i], :N_crop ** 2].reshape((N_crop, N_crop)), cmap='seismic')
+        plt.title(coef_neigh[0, i][:N_low])
+        plt.colorbar()
+    plt.show()
+
+
+
 
     def features_training(num_images=1):
         """
