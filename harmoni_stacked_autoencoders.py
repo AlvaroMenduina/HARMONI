@@ -551,17 +551,20 @@ if __name__ == "__main__":
     N_low, N_high = 5, 4
 
     ### Zernike Coefficients for the Zemax macros
-    N_auto = 2500
-    N_ext = N_auto - 250
+    N_auto = 4500
+    N_ext = N_auto - 100
     path_auto = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE')
-    ae_coefs = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef1.txt'))
+    ae_coefs1 = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef1.txt'))
+    ae_coefs2 = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef2.txt'))
+    ae_coefs0 = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef0.txt'))[:1000]
+    ae_coefs = np.concatenate((ae_coefs1, ae_coefs2, ae_coefs0), axis=0)
 
     # Subtract the LOW orders
     ae_low_coef, ae_high_coef = ae_coefs[:, :N_low], ae_coefs[:, N_low:]
-    extra_zeros = np.zeros((1000, N_low))
+    extra_zeros = np.zeros((N_auto, N_low))
     only_high = np.concatenate((extra_zeros, ae_high_coef), axis=1)
-    only_low = np.concatenate((ae_low_coef, np.zeros((1000, N_high))), axis=1)
-    np.savetxt(os.path.join(path_auto, 'TRAINING_LOW', 'autoencoder_coef2.txt'), only_low, fmt='%.5f')
+    only_low = np.concatenate((ae_low_coef, np.zeros((N_auto, N_high))), axis=1)
+    # np.savetxt(os.path.join(path_auto, 'TRAINING_LOW', 'autoencoder_coef2.txt'), only_low, fmt='%.5f')
 
     ### Load the TRAINING sets
     # NOISY: Both LOW and HIGH ("Features")
@@ -596,23 +599,23 @@ if __name__ == "__main__":
     batch = 32
 
     K.clear_session()
-    AE = Sequential()
-    AE.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
-    AE.add(Dense(4 * encoding_dim, activation='relu'))
-    AE.add(Dense(2 * encoding_dim, activation='relu'))
-    AE.add(Dense(encoding_dim, activation='relu'))
-    AE.add(Dense(2 * encoding_dim, activation='relu'))
-    AE.add(Dense(4 * encoding_dim, activation='relu'))
-    AE.add(Dense(input_dim, activation='sigmoid'))
-    AE.summary()
-    AE.compile(optimizer='adam', loss='mean_squared_error')
+    AE_high = Sequential()
+    AE_high.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
+    AE_high.add(Dense(4 * encoding_dim, activation='relu'))
+    AE_high.add(Dense(2 * encoding_dim, activation='relu'))
+    AE_high.add(Dense(encoding_dim, activation='relu'))
+    AE_high.add(Dense(2 * encoding_dim, activation='relu'))
+    AE_high.add(Dense(4 * encoding_dim, activation='relu'))
+    AE_high.add(Dense(input_dim, activation='sigmoid'))
+    AE_high.summary()
+    AE_high.compile(optimizer='adam', loss='mean_squared_error')
 
     ### Run the TRAINING
-    AE.fit(train_noisy, train_clean,
+    AE_high.fit(train_noisy, train_clean,
            epochs=epochs, batch_size=batch, shuffle=True, verbose=2,
            validation_data=(test_noisy, test_clean))
 
-    decoded = AE.predict(test_noisy)
+    decoded = AE_high.predict(test_noisy)
 
     # Make sure the training has succeeded by checking the residuals
     residuals = np.mean(norm(np.abs(decoded - test_clean), axis=-1))
@@ -625,17 +628,17 @@ if __name__ == "__main__":
 
     ### Define the ENCODER to access the CODE
     input_img = Input(shape=(input_dim,))
-    encoded_layer1 = AE.layers[0]
-    encoded_layer2 = AE.layers[1]
-    encoded_layer3 = AE.layers[2]
-    encoded_layer4 = AE.layers[3]
-    encoder = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
-    encoder.summary()
-    encoded_images = encoder.predict(train_noisy)
+    encoded_layer1 = AE_high.layers[0]
+    encoded_layer2 = AE_high.layers[1]
+    encoded_layer3 = AE_high.layers[2]
+    encoded_layer4 = AE_high.layers[3]
+    encoder_high = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
+    encoder_high.summary()
+    encoded_images = encoder_high.predict(train_noisy)
 
     ### Use the ENCODED data as training set
     high_coef_train, high_coef_test = ae_high_coef[:N_ext], ae_high_coef[N_ext:]
-    high_psf_train, high_psf_test = encoded_images.copy(),  encoder.predict(test_noisy)
+    high_psf_train, high_psf_test = encoded_images.copy(),  encoder_high.predict(test_noisy)
 
     ### MLP Regressor for HIGH orders (TRAINED ON ENCODED)
 
@@ -731,37 +734,39 @@ if __name__ == "__main__":
                                                        zern_list=zern_list_low, show_predic=False)
 
     # ================================================================================================================ #
-    #                          TEST THE PERFORMANCE
+    #                                            TEST THE PERFORMANCE
     # ================================================================================================================ #
-
-    path_test = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST/0')
     N_test = 250
+    coef_test = np.random.uniform(-0.25, 0.25, size=(N_test, N_low + N_high))
+    path_test = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE/TEST/0')
+    file_name = os.path.join(path_test, 'coef_test.txt')
+    np.savetxt(file_name, coef_test, fmt='%.5f')
+    # N_test = 250
 
     coef_test = np.loadtxt(os.path.join(path_test, 'coef_test.txt'))
     PSFs_test = load_files(path_test, N=N_test, file_list=list_slices)
-
     PSFs_test[0] /= PEAK
     PSFs_test[1] /= PEAK
-
-    # Don't forget to downsample the pixels across the slicer width
     _PSFs_test, downPSFs_test, downPSFs_test_flat = downsample_slicer_pixels(PSFs_test[1])
+
+    rms_encoder = []
+    # Initial RMS
+    _r, _rms0 = evaluate_wavefront_performance(N_low + N_high, coef_test, np.zeros_like(coef_test),
+                                                       zern_list=zern_list_low, show_predic=False)
+    rms_encoder.append(_rms0)
 
     ### LOW orders
     encoded_test_low = encoder_low.predict(downPSFs_test_flat)
     low_orders = low_model.predict(X=encoded_test_low)
-
     print("\nTrue Coefficients")
     print(coef_test[:5, :N_low])
     print(low_orders[:5])
-
     l_rms0, low_orders_rms = evaluate_wavefront_performance(N_low, coef_test[:, :N_low], low_orders,
                                                        zern_list=zern_list_low, show_predic=False)
 
     ### HIGH orders
-    encoder_high = encoder
     encoded_test_high = encoder_high.predict(downPSFs_test_flat)
     high_orders = high_model.predict(X=encoded_test_high)
-
     print("\nTrue Coefficients")
     print(coef_test[:5, N_low:])
     print(high_orders[:5])
@@ -772,48 +777,214 @@ if __name__ == "__main__":
     rr, all_orders_rms = evaluate_wavefront_performance(N_high + N_low, coef_test, all_orders,
                                                        zern_list=zern_list_high, show_predic=False)
 
+    rms_encoder.append(all_orders_rms)
+
     remaining = coef_test - all_orders
 
     k = 0
-    coef_path = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST/1ALL')
-    file_name = os.path.join(coef_path, 'remaining_iter%d.txt' % (k + 1))
+    coef_path1 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST/1ALL')
+    file_name = os.path.join(coef_path1, 'remaining_iter%d.txt' % (k + 1))
     np.savetxt(file_name, remaining, fmt='%.5f')
 
+    # ================================================================================================================ #
+    ### Next iteration
     k = 1
-    path_test1 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST/1ALL')
-    coef_test1 = np.loadtxt(os.path.join(path_test1, 'remaining_iter1.txt'))
-    PSFs_test1 = load_files(path_test1, N=N_test, file_list=list_slices)
-
+    coef_test1 = np.loadtxt(os.path.join(coef_path1, 'remaining_iter1.txt'))
+    PSFs_test1 = load_files(coef_path1, N=N_test, file_list=list_slices)
     PSFs_test1[0] /= PEAK
     PSFs_test1[1] /= PEAK
-
     _PSFs_test1, downPSFs_test1, downPSFs_test_flat1 = downsample_slicer_pixels(PSFs_test1[1])
 
     ### LOW orders
     encoded_test_low = encoder_low.predict(downPSFs_test_flat1)
-    low_orders = low_model.predict(X=encoded_test_low)
+    low_orders1 = low_model.predict(X=encoded_test_low)
 
     print("\nTrue Coefficients")
     print(coef_test1[:5, :N_low])
-    print(low_orders[:5])
+    print(low_orders1[:5])
 
-    l_rms0, low_orders_rms = evaluate_wavefront_performance(N_low, coef_test1[:, :N_low], low_orders,
+    l_rms1, low_orders_rms1 = evaluate_wavefront_performance(N_low, coef_test1[:, :N_low], low_orders1,
                                                        zern_list=zern_list_low, show_predic=False)
 
     ### HIGH orders
-    encoder_high = encoder
     encoded_test_high = encoder_high.predict(downPSFs_test_flat1)
-    high_orders = high_model.predict(X=encoded_test_high)
+    high_orders1 = high_model.predict(X=encoded_test_high)
 
     print("\nTrue Coefficients")
     print(coef_test1[:5, N_low:])
-    print(high_orders[:5])
-    h_rms0, high_orders_rms = evaluate_wavefront_performance(N_high, coef_test1[:, N_low:], high_orders,
+    print(high_orders1[:5])
+    h_rms1, high_orders_rms1 = evaluate_wavefront_performance(N_high, coef_test1[:, N_low:], high_orders1,
                                                        zern_list=zern_list_high, show_predic=False)
 
-    all_orders = np.concatenate((low_orders, high_orders), axis=1)
-    rr, all_orders_rms = evaluate_wavefront_performance(N_high + N_low, coef_test1, all_orders,
+    all_orders = np.concatenate((low_orders1, high_orders1), axis=1)
+    rr1, all_orders_rms1 = evaluate_wavefront_performance(N_high + N_low, coef_test1, all_orders,
                                                        zern_list=zern_list_high, show_predic=False)
+
+    rms_encoder.append(all_orders_rms1)
+
+    remaining1 = coef_test1 - all_orders
+
+    coef_path2 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST/2ALL')
+    file_name = os.path.join(coef_path2, 'remaining_iter2.txt')
+    np.savetxt(file_name, remaining1, fmt='%.5f')
+
+
+    # ================================================================================================================ #
+    #      COMPARISON WITH DECODED IMAGE TRAINING
+    # ================================================================================================================ #
+
+    rms_autoencoder = [_rms0]
+
+    ### HIGH ORDER MODEL
+    train_high_decoded = train_clean
+    train_high_coef = ae_high_coef[:N_ext]
+
+    test_high_decoded = AE_high.predict(downPSFs_test_flat)
+    test_high_coef = coef_test[:, N_low:]
+
+    high_model_encoded = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
+                             solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9,
+                             warm_start=True, alpha=1e-2, random_state=1234)
+
+    high_model_encoded.fit(X=train_high_decoded, y=train_high_coef)
+
+    high_guessed_encoded = high_model_encoded.predict(X=test_high_decoded)
+    print("\nHIGH model guesses:")
+    print(high_guessed_encoded[:5])
+    print("\nTrue Values")
+    print(test_high_coef[:5])
+
+    print('\n HIGH order Model:')
+    high_rms0_enc, high_rms_enc = evaluate_wavefront_performance(N_high, test_high_coef, high_guessed_encoded,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    ### LOW ORDER MODEL
+    train_low_decoded = train_clean_low
+    train_low_coef = ae_low_coef[:N_ext]
+
+    test_low_decoded = AE_low.predict(downPSFs_test_flat)
+    test_low_coef = coef_test[:, :N_low]
+
+    low_model_encoded = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
+                             solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9,
+                             warm_start=True, alpha=1e-2, random_state=1234)
+
+    low_model_encoded.fit(X=train_low_decoded, y=train_low_coef)
+
+    low_guessed_encoded = low_model_encoded.predict(X=test_low_decoded)
+    print("\nLOW model guesses:")
+    print(low_guessed_encoded[:5])
+    print("\nTrue Values")
+    print(test_low_coef[:5])
+
+    print('\n HIGH order Model:')
+    low_rms0_enc, low_rms_enc = evaluate_wavefront_performance(N_low, test_low_coef, low_guessed_encoded,
+                                                       zern_list=zern_list_low, show_predic=False)
+
+    ### Combined
+    both_encoded = np.concatenate((low_guessed_encoded, high_guessed_encoded), axis=1)
+    pp, both_encoded_rms = evaluate_wavefront_performance(N_high + N_low, coef_test, both_encoded,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    rms_autoencoder.append(both_encoded_rms)
+
+    remaining_encoded = coef_test - both_encoded
+
+    k = 0
+    coef_path1 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITHOUT AE/TEST/1ALL_ENCODED')
+    file_name = os.path.join(coef_path1, 'remaining_iter%d.txt' % (k + 1))
+    np.savetxt(file_name, remaining_encoded, fmt='%.5f')
+
+    # ================================================================================================================ #
+    # Next Iter
+
+    coef_test1 = np.loadtxt(os.path.join(coef_path1, 'remaining_iter1.txt'))
+    PSFs_test1 = load_files(coef_path1, N=N_test, file_list=list_slices)
+    PSFs_test1[0] /= PEAK
+    PSFs_test1[1] /= PEAK
+    _PSFs_test1, downPSFs_test1, downPSFs_test_flat1 = downsample_slicer_pixels(PSFs_test1[1])
+
+    test_high_decoded1 = AE_high.predict(downPSFs_test_flat1)
+    high_guessed_encoded1 = high_model_encoded.predict(X=test_high_decoded1)
+    test_low_decoded1 = AE_low.predict(downPSFs_test_flat1)
+    low_guessed_encoded1 = low_model_encoded.predict(X=test_low_decoded1)
+    both_encoded1 = np.concatenate((low_guessed_encoded1, high_guessed_encoded1), axis=1)
+    pp, both_encoded_rms1 = evaluate_wavefront_performance(N_high + N_low, coef_test1, both_encoded1,
+                                                       zern_list=zern_list_high, show_predic=False)
+    rms_autoencoder.append(both_encoded_rms1)
+
+
+
+    ### Plot results
+    n = len(rms_encoder)
+    rms_encoder_arr = wave_nom * np.array(rms_encoder)
+    rms_autoencoder_arr = wave_nom * np.array(rms_autoencoder)
+    colors = cm.coolwarm(np.linspace(0, 1, N_test))
+
+    plt.figure()
+    plt.subplot(1, 2, 1)
+    i = 0
+    plt.scatter(i * np.ones(N_test) + 0.025, np.sort(rms_autoencoder_arr[i]), color='coral', s=4, label=r'Reconstructed $x$')
+    plt.scatter(i * np.ones(N_test) - 0.025, np.sort(rms_encoder_arr[i]), color='blue', s=4, label=r'Encoded $h$')
+    for i in np.arange(1, n):
+        plt.scatter(i * np.ones(N_test) + 0.025, np.sort(rms_autoencoder_arr[i]), color='coral', s=4)
+        plt.scatter(i*np.ones(N_test) - 0.025, np.sort(rms_encoder_arr[i]), color='blue', s=4)
+
+    plt.legend(title='Architecture')
+    plt.ylim([0, 200])
+    plt.ylabel('RMS [nm]')
+    plt.xlabel('Iteration')
+
+    plt.subplot(1, 2, 2)
+    plt.hist(rms_autoencoder_arr[-1], histtype='step', color='coral', label=r'Reconstructed $x$')
+    plt.hist(rms_encoder_arr[-1], histtype='step', color='blue', label=r'Encoded $h$')
+    plt.legend(title='Architecture')
+    plt.xlabel('Final RMS [nm]')
+    plt.show()
+
+    ### Improvement
+    rel_enc = [(before - after) / before for (before, after) in zip(rms_encoder_arr[0], rms_encoder_arr[-1])]
+    rel_enc = np.mean(rel_enc)
+
+    rel_autoenc = [(before - after) / before for (before, after) in zip(rms_autoencoder_arr[0], rms_autoencoder_arr[-1])]
+    rel_autoenc = np.mean(rel_autoenc)
+
+    encoder_impr = np.mean((rms_encoder_arr[0] - rms_encoder_arr[-1] / rms_encoder_arr[0]))
+
+
+    # ========================
+    a_max = 0.25
+    ae_coef_ = np.random.uniform(-a_max, a_max, size=(N_auto, N_low + N_high))
+    # path_auto = os.path.join('POP', 'NYQUIST', 'HIGH ORDERS', 'AUTOENCODER')
+    path_auto = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE')
+    np.save(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef0'), ae_coef_)
+    np.savetxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef0.txt'), ae_coef_, fmt='%.5f')
+
+    ae_low_coef, ae_high_coef = ae_coef_[:, :N_low], ae_coef_[:, N_low:]
+    extra_zeros = np.zeros((N_auto, N_low))
+    only_high = np.concatenate((extra_zeros, ae_high_coef), axis=1)
+    only_low = np.concatenate((ae_low_coef, np.zeros((N_auto, N_high))), axis=1)
+    np.savetxt(os.path.join(path_auto, 'TRAINING_LOW', 'autoencoder_coef0.txt'), only_low, fmt='%.5f')
+    np.savetxt(os.path.join(path_auto, 'TRAINING_HIGH', 'autoencoder_coef0.txt'), only_high, fmt='%.5f')
+
+    # def contractive_loss(y_pred, y_true):
+    #     mse = K.mean(K.square(y_true - y_pred), axis=1)
+    #
+    #     W = K.variable(value=model.get_layer('encoded').get_weights()[0])  # N x N_hidden
+    #     W = K.transpose(W)  # N_hidden x N
+    #     h = model.get_layer('encoded').output
+    #     dh = h * (1 - h)  # N_batch x N_hidden
+    #
+    #     # N_batch x N_hidden * N_hidden x 1 = N_batch x 1
+    #     contractive = lam * K.sum(dh ** 2 * K.sum(W ** 2, axis=1), axis=1)
+    #
+    #     return mse + contractive
+    #
+    #
+    # model.compile(optimizer='adam', loss=contractive_loss)
+    # model.fit(X, X, batch_size=N_batch, nb_epoch=5)
 
 
 
