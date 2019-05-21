@@ -551,13 +551,13 @@ if __name__ == "__main__":
     N_low, N_high = 5, 4
 
     ### Zernike Coefficients for the Zemax macros
-    N_auto = 4500
+    N_auto = 3500
     N_ext = N_auto - 100
     path_auto = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE')
     ae_coefs1 = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef1.txt'))
     ae_coefs2 = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef2.txt'))
-    ae_coefs0 = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef0.txt'))[:1000]
-    ae_coefs = np.concatenate((ae_coefs1, ae_coefs2, ae_coefs0), axis=0)
+    # ae_coefs0 = np.loadtxt(os.path.join(path_auto, 'TRAINING_BOTH', 'autoencoder_coef0.txt'))[:1000]
+    ae_coefs = np.concatenate((ae_coefs1, ae_coefs2), axis=0)
 
     # Subtract the LOW orders
     ae_low_coef, ae_high_coef = ae_coefs[:, :N_low], ae_coefs[:, N_low:]
@@ -574,6 +574,12 @@ if __name__ == "__main__":
     PSFs_AE[1] /= PEAK
     _PSFs_AE, downPSFs_AE, downPSFs_AE_flat = downsample_slicer_pixels(PSFs_AE[1])
 
+    # ================================================================================================================ #
+    #                                                       ~~
+    #                                             ~~ HIGH ORDER NETWORK ~~                                             #
+    #                                                       ~~
+    # ================================================================================================================ #
+
     # CLEAN: Only HIGH ("Targets")
     PSFs_AE_high = load_files(os.path.join(path_auto, 'TRAINING_HIGH'), N=N_auto, file_list=list_slices)
     PSFs_AE_high[0] /= PEAK
@@ -581,21 +587,12 @@ if __name__ == "__main__":
     _PSFs_AE_high, downPSFs_AE_high, downPSFs_AE_high_flat = downsample_slicer_pixels(PSFs_AE_high[1])
 
     ### Separate PSFs into TRAINING and TESTING datasets
-    train_noisy = downPSFs_AE_flat[:N_ext]
-    train_clean = downPSFs_AE_high_flat[:N_ext]
-
-    test_noisy = downPSFs_AE_flat[N_ext:]
-    test_clean = downPSFs_AE_high_flat[N_ext:]
-
-    ### Define the AUTOENCODER architecture
-    from keras.layers import Dense
-    from keras.models import Sequential, Model, Input
-    from keras import backend as K
-    from numpy.linalg import norm as norm
+    train_noisy, train_clean = downPSFs_AE_flat[:N_ext], downPSFs_AE_high_flat[:N_ext]
+    test_noisy, test_clean = downPSFs_AE_flat[N_ext:], downPSFs_AE_high_flat
 
     input_dim = 2*N_crop**2
     encoding_dim = 32
-    epochs = 2500
+    epochs = 2000
     batch = 32
 
     K.clear_session()
@@ -611,10 +608,8 @@ if __name__ == "__main__":
     AE_high.compile(optimizer='adam', loss='mean_squared_error')
 
     ### Run the TRAINING
-    AE_high.fit(train_noisy, train_clean,
-           epochs=epochs, batch_size=batch, shuffle=True, verbose=2,
-           validation_data=(test_noisy, test_clean))
-
+    AE_high.fit(train_noisy, train_clean, epochs=epochs, batch_size=batch, shuffle=True, verbose=2,
+                validation_data=(test_noisy, test_clean))
     decoded = AE_high.predict(test_noisy)
 
     # Make sure the training has succeeded by checking the residuals
@@ -623,15 +618,13 @@ if __name__ == "__main__":
     print(residuals / total * 100)
 
     # ================================================================================================================ #
-    #                                     USE THE DECODER TO TRAIN A NETWORK                                           #
+    #                                   USE THE ENCODER TO TRAIN AN MLP NETWORK                                        #
     # ================================================================================================================ #
 
     ### Define the ENCODER to access the CODE
     input_img = Input(shape=(input_dim,))
-    encoded_layer1 = AE_high.layers[0]
-    encoded_layer2 = AE_high.layers[1]
-    encoded_layer3 = AE_high.layers[2]
-    encoded_layer4 = AE_high.layers[3]
+    encoded_layer1, encoded_layer2 = AE_high.layers[0], AE_high.layers[1]
+    encoded_layer3, encoded_layer4 = AE_high.layers[2], AE_high.layers[3]
     encoder_high = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
     encoder_high.summary()
     encoded_images = encoder_high.predict(train_noisy)
@@ -641,26 +634,42 @@ if __name__ == "__main__":
     high_psf_train, high_psf_test = encoded_images.copy(),  encoder_high.predict(test_noisy)
 
     ### MLP Regressor for HIGH orders (TRAINED ON ENCODED)
-
-    N_layer = (100, 50, 25)
+    N_layer = (200, 100, 50)
     N_iter = 5000
-    high_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
-                             solver='adam', max_iter=N_iter, verbose=True,
-                             batch_size='auto', shuffle=True, tol=1e-9,
-                             warm_start=True, alpha=1e-2, random_state=1234)
+    high_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu', solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9, warm_start=True, alpha=1e-2, random_state=1234)
 
     high_model.fit(X=high_psf_train, y=high_coef_train)
 
     high_guessed = high_model.predict(X=high_psf_test)
-    print("\nHIGH model guesses:")
-    print(high_guessed[:5])
-    print("\nTrue Values")
-    print(high_coef_test[:5])
-
-    print('\n HIGH order Model:')
+    print("\nHIGH model guesses: \n", high_guessed[:5])
+    print("\nTrue Values: \n", high_coef_test[:5])
     high_rms0, high_rms = evaluate_wavefront_performance(N_high, high_coef_test, high_guessed,
                                                        zern_list=zern_list_high, show_predic=False)
 
+    # ================================================================================================================ #
+    #                                       ANALYSIS OF THE ENCODER FEATURES                                           #
+    # ================================================================================================================ #
+    N_enc = 16
+    enc_foc, enc_defoc = encoded_images[:N_enc], encoded_images[N_enc:]
+    low_orders, high_orders = ae_low_coef[:N_ext], ae_high_coef[:N_ext]
+
+
+    for j in range(N_low):
+        plt.figure()
+        a_j = low_orders[:, j]
+        for k in range(N_enc):
+            plt.scatter(a_j, enc_foc[:,k], label=k)
+
+
+
+
+
+
+    # ================================================================================================================ #
+    #                                                        ~~
+    #                                              ~~ LOW ORDER NETWORK ~~                                             #
+    #                                                        ~~
     # ================================================================================================================ #
     # CLEAN: Only LOW ("Targets")
     PSFs_AE_low = load_files(os.path.join(path_auto, 'TRAINING_LOW'), N=N_auto, file_list=list_slices)
@@ -669,11 +678,8 @@ if __name__ == "__main__":
     _PSFs_AE_low, downPSFs_AE_low, downPSFs_AE_low_flat = downsample_slicer_pixels(PSFs_AE_low[1])
 
     ### Separate PSFs into TRAINING and TESTING datasets
-    # train_noisy_low = downPSFs_AE_flat[:N_ext]
-    train_clean_low = downPSFs_AE_low_flat[:N_ext]
-
-    # test_noisy_low = downPSFs_AE_flat[N_ext:]
-    test_clean_low = downPSFs_AE_low_flat[N_ext:]
+    # train_noisy_low, test_noisy_low = downPSFs_AE_flat[:N_ext], downPSFs_AE_flat[N_ext:]
+    train_clean_low, test_clean_low = downPSFs_AE_low_flat[:N_ext], downPSFs_AE_low_flat[N_ext:]
 
     AE_low = Sequential()
     AE_low.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
@@ -687,8 +693,7 @@ if __name__ == "__main__":
     AE_low.compile(optimizer='adam', loss='mean_squared_error')
 
     ### Run the TRAINING
-    AE_low.fit(train_noisy, train_clean_low,
-           epochs=epochs, batch_size=batch, shuffle=True, verbose=2,
+    AE_low.fit(train_noisy, train_clean_low, epochs=epochs, batch_size=batch, shuffle=True, verbose=2,
            validation_data=(test_noisy, test_clean_low))
 
     decoded_low = AE_low.predict(test_noisy)
@@ -700,10 +705,8 @@ if __name__ == "__main__":
 
     ### Define the ENCODER to access the CODE
     input_img = Input(shape=(input_dim,))
-    encoded_layer1 = AE_low.layers[0]
-    encoded_layer2 = AE_low.layers[1]
-    encoded_layer3 = AE_low.layers[2]
-    encoded_layer4 = AE_low.layers[3]
+    encoded_layer1, encoded_layer2 = AE_low.layers[0], AE_low.layers[1]
+    encoded_layer3, encoded_layer4 = AE_low.layers[2], AE_low.layers[3]
     encoder_low = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
     encoder_low.summary()
     encoded_images_low = encoder_low.predict(train_noisy)
@@ -713,23 +716,13 @@ if __name__ == "__main__":
     low_psf_train, low_psf_test = encoded_images_low.copy(),  encoder_low.predict(test_noisy)
 
     ### MLP Regressor for HIGH orders (TRAINED ON ENCODED)
-
-    N_layer = (150, 100, 50)
-    N_iter = 5000
-    low_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
-                             solver='adam', max_iter=N_iter, verbose=True,
-                             batch_size='auto', shuffle=True, tol=1e-9,
-                             warm_start=True, alpha=1e-2, random_state=1234)
+    low_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu', solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9, warm_start=True, alpha=1e-2, random_state=1234)
 
     low_model.fit(X=low_psf_train, y=low_coef_train)
-
     low_guessed = low_model.predict(X=low_psf_test)
-    print("\nLOW model guesses:")
-    print(low_guessed[:5])
-    print("\nTrue Values")
-    print(low_coef_test[:5])
-
-    print('\nLOW order Model:')
+    print("\nLOW model guesses: \n", low_guessed[:5])
+    print("\nTrue Values \n", low_coef_test[:5])
     low_rms0, low_rms = evaluate_wavefront_performance(N_low, low_coef_test, low_guessed,
                                                        zern_list=zern_list_low, show_predic=False)
 
@@ -737,12 +730,7 @@ if __name__ == "__main__":
     #                                            TEST THE PERFORMANCE
     # ================================================================================================================ #
     N_test = 250
-    coef_test = np.random.uniform(-0.25, 0.25, size=(N_test, N_low + N_high))
     path_test = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE/TEST/0')
-    file_name = os.path.join(path_test, 'coef_test.txt')
-    np.savetxt(file_name, coef_test, fmt='%.5f')
-    # N_test = 250
-
     coef_test = np.loadtxt(os.path.join(path_test, 'coef_test.txt'))
     PSFs_test = load_files(path_test, N=N_test, file_list=list_slices)
     PSFs_test[0] /= PEAK
@@ -778,7 +766,6 @@ if __name__ == "__main__":
                                                        zern_list=zern_list_high, show_predic=False)
 
     rms_encoder.append(all_orders_rms)
-
     remaining = coef_test - all_orders
 
     k = 0
@@ -857,7 +844,7 @@ if __name__ == "__main__":
 
     print('\n HIGH order Model:')
     high_rms0_enc, high_rms_enc = evaluate_wavefront_performance(N_high, test_high_coef, high_guessed_encoded,
-                                                       zern_list=zern_list_high, show_predic=False)
+                                                       zern_list=zern_list_high, show_predic=True)
 
     ### LOW ORDER MODEL
     train_low_decoded = train_clean_low
