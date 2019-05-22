@@ -441,7 +441,7 @@ if __name__ == "__main__":
     j_non_zeros = [-1 if all(enc_foc[:,i]==0.0) else i for i in range(N_enc)]
     j_non_zeros = [x for x in j_non_zeros if x!= -1]
 
-    j_non_zeros = [1, 6, 7,8, 13, 15]
+    j_non_zeros = [1, 6, 7, 8, 13, 15]
     N_non_zeros = len(j_non_zeros)
 
     plt.figure()
@@ -452,7 +452,6 @@ if __name__ == "__main__":
         for j, j_nz in enumerate(j_non_zeros):
             ax = plt.subplot(N_high, N_non_zeros, i*N_non_zeros + j + 1)
             i_sort = np.argsort(norm_i)
-            # colors = cm.seismic(np.linspace(0, 1, N_ext))
             sc = ax.scatter(a_i[i_sort], enc_foc[:, j_nz][i_sort], s=1, color=colors_high[i])
             if i == 0:
                 ax.set_title('Pixel %d' %j_nz)
@@ -479,6 +478,36 @@ if __name__ == "__main__":
             if j == 0:
                 ax.set_ylabel('Pixel Value [ ]')
     plt.show()
+
+    from sklearn.decomposition import PCA
+
+    N_comp = N_high
+    pca = PCA(n_components=2)
+    plt.figure()
+    for i, j in enumerate([1, 6, 7, 8, 13, 15]):
+        enc_high_ = np.concatenate((high_orders, enc_foc[:, j:j+1]), axis=1)
+        pca.fit(X=enc_high_)
+        components = pca.components_
+        p_new = np.dot(enc_high_, components.T)
+        ax = plt.subplot(2, 3, i + 1)
+        # plt.scatter(p_new[:,0], p_new[:,1], s=2)
+        plt.scatter(np.dot(high_orders, components[0,:N_high]), enc_foc[:, j:j+1], s=2)
+        ax.set_title('Pixel %d' %j)
+        if i < 3:
+            ax.get_xaxis().set_visible(False)
+        if i >= 3:
+            ax.set_xlabel(r'PCA Aberration [$\lambda$]')
+        if i == 0 or i==3:
+            ax.set_ylabel('Pixel Value [ ]')
+    plt.show()
+
+    x = np.linspace(0, 1, 1000)
+    y = 1.25 * x + np.random.normal(0, 0.1, size=1000)
+    z = np.array([x,x, y]).T
+    pca = PCA(n_components=2)
+    pca.fit(X=z)
+    components = pca.components_
+
 
     # ================================================================================================================ #
     # DEFOCUSED
@@ -525,14 +554,14 @@ if __name__ == "__main__":
     #                                                        ~~
     # ================================================================================================================ #
     # CLEAN: Only LOW ("Targets")
-    PSFs_AE_low = load_files(os.path.join(path_auto, 'TRAINING_LOW'), N=3100, file_list=list_slices)
+    PSFs_AE_low = load_files(os.path.join(path_auto, 'TRAINING_LOW'), N=N_auto, file_list=list_slices)
     PSFs_AE_low[0] /= PEAK
     PSFs_AE_low[1] /= PEAK
     _PSFs_AE_low, downPSFs_AE_low, downPSFs_AE_low_flat = downsample_slicer_pixels(PSFs_AE_low[1])
 
     ### Separate PSFs into TRAINING and TESTING datasets
-    train_noisy_low, test_noisy_low = downPSFs_AE_flat[:3000], downPSFs_AE_flat[3000:3100]
-    train_clean_low, test_clean_low = downPSFs_AE_low_flat[:3000], downPSFs_AE_low_flat[3000:]
+    train_noisy_low, test_noisy_low = downPSFs_AE_flat[:N_ext], downPSFs_AE_flat[N_ext:]
+    train_clean_low, test_clean_low = downPSFs_AE_low_flat[:N_ext], downPSFs_AE_low_flat[N_ext:]
 
     AE_low = Sequential()
     AE_low.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
@@ -564,6 +593,21 @@ if __name__ == "__main__":
     encoder_low.summary()
     encoded_images_low = encoder_low.predict(train_noisy)
 
+    ### Use the ENCODED data as training set
+    low_coef_train, low_coef_test = ae_low_coef[:N_ext], ae_low_coef[N_ext:]
+    low_psf_train, low_psf_test = encoded_images_low.copy(),  encoder_low.predict(test_noisy)
+
+    ### MLP Regressor for HIGH orders (TRAINED ON ENCODED)
+    low_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu', solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9, warm_start=True, alpha=1e-2, random_state=1234)
+
+    low_model.fit(X=low_psf_train, y=low_coef_train)
+    low_guessed = low_model.predict(X=low_psf_test)
+    print("\nLOW model guesses: \n", low_guessed[:5])
+    print("\nTrue Values \n", low_coef_test[:5])
+    low_rms0, low_rms = evaluate_wavefront_performance(N_low, low_coef_test, low_guessed,
+                                                       zern_list=zern_list_low, show_predic=False)
+
 
     N_enc = 16
     enc_foc, enc_defoc = encoded_images_low[:, :N_enc], encoded_images_low[:, N_enc:]
@@ -585,7 +629,8 @@ if __name__ == "__main__":
     j_non_zeros = [-1 if all(enc_foc[:,i]==0.0) else i for i in range(N_enc)]
     j_non_zeros = [x for x in j_non_zeros if x!= -1]
 
-    j_non_zeros.remove(9)
+    j_non_zeros.remove(0)
+    j_non_zeros.remove(14)
     N_non_zeros = len(j_non_zeros)
 
     plt.figure()
@@ -623,6 +668,71 @@ if __name__ == "__main__":
             if j == 0:
                 ax.set_ylabel('Pixel Value [ ]')
     plt.show()
+
+    pca = PCA(n_components=2)
+    plt.figure()
+    for i, j in enumerate(j_non_zeros):
+        enc_low_ = np.concatenate((low_orders, enc_foc[:, j:j+1]), axis=1)
+        pca.fit(X=enc_low_)
+        components = pca.components_
+        p_new = np.dot(enc_low_, components.T)
+        ax = plt.subplot(2, 5, i + 1)
+        # plt.scatter(p_new[:,0], p_new[:,1], s=2)
+        plt.scatter(np.dot(low_orders, components[0,:N_low]), enc_foc[:, j:j+1], s=2)
+        ax.set_title('Pixel %d' %j)
+        if i < 3:
+            ax.get_xaxis().set_visible(False)
+        if i >= 3:
+            ax.set_xlabel(r'PCA Aberration [$\lambda$]')
+        if i == 0 or i==3:
+            ax.set_ylabel('Pixel Value [ ]')
+    plt.show()
+
+    # ================================================================================================================ #
+    #                                            TEST THE PERFORMANCE
+    # ================================================================================================================ #
+    N_test = 250
+    path_test = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/0')
+    coef_test = np.loadtxt(os.path.join(path_test, 'coef_test.txt'))
+    PSFs_test = load_files(path_test, N=N_test, file_list=list_slices)
+    PSFs_test[0] /= PEAK
+    PSFs_test[1] /= PEAK
+    _PSFs_test, downPSFs_test, downPSFs_test_flat = downsample_slicer_pixels(PSFs_test[1])
+
+    rms_encoder = []
+    # Initial RMS
+    _r, _rms0 = evaluate_wavefront_performance(N_low + N_high, coef_test, np.zeros_like(coef_test),
+                                                       zern_list=zern_list_low, show_predic=False)
+    rms_encoder.append(_rms0)
+
+    ### LOW orders
+    encoded_test_low = encoder_low.predict(downPSFs_test_flat)
+    low_orders = low_model.predict(X=encoded_test_low)
+    print("\nTrue Coefficients")
+    print(coef_test[:5, :N_low])
+    print(low_orders[:5])
+    l_rms0, low_orders_rms = evaluate_wavefront_performance(N_low, coef_test[:, :N_low], low_orders,
+                                                       zern_list=zern_list_low, show_predic=False)
+
+    ### HIGH orders
+    encoded_test_high = encoder_high.predict(downPSFs_test_flat)
+    high_orders = high_model.predict(X=encoded_test_high)
+    print("\nTrue Coefficients")
+    print(coef_test[:5, N_low:])
+    print(high_orders[:5])
+    h_rms0, high_orders_rms = evaluate_wavefront_performance(N_high, coef_test[:, N_low:], high_orders,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    all_orders = np.concatenate((low_orders, high_orders), axis=1)
+    rr, all_orders_rms = evaluate_wavefront_performance(N_high + N_low, coef_test, all_orders,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    rms_encoder.append(all_orders_rms)
+
+    remaining = coef_test - all_orders
+    coef_path1 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/1ALL')
+    file_name = os.path.join(coef_path1, 'remaining_iter%d.txt' % (k + 1))
+    np.savetxt(file_name, remaining, fmt='%.5f')
 
     # Extra stuff
     ###====
