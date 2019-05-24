@@ -13,7 +13,7 @@ Train the Calibration Networks on the ENCODED data??
 
 import os
 import numpy as np
-from numpy.random import RandomState
+from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
 import zern_core as zern
 from pyzdde.zdde import readBeamFile
@@ -355,11 +355,6 @@ if __name__ == "__main__":
     test_noisy, test_clean = downPSFs_AE_flat[N_ext:], downPSFs_AE_high_flat[N_ext:]
 
     ### Define the AUTOENCODER architecture
-    from keras.layers import Dense
-    from keras.models import Sequential, Model, Input
-    from keras import backend as K
-    from numpy.linalg import norm as norm
-
     input_dim = 2*N_crop**2
     encoding_dim = 32
     epochs = 2000
@@ -493,10 +488,7 @@ if __name__ == "__main__":
         # plt.scatter(p_new[:,0], p_new[:,1], s=2)
         plt.scatter(np.dot(high_orders, components[0,:N_high]), enc_foc[:, j:j+1], s=2)
         ax.set_title('Pixel %d' %j)
-        if i < 3:
-            ax.get_xaxis().set_visible(False)
-        if i >= 3:
-            ax.set_xlabel(r'PCA Aberration [$\lambda$]')
+        ax.set_xlabel(r'PCA Aberration [$\lambda$]')
         if i == 0 or i==3:
             ax.set_ylabel('Pixel Value [ ]')
     plt.show()
@@ -512,7 +504,7 @@ if __name__ == "__main__":
     # ================================================================================================================ #
     # DEFOCUSED
 
-    j_non_zeros = [0, 1, 3, 4, 5, 6, 10, 12, 15]
+    j_non_zeros = [0, 1, 5, 6, 10, 15]
     N_non_zeros = len(j_non_zeros)
 
     plt.figure()
@@ -547,6 +539,244 @@ if __name__ == "__main__":
             if j == 0:
                 ax.set_ylabel('Pixel Value [ ]')
     plt.show()
+
+    # ================================================================================================================ #
+    #                                        ANALYSIS OF THE IMAGE FEATURES                                           #
+    # ================================================================================================================ #
+    plt.rc('font', family='serif')
+    plt.rc('text', usetex=False)
+
+    def features_training(coefs, datasets):
+        """
+        Function to analyse the features of the TRAINING set of the autoencoder
+        """
+
+        norm_coef = []
+        losses_focus, peaks_focus, mins_focus = [], [], []
+        losses_defocus, peaks_defocus, mins_defocus = [], [], []
+
+        # ============================================================================================================ #
+        ### Light Loss - see how the Low Orders modify the total intensity
+        for j in range(datasets[0].shape[0]):
+            norm_coef.append(np.linalg.norm(coefs[j]))
+            input_focus = datasets[0][j, :N_crop**2].reshape((N_crop, N_crop))
+            output_focus = datasets[1][j, :N_crop**2].reshape((N_crop, N_crop))
+            removed_features_focus = input_focus - output_focus
+            loss_focus = np.sum(removed_features_focus)
+            losses_focus.append(loss_focus)
+            peaks_focus.append(np.max(removed_features_focus))
+            mins_focus.append(np.min(removed_features_focus))
+
+            input_defocus = datasets[0][j, N_crop**2:].reshape((N_crop, N_crop))
+            output_defocus = datasets[1][j, N_crop**2:].reshape((N_crop, N_crop))
+            removed_features_defocus = input_defocus - output_defocus
+            loss_defocus = np.sum(removed_features_defocus)
+            losses_defocus.append(loss_defocus)
+            peaks_defocus.append(np.max(removed_features_defocus))
+            mins_defocus.append(np.min(removed_features_defocus))
+        norm_coef = np.array(norm_coef)
+
+        print("\nStatistics for Focus:")
+        print("Sum of MAX: ", np.mean(peaks_focus))
+        print("Sum of MIN: ", np.mean(mins_focus))
+        print("Sum of TOT: ", np.mean(losses_focus))
+        print("\nStatistics for Defocus:")
+        print("Sum of MAX: ", np.mean(peaks_defocus))
+        print("Sum of MIN: ", np.mean(mins_defocus))
+        print("Sum of TOT: ", np.mean(losses_defocus))
+
+        f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
+        # Focused PSF
+        p_sort = np.argsort(peaks_focus)
+        ax1.scatter(norm_coef[p_sort], np.sort(peaks_focus),
+                    color=cm.bwr(np.linspace(0.5 + np.min(peaks_focus), 1, N_ext)), s=4, label='Maxima')
+        m_sort = np.argsort(mins_focus)
+        ax1.scatter(norm_coef[m_sort], np.sort(mins_focus),
+                    color=cm.bwr(np.linspace(0, 0.5, N_ext)), s=4, label='Minima')
+        loss_sort = np.argsort(losses_focus)
+        ax1.legend(loc=3)
+        leg = ax1.get_legend()
+        leg.legendHandles[0].set_color('red')
+        leg.legendHandles[1].set_color('blue')
+
+        ax1.axhline(y=0.0, linestyle='--', color='black')
+        ax1.set_title('Nominal PSF')
+        ax1.set_ylabel(r'Light loss')
+        ax1.set_ylim([-0.75, 0.75])         # For the High AE
+        # ax1.set_ylim([-0.25, 0.25])         # For the Low AE
+        ax1.set_xlim([0.0, 0.5])
+
+        ax3.scatter(norm_coef[loss_sort], np.sort(losses_focus), color='black', s=3, label='Total')
+        ax3.legend(loc=3)
+        ax3.axhline(y=0.0, linestyle='--', color='black')
+        ax3.set_xlabel(r'Norm of low orders $\Vert a_{low} \Vert$')
+        ax3.set_ylabel(r'Light loss')
+        ax3.set_ylim([-1.5, 0.25])              # For the High AE
+        # ax3.set_ylim([-0.75, 0.25])              # For the Low AE
+        ax3.set_xlim([0.0, 0.5])
+
+        # Defocused PSF
+        p_sort = np.argsort(losses_defocus)
+        ax2.scatter(norm_coef[p_sort], np.sort(peaks_defocus),
+                    color=cm.bwr(np.linspace(0.5 + np.min(peaks_defocus), 1, N_ext)), s=4, label='Maxima')
+        m_sort = np.argsort(mins_defocus)
+        ax2.scatter(norm_coef[m_sort], np.sort(mins_defocus),
+                    color=cm.bwr(np.linspace(0, 0.5, N_ext)), s=4, label='Minima')
+        loss_sort = np.argsort(losses_defocus)
+        ax2.legend(loc=3)
+        leg = ax2.get_legend()
+        leg.legendHandles[0].set_color('red')
+        leg.legendHandles[1].set_color('blue')
+
+        ax2.axhline(y=0.0, linestyle='--', color='black')
+        ax2.set_title('Defocused PSF')
+        ax2.set_ylim([-0.75, 0.75])
+        # ax2.set_ylim([-0.25, 0.25])
+        ax2.set_xlim([0.0, 0.5])
+
+        ax4.scatter(norm_coef[loss_sort], np.sort(losses_defocus), color='black', s=3, label='Total')
+        ax4.legend(loc=3)
+        ax4.axhline(y=0.0, linestyle='--', color='black')
+        ax4.set_xlabel(r'Norm of low orders $\Vert a_{low} \Vert$')
+        ax4.set_ylim([-1.5, 0.25])
+        # ax4.set_ylim([-0.75, 0.25])
+        ax4.set_xlim([0.0, 0.5])
+
+
+        ### REMOVED FEATURES plots
+        # Focused PSF
+        # N_comp = coefs.shape[1]
+        N_comp = 4
+        removed_features = datasets[0][:, :N_crop**2] - datasets[1][:, :N_crop ** 2]
+        pca = PCA(n_components=N_comp)
+        pca.fit(X=removed_features)
+        components = pca.components_.reshape((N_comp, N_crop, N_crop))
+        variance_ratio = pca.explained_variance_ratio_
+        total_variance = np.sum(variance_ratio)
+
+        removed_features_defocus = datasets[0][:, N_crop ** 2:] - datasets[1][:, N_crop ** 2:]
+        pca_defocus = PCA(n_components=N_comp)
+        pca_defocus.fit(X=removed_features_defocus)
+        components_defocus = pca_defocus.components_.reshape((N_comp, N_crop, N_crop))
+        variance_ratio_defocus = pca_defocus.explained_variance_ratio_
+        total_variance_defocus = np.sum(variance_ratio_defocus)
+
+        plt.figure()
+        for i in range(N_comp):
+            ax = plt.subplot(2, N_comp, i+1)
+            plt.imshow(components[i], cmap='seismic', origin='lower')
+            ax.set_title(r'PCA #%d [$\sigma^2_r=%.2f/%.2f$]' %(i+1, variance_ratio[i], total_variance))
+            plt.colorbar(orientation="horizontal")
+            cmin = min(components[i].min(), -components[i].max())
+            plt.clim(cmin, -cmin)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+
+        for i in range(N_comp):
+            ax = plt.subplot(2, N_comp, i+1+N_comp)
+            plt.imshow(components_defocus[i], cmap='seismic', origin='lower')
+            ax.set_title(r'PCA #%d [$\sigma^2_r=%.2f/%.2f$]' %(i+1, variance_ratio_defocus[i], total_variance_defocus))
+            plt.colorbar(orientation="horizontal")
+            cmin = min(components_defocus[i].min(), -components_defocus[i].max())
+            plt.clim(cmin, -cmin)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+
+        ### PCA for each of the Intensity ranges in the training set
+        plt.figure()
+        for k in range(4):
+            if k != 3:
+                removed_features = datasets[0][k*1000:(k+1)*1000, :N_crop ** 2] - datasets[1][k*1000:(k+1)*1000, :N_crop ** 2]
+            if k == 3:
+                removed_features = datasets[0][3000:, :N_crop ** 2] - datasets[1][3000:, :N_crop ** 2]
+            pca = PCA(n_components=N_comp)
+            pca.fit(X=removed_features)
+            components = pca.components_.reshape((N_comp, N_crop, N_crop))
+            variance_ratio = pca.explained_variance_ratio_
+            total_variance = np.sum(variance_ratio)
+            for i in range(N_comp):
+                ax = plt.subplot(4, N_comp, k*N_comp + i + 1)
+                plt.imshow(components[i], cmap='seismic', origin='lower')
+                ax.set_title(r'PCA #%d [$\sigma^2_r=%.2f/%.2f$]' % (i + 1, variance_ratio[i], total_variance))
+                # plt.colorbar(orientation="horizontal")
+                cmin = min(components[i].min(), -components[i].max())
+                plt.clim(cmin, -cmin)
+                ax.get_xaxis().set_visible(False)
+                ax.get_yaxis().set_visible(False)
+                if i == 0:
+
+                    ax.get_yaxis().set_visible(True)
+                    ax.set_ylabel('Dataset %d' % k)
+
+        from scipy.special import erf
+        plt.figure()
+        N_hist = 10
+        colors = cm.coolwarm(np.linspace(0, 1, N_hist))
+        for i in range(N_hist):
+            tt = removed_features[i+100]
+            tt = tt[np.argwhere(tt != 0.0)]
+            # plot the cumulative histogram
+            n, bins, patches = plt.hist(tt, density=True, histtype='step',color=colors[i],
+                                       cumulative=True)
+
+            patches[0].set_xy(patches[0].get_xy()[:-1])
+        plt.axvline(0.0, color='black', linestyle='--')
+        x = np.linspace(-0.25, 0.25, 500)
+        mu, s = 0.0, 0.01
+        z = (x - mu)/s
+        fx = 0.5*(1 + erf(z/np.sqrt(2)))
+        # plt.plot(x, fx, color='black', linestyle='-.')
+
+        plt.ylim([0, 1])
+        plt.xlabel('Pixel Value []')
+
+
+
+        random_images = np.random.choice(1000, size=30, replace=False)
+        print(random_images)
+        plt.figure()
+        mins = []
+        for i, img_j in enumerate(random_images):
+            ax = plt.subplot(5, 6, i + 1)
+            im = removed_features[img_j].reshape((N_crop, N_crop))
+            pp = ax.imshow(im, cmap='seismic')
+            min_im = min(im.min(), -im.max())
+            mins.append(np.abs(min_im))
+            plt.colorbar(pp)
+            pp.set_clim(min_im, -min_im)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+        print(sum(mins))
+
+        plt.figure()
+        mins = []
+        for i, img_j in enumerate(random_images):
+            ax = plt.subplot(5, 6, i + 1)
+            im = removed_features[img_j+1000].reshape((N_crop, N_crop))
+            pp = ax.imshow(im, cmap='seismic')
+            min_im = min(im.min(), -im.max())
+            mins.append(np.abs(min_im))
+            plt.colorbar(pp)
+            pp.set_clim(min_im, -min_im)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+        print(sum(mins))
+
+        # plt.figure()
+        # for i, img_j in enumerate(random_images):
+        #     ax = plt.subplot(5, 6, i + 1)
+        #     im = removed_features[img_j].reshape((N_crop, N_crop))
+        #     im_fft = np.abs(fftshift(fft2(im)))**2
+        #     pp = ax.imshow(im_fft)
+        #     # plt.colorbar(pp)
+        #     ax.get_xaxis().set_visible(False)
+        #     ax.get_yaxis().set_visible(False)
+
+        plt.show()
+
+
+    dataset_high = [train_noisy, train_clean]
+    features_training(coefs=low_orders, datasets=dataset_high)
 
     # ================================================================================================================ #
     #                                                        ~~
@@ -591,7 +821,7 @@ if __name__ == "__main__":
     encoded_layer3, encoded_layer4 = AE_low.layers[2], AE_low.layers[3]
     encoder_low = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
     encoder_low.summary()
-    encoded_images_low = encoder_low.predict(train_noisy)
+    encoded_images_low = encoder_low.predict(train_noisy_low)
 
     ### Use the ENCODED data as training set
     low_coef_train, low_coef_test = ae_low_coef[:N_ext], ae_low_coef[N_ext:]
@@ -635,11 +865,12 @@ if __name__ == "__main__":
 
     plt.figure()
     colors_high = ['lightblue', 'crimson', 'black', 'lightgreen']
+    j_non_zeros = [1, 4, 9, 10, 11, 13]
     for i in range(N_high):
         a_i = high_orders[:, i]
         norm_i = norm(high_orders, axis=1)
         for j, j_nz in enumerate(j_non_zeros):
-            ax = plt.subplot(N_high, N_non_zeros, i*N_non_zeros + j + 1)
+            ax = plt.subplot(N_high, 6, i*6 + j + 1)
             i_sort = np.argsort(norm_i)
             # colors = cm.seismic(np.linspace(0, 1, N_ext))
             sc = ax.scatter(a_i[i_sort], enc_foc[:, j_nz][i_sort], s=1, color=colors_high[i])
@@ -657,7 +888,7 @@ if __name__ == "__main__":
     for i in range(N_low):
         a_i = low_orders[:, i]
         for j, j_nz in enumerate(j_non_zeros):
-            ax = plt.subplot(N_low, N_non_zeros, i*N_non_zeros + j + 1)
+            ax = plt.subplot(N_low, 6, i*6 + j + 1)
             plt.scatter(a_i, enc_foc[:, j_nz], s=1, color=colors_low[i])
             if i == 0:
                 ax.set_title('Pixel %d' %j_nz)
@@ -676,7 +907,7 @@ if __name__ == "__main__":
         pca.fit(X=enc_low_)
         components = pca.components_
         p_new = np.dot(enc_low_, components.T)
-        ax = plt.subplot(2, 5, i + 1)
+        ax = plt.subplot(2, 3, i + 1)
         # plt.scatter(p_new[:,0], p_new[:,1], s=2)
         plt.scatter(np.dot(low_orders, components[0,:N_low]), enc_foc[:, j:j+1], s=2)
         ax.set_title('Pixel %d' %j)
@@ -687,6 +918,9 @@ if __name__ == "__main__":
         if i == 0 or i==3:
             ax.set_ylabel('Pixel Value [ ]')
     plt.show()
+
+    dataset_low = [train_noisy_low, train_clean_low]
+    features_training(coefs=high_orders, datasets=dataset_low)
 
     # ================================================================================================================ #
     #                                            TEST THE PERFORMANCE
@@ -731,69 +965,764 @@ if __name__ == "__main__":
 
     remaining = coef_test - all_orders
     coef_path1 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/1ALL')
-    file_name = os.path.join(coef_path1, 'remaining_iter%d.txt' % (k + 1))
+    file_name = os.path.join(coef_path1, 'remaining_iter1.txt')
     np.savetxt(file_name, remaining, fmt='%.5f')
 
-    # Extra stuff
-    ###====
-    #
-    # from sklearn.decomposition import PCA
-    #
-    # N_comp = N_high
-    # pca = PCA(n_components=2)
-    # pca.fit(X=enc_foc)
-    # components = pca.components_.reshape((N_comp, 4, 4))
-    # variance_ratio = pca.explained_variance_ratio_
-    # total_variance = np.sum(variance_ratio)
-    #
-    # import itertools
-    # kk = [k for k in range(2000)]
-    # Jac = []
-    # pairs_k = []
-    # pairs_a = {0: [], 1: [], 2: [], 3: []}
-    # pairs_pix = {0: [], 1: [], 2: [], 3: []}
-    # d_pi_d_aj = {0: [], 1: [], 2: [], 3: []}
-    # for (k1, k2) in list(itertools.combinations(kk, 2)):
-    #     pix1, pix2 = enc_foc[k1], enc_foc[k2]
-    #     delta_pix = pix2 - pix1
-    #
-    #     for j in range(N_high):     # Loop over the Aberrations
-    #         h1 = high_orders[k1, j]
-    #         h2 = high_orders[k2, j]
-    #         dh = h2 - h1
-    #
-    #         if 1e-6 < np.abs(dh) < 1e-3:    # If dh small enough
-    #             pairs_k.append([k1, k2])
-    #             pairs_a[j].append(h1)
-    #             # print("\nDelta Aberr: ", j, dh)
-    #
-    #             delta_p = []
-    #             p_pix = []
-    #             for i in [1, 5, 6, 7, 8, 13, 15]:       # Loop over the pixels
-    #                 delta_p.append(delta_pix[i]/ dh)
-    #                 p_pix.append(pix1[i])
-    #             d_pi_d_aj[j].append(delta_p)
-    #             pairs_pix[j].append(p_pix)
-    #
-    # for j in range(N_high):
-    #     pix = np.array(pairs_pix[j])
-    #     der = np.array(d_pi_d_aj[j])
-    #     fig = plt.figure()
-    #     ax = fig.add_subplot(111, projection='3d')
-    #     ax.scatter(pairs_a[j], pix[:, 3], der[:, 3], s=2)
-    #     # plt.scatter(pix[:, 5], der[:, 5], s=2)
-    #     ax.set_zlim([-1000, 1000])
-    # plt.show()
-    #
-    # pairs_k = []
-    # pairs_a = {0: [], 1: [], 2: [], 3: []}
-    # pairs_pix = {0: [], 1: [], 2: [], 3: []}
-    # d_pi_d_aj = {0: [], 1: [], 2: [], 3: []}
-    # for (k1, k2) in list(itertools.combinations(kk, 2)):
-    #     pix1, pix2 = enc_foc[k1], enc_foc[k2]
-    #     delta_pix = pix2 - pix1
-    #
-    #     for i in [1, 5, 6, 7, 8, 13, 15]:  # Loop over the pixels
-    #         delta = delta_pix[i]
-    #
-    #         if np.abs(delta)
+    # # # #  --------------------------------------------------------------------------------------------------  # # # #
+
+    coef_test1 = np.loadtxt(os.path.join(coef_path1, 'remaining_iter1.txt'))
+    PSFs_test1 = load_files(coef_path1, N=N_test, file_list=list_slices)
+    PSFs_test1[0] /= PEAK
+    PSFs_test1[1] /= PEAK
+    _PSFs_test1, downPSFs_test1, downPSFs_test_flat1 = downsample_slicer_pixels(PSFs_test1[1])
+
+    ### LOW orders
+    encoded_test_low = encoder_low.predict(downPSFs_test_flat1)
+    low_orders1 = low_model.predict(X=encoded_test_low)
+
+    print("\nTrue Coefficients")
+    print(coef_test1[:5, :N_low])
+    print(low_orders1[:5])
+
+    l_rms1, low_orders_rms1 = evaluate_wavefront_performance(N_low, coef_test1[:, :N_low], low_orders1,
+                                                       zern_list=zern_list_low, show_predic=False)
+
+    ### HIGH orders
+    encoded_test_high = encoder_high.predict(downPSFs_test_flat1)
+    high_orders1 = high_model.predict(X=encoded_test_high)
+
+    print("\nTrue Coefficients")
+    print(coef_test1[:5, N_low:])
+    print(high_orders1[:5])
+    h_rms1, high_orders_rms1 = evaluate_wavefront_performance(N_high, coef_test1[:, N_low:], high_orders1,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    all_orders = np.concatenate((low_orders1, high_orders1), axis=1)
+    rr1, all_orders_rms1 = evaluate_wavefront_performance(N_high + N_low, coef_test1, all_orders,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    rms_encoder.append(all_orders_rms1)
+
+    remaining1 = coef_test1 - all_orders
+
+    coef_path2 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/2ALL')
+    file_name = os.path.join(coef_path2, 'remaining_iter2.txt')
+    np.savetxt(file_name, remaining1, fmt='%.5f')
+
+    # # # #  --------------------------------------------------------------------------------------------------  # # # #
+
+    coef_test2 = np.loadtxt(os.path.join(coef_path2, 'remaining_iter2.txt'))
+    PSFs_test2 = load_files(coef_path2, N=N_test, file_list=list_slices)
+    PSFs_test2[0] /= PEAK
+    PSFs_test2[1] /= PEAK
+    _PSFs_test2, downPSFs_test2, downPSFs_test_flat2 = downsample_slicer_pixels(PSFs_test2[1])
+
+    ### LOW orders
+    encoded_test_low = encoder_low.predict(downPSFs_test_flat2)
+    low_orders2 = low_model.predict(X=encoded_test_low)
+    l_rms2, low_orders_rms2 = evaluate_wavefront_performance(N_low, coef_test2[:, :N_low], low_orders2,
+                                                       zern_list=zern_list_low, show_predic=False)
+    ### HIGH orders
+    encoded_test_high = encoder_high.predict(downPSFs_test_flat2)
+    high_orders2 = high_model.predict(X=encoded_test_high)
+    h_rms2, high_orders_rms2 = evaluate_wavefront_performance(N_high, coef_test2[:, N_low:], high_orders2,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    all_orders = np.concatenate((low_orders2, high_orders2), axis=1)
+    rr2, all_orders_rms2 = evaluate_wavefront_performance(N_high + N_low, coef_test2, all_orders,
+                                                       zern_list=zern_list_high, show_predic=False)
+    rms_encoder.append(all_orders_rms2)
+
+    remaining2 = coef_test2 - all_orders
+    # coef_path1 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/1ALL')
+    # file_name = os.path.join(coef_path1, 'remaining_iter1.txt')
+    # np.savetxt(file_name, remaining, fmt='%.5f')
+
+    # ================================================================================================================ #
+    def hide_ticks(axes, visible=False):
+        plt.setp(axes.get_xticklabels(), visible=visible)
+        plt.setp(axes.get_yticklabels(), visible=visible)
+        if not visible:
+            axes.tick_params(axis=u'both', which=u'both', length=0)
+        elif visible:
+            axes.tick_params(axis=u'both', which=u'both', length=3)
+    def plot_cross():
+        plt.axvline(0.0, color='black', linestyle='--', alpha=0.5)
+        plt.axhline(0.0, color='black', linestyle='--', alpha=0.5)
+
+    ### Final Results - Analysis of aberrations
+    final_aberr = remaining2.copy().T
+    cov_matrix = np.cov(final_aberr)
+    N_t = N_low
+    lims = [1.5*np.round(max(-1.2*x.min(), 1.2*x.max()), 2) for x in final_aberr]
+    plt.figure()
+    for j in range(N_t):
+        c_j = final_aberr[j]
+        for i in np.arange(j+1, N_t):
+            c_i = final_aberr[i]
+            k = (i-1)*(N_t) + j + 1
+            print(i+1, j+1)
+            ax = plt.subplot(N_t-1, N_t, k)
+            x_label, y_label = zern_list_low[j] + r' [$\lambda$]', zern_list_low[i] + r' [$\lambda$]'
+            x_lim, y_lim = lims[j], lims[i]
+
+            corr = np.corrcoef(np.array([c_i, c_j]))[0, 1]
+
+            plt.scatter(c_j, c_i, s=3, label=r'$\rho_{ij}$=%.2f' %corr)
+
+            plot_cross()
+            ax.set_xlim([-0.075, 0.075])
+            ax.set_ylim([-0.075, 0.075])
+            hide_ticks(ax)
+            ax.legend()
+
+            if i == N_low-1:
+                ax.set_xlabel(x_label)
+                if j == 0:
+                    hide_ticks(ax, True)
+            if j == 0:
+                ax.set_ylabel(y_label)
+
+    ijk = [(1, 0, 2), (2, 0, 3), (3, 0, 4),
+           (2, 1, 8), (3, 1, 9),
+           (3, 2, 14)]
+    for (i, j, k) in ijk:
+
+        ax = plt.subplot(N_t - 1, N_t, k)
+        plt.scatter(final_aberr[i+N_low], final_aberr[j+N_low], s=3, color='crimson')
+        xlabel = zern_list_high[i] + r' [$\lambda$]'
+        ylabel = zern_list_high[j] + r' [$\lambda$]'
+        plot_cross()
+        hide_ticks(ax)
+        # ax.set_xlim([-0.025, 0.025])
+        # ax.set_ylim([-0.025, 0.025])
+        ax.set_xlim([-0.075, 0.075])
+        ax.set_ylim([-0.075, 0.075])
+        if j == 0:
+            ax.set_title(xlabel)
+            # if i == 3:
+            #     hide_ticks(ax, True)
+            #     ax.yaxis.tick_right()
+            #     ax.xaxis.tick_top()
+        if i == 3:
+            ax.yaxis.set_label_position("right")
+            ax.set_ylabel(ylabel, fontsize='large')
+            # ax.set_ylabel(ylabel,
+
+    plt.show()
+
+    N_t = N_high
+    for j in range(N_t):
+        c_j = final_aberr[j+N_low]
+        for i in np.arange(j+1, N_t):
+            c_i = final_aberr[i+N_low]
+            k = (i-1)*(N_t) + j + 1
+            print(i+1, j+1)
+            ax = plt.subplot(N_t-1, N_t, k)
+            x_label, y_label = zern_list_high[j] + r' [$\lambda$]', zern_list_high[i] + r' [$\lambda$]'
+            x_lim, y_lim = lims[j], lims[i]
+
+            plt.scatter(c_j, c_i, s=3, color='crimson')
+            plt.axvline(0.0, color='black', linestyle='--', alpha=0.5)
+            plt.axhline(0.0, color='black', linestyle='--', alpha=0.5)
+            ax.set_xlim([-0.025, 0.025])
+            ax.set_ylim([-0.025, 0.025])
+
+            plt.setp(ax.get_xticklabels(), visible=False)
+            plt.setp(ax.get_yticklabels(), visible=False)
+            ax.tick_params(axis=u'both', which=u'both', length=0)
+
+            if i == N_t-1:
+                ax.set_xlabel(x_label)
+                if j == 0:
+                    plt.setp(ax.get_xticklabels(), visible=True)
+                    plt.setp(ax.get_yticklabels(), visible=True)
+                    ax.tick_params(axis=u'both', which=u'both', length=3)
+            if j == 0:
+                ax.set_ylabel(y_label)
+    plt.show()
+
+    plt.figure(figsize=(6, 6))
+    for i in range(N_low):
+        c_i = final_aberr[i]
+        for j in range(N_high):
+            c_j = final_aberr[j + N_low]
+            k = i*N_high + j + 1
+            print(k)
+            ax = plt.subplot(N_low, N_high, k)
+            x_label, y_label = zern_list_low[i] + r' [$\lambda$]', zern_list_high[j] + r' [$\lambda$]'
+            plt.scatter(c_j, c_i, s=3)
+            plt.axvline(0.0, color='black', linestyle='--', alpha=0.5)
+            plt.axhline(0.0, color='black', linestyle='--', alpha=0.5)
+            # ax.set_xlim([-0.04, 0.04])
+            ax.set_xlim([-0.1, 0.1])
+            ax.set_ylim([-0.1, 0.1])
+            # ax.set_ylim([-0.05, 0.05])
+
+            plt.setp(ax.get_xticklabels(), visible=False)
+            plt.setp(ax.get_yticklabels(), visible=False)
+            ax.tick_params(axis=u'both', which=u'both', length=0)
+
+            if i == N_low -1:
+                ax.set_xlabel(y_label)
+                if j == 0:
+                    plt.setp(ax.get_xticklabels(), visible=True)
+                    plt.setp(ax.get_yticklabels(), visible=True)
+                    ax.tick_params(axis=u'both', which=u'both', length=3)
+            if j == 0:
+                ax.set_ylabel(x_label)
+    plt.show()
+
+    plt.figure()
+    for i in range(N_low):
+        ax = plt.subplot(1, N_low, i+1)
+        ax.hist(final_aberr[i], histtype='step')
+        xmin = min(final_aberr[i].min(), -final_aberr[i].max())
+        ax.set_xlim([1.1*xmin, -1.1*xmin])
+    plt.show()
+
+    initial_mean_abs = wave_nom * np.mean(np.abs(coef_test.T), axis=1)
+    final_mean_abs = wave_nom * np.mean(np.abs(final_aberr), axis=1)
+
+
+    # ================================================================================================================ #
+    #      COMPARISON WITH DECODED IMAGE TRAINING
+    # ================================================================================================================ #
+
+    rms_autoencoder = [_rms0]
+
+    ### HIGH ORDER MODEL
+    train_high_decoded = train_clean
+    train_high_coef = ae_high_coef[:N_ext]
+
+    test_high_decoded = AE_high.predict(downPSFs_test_flat)
+    test_high_coef = coef_test[:, N_low:]
+
+    high_model_encoded = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
+                             solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9,
+                             warm_start=True, alpha=1e-2, random_state=1234)
+
+    high_model_encoded.fit(X=train_high_decoded, y=train_high_coef)
+
+    high_guessed_encoded = high_model_encoded.predict(X=test_high_decoded)
+    print("\nHIGH model guesses:")
+    print(high_guessed_encoded[:5])
+    print("\nTrue Values")
+    print(test_high_coef[:5])
+
+    print('\n HIGH order Model:')
+    high_rms0_enc, high_rms_enc = evaluate_wavefront_performance(N_high, test_high_coef, high_guessed_encoded,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    ### LOW ORDER MODEL
+    train_low_decoded = train_clean_low
+    train_low_coef = ae_low_coef[:N_ext]
+
+    test_low_decoded = AE_low.predict(downPSFs_test_flat)
+    test_low_coef = coef_test[:, :N_low]
+
+    low_model_encoded = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
+                             solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9,
+                             warm_start=True, alpha=1e-2, random_state=1234)
+
+    low_model_encoded.fit(X=train_low_decoded, y=train_low_coef)
+
+    low_guessed_encoded = low_model_encoded.predict(X=test_low_decoded)
+    print("\nLOW model guesses:")
+    print(low_guessed_encoded[:5])
+    print("\nTrue Values")
+    print(test_low_coef[:5])
+
+    print('\n HIGH order Model:')
+    low_rms0_enc, low_rms_enc = evaluate_wavefront_performance(N_low, test_low_coef, low_guessed_encoded,
+                                                       zern_list=zern_list_low, show_predic=False)
+
+    ### Combined
+    both_encoded = np.concatenate((low_guessed_encoded, high_guessed_encoded), axis=1)
+    pp, both_encoded_rms = evaluate_wavefront_performance(N_high + N_low, coef_test, both_encoded,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    rms_autoencoder.append(both_encoded_rms)
+
+    remaining_encoded = coef_test - both_encoded
+
+    coef_path_enc1 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/1ALL_ENCODED')
+    file_name = os.path.join(coef_path_enc1, 'remaining_iter1.txt')
+    np.savetxt(file_name, remaining_encoded, fmt='%.5f')
+
+    # # # #
+
+    coef_test_enc1 = np.loadtxt(os.path.join(coef_path_enc1, 'remaining_iter1.txt'))
+    PSFs_test_enc1 = load_files(coef_path_enc1, N=N_test, file_list=list_slices)
+    PSFs_test_enc1[0] /= PEAK
+    PSFs_test_enc1[1] /= PEAK
+    _PSFs_test_enc1, downPSFs_test_enc1, downPSFs_test_enc_flat1 = downsample_slicer_pixels(PSFs_test_enc1[1])
+
+    low_guessed_encoded = low_model_encoded.predict(X=AE_low.predict(downPSFs_test_enc_flat1))
+    high_guessed_encoded = high_model_encoded.predict(X=AE_high.predict(downPSFs_test_enc_flat1))
+    both_encoded = np.concatenate((low_guessed_encoded, high_guessed_encoded), axis=1)
+    pp1, both_encoded_rms1 = evaluate_wavefront_performance(N_high + N_low, coef_test_enc1, both_encoded,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    rms_autoencoder.append(both_encoded_rms1)
+    remaining_encoded1 = remaining_encoded - both_encoded
+
+    coef_path_enc2 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/2ALL_ENCODED')
+    file_name = os.path.join(coef_path_enc2, 'remaining_iter2.txt')
+    np.savetxt(file_name, remaining_encoded1, fmt='%.5f')
+
+    # # # #
+
+    coef_test_enc2 = np.loadtxt(os.path.join(coef_path_enc2, 'remaining_iter2.txt'))
+    PSFs_test_enc2 = load_files(coef_path_enc2, N=N_test, file_list=list_slices)
+    PSFs_test_enc2[0] /= PEAK
+    PSFs_test_enc2[1] /= PEAK
+    _PSFs_test_enc2, downPSFs_test_enc2, downPSFs_test_enc_flat2 = downsample_slicer_pixels(PSFs_test_enc2[1])
+
+    low_guessed_encoded = low_model_encoded.predict(X=AE_low.predict(downPSFs_test_enc_flat2))
+    high_guessed_encoded = high_model_encoded.predict(X=AE_high.predict(downPSFs_test_enc_flat2))
+    both_encoded = np.concatenate((low_guessed_encoded, high_guessed_encoded), axis=1)
+    pp2, both_encoded_rms2 = evaluate_wavefront_performance(N_high + N_low, coef_test_enc2, both_encoded,
+                                                       zern_list=zern_list_high, show_predic=False)
+    rms_autoencoder.append(both_encoded_rms2)
+
+
+    # ================================================================================================================ #
+
+    ### Plot results
+    n = len(rms_encoder)
+    rms_encoder_arr = wave_nom * np.array(rms_encoder)
+    rms_autoencoder_arr = wave_nom * np.array(rms_autoencoder)
+    colors = cm.coolwarm(np.linspace(0, 1, N_test))
+
+    plt.figure()
+    plt.subplot(1, 2, 1)
+    i = 0
+    plt.scatter(i * np.ones(N_test) + 0.025, np.sort(rms_autoencoder_arr[i]), color='coral', s=4, label=r'Reconstructed $x$')
+    plt.scatter(i * np.ones(N_test) - 0.025, np.sort(rms_encoder_arr[i]), color='blue', s=4, label=r'Encoded $h$')
+    for i in np.arange(1, n):
+        plt.scatter(i * np.ones(N_test) + 0.025, np.sort(rms_autoencoder_arr[i]), color='coral', s=4)
+        plt.scatter(i*np.ones(N_test) - 0.025, np.sort(rms_encoder_arr[i]), color='blue', s=4)
+
+    plt.legend(title='Architecture')
+    plt.ylim([0, 350])
+    plt.ylabel('RMS [nm]')
+    plt.xlabel('Iteration')
+
+    med_aut = np.median(rms_autoencoder_arr[-1])
+    med_enc = np.median(rms_encoder_arr[-1])
+    plt.subplot(1, 2, 2)
+    plt.hist(rms_autoencoder_arr[-1], histtype='step', color='coral', label=r'Reconstructed $x$')
+    plt.axvline(x=med_aut, linestyle='--', color='coral', label='Median: %.1f nm' %med_aut)
+    plt.hist(rms_encoder_arr[-1], histtype='step', color='blue', label=r'Encoded $h$')
+    plt.axvline(x=med_enc, linestyle='--', color='blue', label='Median: %.1f nm' %med_enc)
+    # plt.legend()
+    plt.xlabel('Final RMS [nm]')
+    handles, labels = plt.gca().get_legend_handles_labels()
+    order = [2, 0, 3, 1]
+    plt.legend([handles[idx] for idx in order], [labels[idx] for idx in order], title='Architecture')
+    plt.show()
+
+    rel_enc = [(before - after) / before for (before, after) in zip(rms_encoder_arr[0], rms_encoder_arr[-1])]
+    rel_enc = np.mean(rel_enc)
+
+    rel_autoenc = [(before - after) / before for (before, after) in zip(rms_autoencoder_arr[0], rms_autoencoder_arr[-1])]
+    rel_autoenc = np.mean(rel_autoenc)
+
+    # ================================================================================================================ #
+    #                                                        ~~
+    #                                          ~~ CONTRACTIVE AUTOENCODERS ~~                                          #
+    #                                                        ~~
+    # ================================================================================================================ #
+
+    train_noisy, train_clean = downPSFs_AE_flat[:N_ext], downPSFs_AE_high_flat[:N_ext]
+    test_noisy, test_clean = downPSFs_AE_flat[N_ext:], downPSFs_AE_high_flat[N_ext:]
+
+    lam = 1e-5
+
+    CAE_high = Sequential()
+    CAE_high.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
+    CAE_high.add(Dense(4 * encoding_dim, activation='relu'))
+    CAE_high.add(Dense(2 * encoding_dim, activation='relu'))
+    CAE_high.add(Dense(encoding_dim, activation='relu', name='encoded'))
+    CAE_high.add(Dense(2 * encoding_dim, activation='relu'))
+    CAE_high.add(Dense(4 * encoding_dim, activation='relu'))
+    CAE_high.add(Dense(input_dim, activation='sigmoid'))
+    CAE_high.summary()
+
+    def contractive_loss(y_pred, y_true):
+        mse = K.mean(K.square(y_true - y_pred), axis=1)
+
+        W = K.variable(value=CAE_high.get_layer('encoded').get_weights()[0])  # N x N_hidden
+        W = K.transpose(W)  # N_hidden x N
+        h = CAE_high.get_layer('encoded').output
+        dh = h * (1 - h)  # N_batch x N_hidden
+
+        # N_batch x N_hidden * N_hidden x 1 = N_batch x 1
+        contractive = lam * K.sum(dh ** 2 * K.sum(W ** 2, axis=1), axis=1)
+
+        return mse + contractive
+
+    CAE_high.compile(optimizer='adam', loss=contractive_loss)
+
+    ### Run the TRAINING
+    CAE_high.fit(train_noisy, train_clean,
+           epochs=2000, batch_size=batch, shuffle=True, verbose=2,
+           validation_data=(test_noisy, test_clean))
+
+    decoded = CAE_high.predict(test_noisy)
+
+    # Make sure the training has succeeded by checking the residuals
+    residuals = np.mean(norm(np.abs(decoded - test_clean), axis=-1))
+    total = np.mean(norm(np.abs(test_clean), axis=-1))
+    print(residuals / total * 100)
+
+    input_img = Input(shape=(input_dim,))
+    encoded_layer1, encoded_layer2 = CAE_high.layers[0], CAE_high.layers[1]
+    encoded_layer3, encoded_layer4 = CAE_high.layers[2], CAE_high.layers[3]
+    Cencoder_high = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
+    Cencoder_high.summary()
+    encoded_images = Cencoder_high.predict(train_noisy)
+
+    ### Use the ENCODED data as training set
+    high_coef_train, high_coef_test = ae_high_coef[:N_ext], ae_high_coef[N_ext:]
+    high_psf_train, high_psf_test = encoded_images.copy(),  Cencoder_high.predict(test_noisy)
+
+    ### MLP Regressor for HIGH orders (TRAINED ON ENCODED)
+    Chigh_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu', solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9, warm_start=True, alpha=1e-2, random_state=1234)
+
+    Chigh_model.fit(X=high_psf_train, y=high_coef_train)
+
+    high_guessed = Chigh_model.predict(X=high_psf_test)
+    print("\nHIGH model guesses: \n", high_guessed[:5])
+    print("\nTrue Values: \n", high_coef_test[:5])
+    high_rms0, high_rms = evaluate_wavefront_performance(N_high, high_coef_test, high_guessed,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    # ================================================================================================================ #
+    #                                       ANALYSIS OF THE ENCODER FEATURES                                           #
+    # ================================================================================================================ #
+    N_enc = 16
+    enc_foc, enc_defoc = encoded_images[:, :N_enc], encoded_images[:, N_enc:]
+
+    f, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
+    ax1 = plt.subplot(1, 2, 1)
+    im1 = ax1.imshow(enc_foc[:25], cmap='hot')
+    ax1.set_title('Nominal PSF')
+    ax1.set_ylabel('Sample')
+    ax1.set_xlabel('Pixel Feature')
+    plt.colorbar(im1, ax=ax1)
+    ax2 = plt.subplot(1, 2, 2)
+    im2 = ax2.imshow(enc_defoc[:25], cmap='hot')
+    ax2.set_title('Defocused PSF')
+    ax2.set_xlabel('Pixel Feature')
+    plt.colorbar(im2)
+    plt.show()
+
+    # ================================================================================================================ #
+    # FOCUSED
+
+    low_orders, high_orders = ae_low_coef[:N_ext], ae_high_coef[:N_ext]
+    j_non_zeros = [-1 if all(enc_foc[:,i]<=0.4) else i for i in range(N_enc)]
+    j_non_zeros = [x for x in j_non_zeros if x!= -1]
+    j_non_zeros = [1, 2, 4, 7, 8, 13]
+
+    N_non_zeros = len(j_non_zeros)
+
+    plt.figure()
+    colors_high = ['lightblue', 'crimson', 'black', 'lightgreen']
+    for i in range(N_high):
+        a_i = high_orders[:, i]
+        norm_i = norm(high_orders, axis=1)
+        for j, j_nz in enumerate(j_non_zeros):
+            ax = plt.subplot(N_high, N_non_zeros, i*N_non_zeros + j + 1)
+            i_sort = np.argsort(norm_i)
+            sc = ax.scatter(a_i[i_sort], enc_foc[:, j_nz][i_sort], s=1, color=colors_high[i])
+            if i == 0:
+                ax.set_title('Pixel %d' %j_nz)
+            if i != N_high - 1:
+                ax.get_xaxis().set_visible(False)
+            if i == N_high - 1:
+                ax.set_xlabel(r'Aberration [$\lambda$]')
+            if j == 0:
+                ax.set_ylabel('Pixel Value [ ]')
+    plt.show()
+
+    colors_low = ['lightblue', 'crimson', 'black', 'lightgreen', 'orange']
+    for i in range(N_low):
+        a_i = low_orders[:, i]
+        for j, j_nz in enumerate(j_non_zeros):
+            ax = plt.subplot(N_low, N_non_zeros, i*N_non_zeros + j + 1)
+            plt.scatter(a_i, enc_foc[:, j_nz], s=1, color=colors_low[i])
+            if i == 0:
+                ax.set_title('Pixel %d' %j_nz)
+            if i != N_low - 1:
+                ax.get_xaxis().set_visible(False)
+            if i == N_low - 1:
+                ax.set_xlabel(r'Aberration [$\lambda$]')
+            if j == 0:
+                ax.set_ylabel('Pixel Value [ ]')
+    plt.show()
+
+    N_comp = N_high
+    pca = PCA(n_components=2)
+    plt.figure()
+    for i, j in enumerate(j_non_zeros):
+        enc_high_ = np.concatenate((high_orders, enc_foc[:, j:j+1]), axis=1)
+        pca.fit(X=enc_high_)
+        components = pca.components_
+        p_new = np.dot(enc_high_, components.T)
+        ax = plt.subplot(2, 3, i + 1)
+        # plt.scatter(p_new[:,0], p_new[:,1], s=2)
+        plt.scatter(np.dot(high_orders, components[0,:N_high]), enc_foc[:, j:j+1], s=2)
+        ax.set_title('Pixel %d' %j)
+        ax.set_xlabel(r'PCA Aberration [$\lambda$]')
+        if i == 0 or i==3:
+            ax.set_ylabel('Pixel Value [ ]')
+    plt.show()
+
+    # ================================================================================================================ #
+    #                                                        ~~
+    #                                          ~~ CONTRACTIVE AUTOENCODERS ~~                                          #
+    #                                                        ~~
+    # ================================================================================================================ #
+
+    ### Separate PSFs into TRAINING and TESTING datasets
+    train_noisy_low, test_noisy_low = downPSFs_AE_flat[:N_ext], downPSFs_AE_flat[N_ext:]
+    train_clean_low, test_clean_low = downPSFs_AE_low_flat[:N_ext], downPSFs_AE_low_flat[N_ext:]
+
+    CAE_low = Sequential()
+    CAE_low.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
+    CAE_low.add(Dense(4 * encoding_dim, activation='relu', name='h2'))
+    CAE_low.add(Dense(2 * encoding_dim, activation='relu', name='h1'))
+    CAE_low.add(Dense(encoding_dim, activation='relu', name='h'))
+    CAE_low.add(Dense(2 * encoding_dim, activation='relu'))
+    CAE_low.add(Dense(4 * encoding_dim, activation='relu'))
+    CAE_low.add(Dense(input_dim, activation='sigmoid'))
+    CAE_low.summary()
+
+    def contractive_loss(y_pred, y_true):
+        mse = K.mean(K.square(y_true - y_pred), axis=1)
+
+        W = K.variable(value=CAE_low.get_layer('h').get_weights()[0])  # N x N_hidden
+        W = K.transpose(W)  # N_hidden x N
+        h = CAE_low.get_layer('h').output
+        dh = h * (1 - h)  # N_batch x N_hidden
+        # dh = K.one(h)
+
+        W1 = K.variable(value=CAE_low.get_layer('h1').get_weights()[0])  # N x N_hidden
+        W1 = K.transpose(W1)  # N_hidden x N
+        h1 = CAE_low.get_layer('h1').output
+        # dh1 = K.hard_sigmoid(h1)
+        dh1 = h1 * (1 - h1)
+        # print("h:", h.shape)
+        # print("W:", W.shape)
+        #
+        # print("h1:", h1.shape)
+        # print("W1:", W1.shape)
+        #
+        # WW1 = (K.dot(W, W1))*2
+        # print("W.W1:", WW1.shape)
+
+
+        d = K.expand_dims(dh) * W
+        d1 = K.expand_dims(dh1) * W1
+        dh_total = K.dot(d, d1)
+
+        # N_batch x N_hidden * N_hidden x 1 = N_batch x 1
+        # contractive = lam * K.sum((dh)** 2 * K.sum(np.dot(W, W1)** 2, axis=1), axis=1)
+        contractive = lam * K.sum((dh_total)** 2)
+
+        return mse + contractive
+
+    CAE_low.compile(optimizer='adam', loss=contractive_loss)
+
+    ### Run the TRAINING
+    CAE_low.fit(train_noisy_low, train_clean_low,
+           epochs=20, batch_size=batch, shuffle=True, verbose=2,
+           validation_data=(test_noisy_low, test_clean_low))
+
+    decoded = CAE_low.predict(test_noisy_low)
+
+    # Make sure the training has succeeded by checking the residuals
+    residuals = np.mean(norm(np.abs(decoded - test_clean_low), axis=-1))
+    total = np.mean(norm(np.abs(test_clean_low), axis=-1))
+    print(residuals / total * 100)
+
+    input_img = Input(shape=(input_dim,))
+    encoded_layer1, encoded_layer2 = CAE_low.layers[0], CAE_low.layers[1]
+    encoded_layer3, encoded_layer4 = CAE_low.layers[2], CAE_low.layers[3]
+    Cencoder_low = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
+    Cencoder_low.summary()
+    encoded_images = Cencoder_low.predict(train_noisy_low)
+
+    ### Use the ENCODED data as training set
+    low_coef_train, low_coef_test = ae_low_coef[:N_ext], ae_low_coef[N_ext:]
+    low_psf_train, low_psf_test = encoded_images.copy(),  Cencoder_low.predict(test_noisy_low)
+
+    ### MLP Regressor for low orders (TRAINED ON ENCODED)
+    Clow_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu', solver='adam', max_iter=N_iter, verbose=True,
+                             batch_size='auto', shuffle=True, tol=1e-9, warm_start=True, alpha=1e-2, random_state=1234)
+
+    Clow_model.fit(X=low_psf_train, y=low_coef_train)
+
+    low_guessed = Clow_model.predict(X=low_psf_test)
+    print("\nlow model guesses: \n", low_guessed[:5])
+    print("\nTrue Values: \n", low_coef_test[:5])
+    low_rms0, low_rms = evaluate_wavefront_performance(N_low, low_coef_test, low_guessed,
+                                                       zern_list=zern_list_low, show_predic=False)
+
+    # ================================================================================================================ #
+
+    N_test = 250
+    path_test = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/0')
+    coef_test = np.loadtxt(os.path.join(path_test, 'coef_test.txt'))
+    PSFs_test = load_files(path_test, N=N_test, file_list=list_slices)
+    PSFs_test[0] /= PEAK
+    PSFs_test[1] /= PEAK
+    _PSFs_test, downPSFs_test, downPSFs_test_flat = downsample_slicer_pixels(PSFs_test[1])
+
+    rms_Cencoder = []
+    # Initial RMS
+    _r, _rms0 = evaluate_wavefront_performance(N_low + N_high, coef_test, np.zeros_like(coef_test),
+                                                       zern_list=zern_list_low, show_predic=False)
+    rms_Cencoder.append(_rms0)
+
+    ### LOW orders
+    encoded_test_low = Cencoder_low.predict(downPSFs_test_flat)
+    low_orders = Clow_model.predict(X=encoded_test_low)
+    print("\nTrue Coefficients")
+    print(coef_test[:5, :N_low])
+    print(low_orders[:5])
+    l_rms0, low_orders_rms = evaluate_wavefront_performance(N_low, coef_test[:, :N_low], low_orders,
+                                                       zern_list=zern_list_low, show_predic=False)
+
+    ### HIGH orders
+    encoded_test_high = Cencoder_high.predict(downPSFs_test_flat)
+    high_orders = Chigh_model.predict(X=encoded_test_high)
+    print("\nTrue Coefficients")
+    print(coef_test[:5, N_low:])
+    print(high_orders[:5])
+    h_rms0, high_orders_rms = evaluate_wavefront_performance(N_high, coef_test[:, N_low:], high_orders,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    all_orders = np.concatenate((low_orders, high_orders), axis=1)
+    rr, all_orders_rms = evaluate_wavefront_performance(N_high + N_low, coef_test, all_orders,
+                                                       zern_list=zern_list_high, show_predic=False)
+
+    rms_Cencoder.append(all_orders_rms)
+
+    remainingC = coef_test - all_orders
+    coef_path1 = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/TEST/1ALL_CAE')
+    file_name = os.path.join(coef_path1, 'remaining_iter1.txt')
+    np.savetxt(file_name, remainingC, fmt='%.5f')
+
+    # ================================================================================================================ #
+
+    ### Plot results
+    n = len(rms_Cencoder)
+    rms_Cencoder_arr = wave_nom * np.array(rms_Cencoder)
+    rms_autoencoder_arr = wave_nom * np.array(rms_autoencoder)
+    colors = cm.coolwarm(np.linspace(0, 1, N_test))
+
+    plt.figure()
+    plt.subplot(1, 2, 1)
+    i = 0
+    plt.scatter(i * np.ones(N_test) + 0.025, np.sort(rms_autoencoder_arr[i]), color='coral', s=4, label=r'Reconstructed $x$')
+    plt.scatter(i * np.ones(N_test) - 0.025, np.sort(rms_Cencoder_arr[i]), color='blue', s=4, label=r'Encoded $h$')
+    for i in np.arange(1, n):
+        plt.scatter(i * np.ones(N_test) + 0.025, np.sort(rms_autoencoder_arr[i]), color='coral', s=4)
+        plt.scatter(i*np.ones(N_test) - 0.025, np.sort(rms_Cencoder_arr[i]), color='blue', s=4)
+
+    plt.legend(title='Architecture')
+    plt.ylim([0, 350])
+    plt.ylabel('RMS [nm]')
+    plt.xlabel('Iteration')
+
+    # ================================================================================================================ #
+    #                                       ANALYSIS OF THE ENCODER FEATURES                                           #
+    # ================================================================================================================ #
+    N_enc = 16
+    enc_foc, enc_defoc = encoded_images[:, :N_enc], encoded_images[:, N_enc:]
+
+    f, (ax1, ax2) = plt.subplots(1, 2, sharey=True)
+    ax1 = plt.subplot(1, 2, 1)
+    im1 = ax1.imshow(enc_foc[:25], cmap='hot')
+    ax1.set_title('Nominal PSF')
+    ax1.set_ylabel('Sample')
+    ax1.set_xlabel('Pixel Feature')
+    plt.colorbar(im1, ax=ax1)
+    ax2 = plt.subplot(1, 2, 2)
+    im2 = ax2.imshow(enc_defoc[:25], cmap='hot')
+    ax2.set_title('Defocused PSF')
+    ax2.set_xlabel('Pixel Feature')
+    plt.colorbar(im2)
+    plt.show()
+
+    # ================================================================================================================ #
+    # FOCUSED
+
+    low_orders, high_orders = ae_low_coef[:N_ext], ae_high_coef[:N_ext]
+    j_non_zeros = [-1 if all(enc_defoc[:,i]<=0.25) else i for i in range(N_enc)]
+    j_non_zeros = [x for x in j_non_zeros if x!= -1]
+    j_non_zeros.remove(7)
+
+    # j_non_zeros = [1, 2, 6, 8, 11, 13]
+    N_non_zeros = len(j_non_zeros)
+
+    plt.figure()
+    colors_high = ['lightblue', 'crimson', 'black', 'lightgreen']
+    for i in range(N_high):
+        a_i = high_orders[:, i]
+        norm_i = norm(high_orders, axis=1)
+        for j, j_nz in enumerate(j_non_zeros):
+            ax = plt.subplot(N_high, N_non_zeros, i*N_non_zeros + j + 1)
+            i_sort = np.argsort(norm_i)
+            sc = ax.scatter(a_i[i_sort], enc_defoc[:, j_nz][i_sort], s=1, color=colors_high[i])
+            if i == 0:
+                ax.set_title('Pixel %d' %j_nz)
+            if i != N_high - 1:
+                ax.get_xaxis().set_visible(False)
+            if i == N_high - 1:
+                ax.set_xlabel(r'Aberration [$\lambda$]')
+            if j == 0:
+                ax.set_ylabel('Pixel Value [ ]')
+    plt.show()
+
+    colors_low = ['lightblue', 'crimson', 'black', 'lightgreen', 'orange']
+    for i in range(N_low):
+        a_i = low_orders[:, i]
+        for j, j_nz in enumerate(j_non_zeros):
+            ax = plt.subplot(N_low, N_non_zeros, i*N_non_zeros + j + 1)
+            plt.scatter(a_i, enc_defoc[:, j_nz], s=1, color=colors_low[i])
+            if i == 0:
+                ax.set_title('Pixel %d' %j_nz)
+            if i != N_low - 1:
+                ax.get_xaxis().set_visible(False)
+            if i == N_low - 1:
+                ax.set_xlabel(r'Aberration [$\lambda$]')
+            if j == 0:
+                ax.set_ylabel('Pixel Value [ ]')
+    plt.show()
+
+    pca = PCA(n_components=2)
+    plt.figure()
+    for i, j in enumerate(j_non_zeros):
+        enc_low_ = np.concatenate((low_orders, enc_defoc[:, j:j+1]), axis=1)
+        pca.fit(X=enc_low_)
+        components = pca.components_
+        p_new = np.dot(enc_low_, components.T)
+        ax = plt.subplot(2, N_non_zeros//2+1, i + 1)
+        # plt.scatter(p_new[:,0], p_new[:,1], s=2)
+        plt.scatter(np.dot(low_orders, components[0,:N_low]), enc_defoc[:, j:j+1], s=2)
+        ax.set_title('Pixel %d' %j)
+        if i < 3:
+            ax.get_xaxis().set_visible(False)
+        if i >= 3:
+            ax.set_xlabel(r'PCA Aberration [$\lambda$]')
+        if i == 0 or i==3:
+            ax.set_ylabel('Pixel Value [ ]')
+    plt.show()
