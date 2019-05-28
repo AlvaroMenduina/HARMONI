@@ -1067,14 +1067,13 @@ if __name__ == "__main__":
             x_lim, y_lim = lims[j], lims[i]
 
             corr = np.corrcoef(np.array([c_i, c_j]))[0, 1]
-
-            plt.scatter(c_j, c_i, s=3, label=r'$\rho_{ij}$=%.2f' %corr)
+            plt.scatter(c_j, c_i, s=3, label=r'$\rho$=%.2f' %corr)
 
             plot_cross()
             ax.set_xlim([-0.075, 0.075])
             ax.set_ylim([-0.075, 0.075])
             hide_ticks(ax)
-            ax.legend()
+            # ax.legend()
 
             if i == N_low-1:
                 ax.set_xlabel(x_label)
@@ -1089,11 +1088,14 @@ if __name__ == "__main__":
     for (i, j, k) in ijk:
 
         ax = plt.subplot(N_t - 1, N_t, k)
-        plt.scatter(final_aberr[i+N_low], final_aberr[j+N_low], s=3, color='crimson')
+        c_i, c_j = final_aberr[i+N_low], final_aberr[j+N_low]
+        corr = np.corrcoef(np.array([c_i, c_j]))[0, 1]
+        plt.scatter(c_i, c_j, s=3, color='crimson', label=r'$\rho$=%.2f' %corr)
         xlabel = zern_list_high[i] + r' [$\lambda$]'
         ylabel = zern_list_high[j] + r' [$\lambda$]'
         plot_cross()
         hide_ticks(ax)
+        # ax.legend()
         # ax.set_xlim([-0.025, 0.025])
         # ax.set_ylim([-0.025, 0.025])
         ax.set_xlim([-0.075, 0.075])
@@ -1179,10 +1181,69 @@ if __name__ == "__main__":
         ax.hist(final_aberr[i], histtype='step')
         xmin = min(final_aberr[i].min(), -final_aberr[i].max())
         ax.set_xlim([1.1*xmin, -1.1*xmin])
+        plt.axvline(0.0, color='black', linestyle='--', alpha=0.5)
     plt.show()
 
     initial_mean_abs = wave_nom * np.mean(np.abs(coef_test.T), axis=1)
     final_mean_abs = wave_nom * np.mean(np.abs(final_aberr), axis=1)
+
+    initial_mean = wave_nom * np.mean(coef_test.T, axis=1)
+    final_mean = wave_nom * np.mean(final_aberr, axis=1)
+    final_median = wave_nom * np.median(final_aberr, axis=1)
+    final_std = wave_nom * np.std(final_aberr, axis=1)
+
+    def shuffle_data(array):
+        N_samples = array.shape[0]
+        i = [j for j in range(N_samples)]
+        np.random.shuffle(i)
+        shuffled = array.copy()
+        shuffled = shuffled[i]
+        return shuffled
+
+    AE_MI = Sequential()
+    AE_MI.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
+    AE_MI.add(Dense(4 * encoding_dim, activation='relu'))
+    AE_MI.add(Dense(2 * encoding_dim, activation='relu'))
+    AE_MI.add(Dense(encoding_dim, activation='relu'))
+    AE_MI.add(Dense(2 * encoding_dim, activation='relu'))
+    AE_MI.add(Dense(4 * encoding_dim, activation='relu'))
+    AE_MI.add(Dense(input_dim, activation='sigmoid'))
+    AE_MI.summary()
+    AE_MI.compile(optimizer='adam', loss='mean_squared_error')
+
+    ### Run the TRAINING
+    AE_MI.fit(train_noisy, train_clean,
+           epochs=2, batch_size=batch, shuffle=True, verbose=2,
+           validation_data=(test_noisy, test_clean))
+
+    input_img = Input(shape=(input_dim,))
+    encoded_layer1, encoded_layer2 = AE_MI.layers[0], AE_MI.layers[1]
+    encoded_layer3, encoded_layer4 = AE_MI.layers[2], AE_MI.layers[3]
+    encoder_MI = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
+    encoder_MI.summary()
+
+
+    x = encoder_MI.predict(train_noisy)[:,:16]
+    y = train_noisy[:, :N_crop**2]
+
+
+    mi = mutual_information((x, y), k=10)
+
+    x0 = encoder_high.predict(train_clean)[:, :16]
+    k_n = 5
+    mi0 = entropy(x, k_n) - entropy(np.hstack((x, y)), k_n)
+    print(mi0)
+
+    epoch = [10, 20, 50]
+    for epp in epoch:
+        AE_MI.fit(train_noisy, train_clean,
+                  epochs=epp, batch_size=batch, shuffle=True, verbose=0,
+                  validation_data=(test_noisy, test_clean))
+        x = encoder_MI.predict(train_clean)[:, :16]
+
+        mi = entropy(x, k_n) - entropy(np.hstack((x, y)), k_n)
+        print(mi)
+
 
 
     # ================================================================================================================ #
