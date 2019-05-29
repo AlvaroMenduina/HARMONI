@@ -312,11 +312,96 @@ def downsample_slicer_pixels(square_PSFs):
 
     return square_PSFs, downsampled_PSFs, flat_PSFs
 
+class Autoencoder(object):
+
+    input_dim = 2*N_crop**2
+    encoding_dim = 32
+
+    def __init__(self, noisy_dataset):
+
+        self.features = noisy_dataset
+
+    def load_clean_dataset(self, path_targets, N_PSF):
+
+        features = load_files(path_targets, N=N_PSF, file_list=list_slices)
+        features[0] /= PEAK
+        features[1] /= PEAK
+        _feat, down_feat, down_feat_flat = downsample_slicer_pixels(features[1])
+        self.targets = down_feat_flat
+
+    def train_autoencoder(self, N_train, epochs=2000):
+
+        self.N_train = N_train
+        train_noisy, train_clean = self.features[:N_train], self.targets[:N_train]
+        test_noisy, test_clean = self.features[N_train:], self.targets[N_train:]
+
+        AE = Sequential()
+        AE.add(Dense(16 * encoding_dim, input_shape=(input_dim,), activation='relu'))
+        AE.add(Dense(4 * encoding_dim, activation='relu'))
+        AE.add(Dense(2 * encoding_dim, activation='relu'))
+        AE.add(Dense(encoding_dim, activation='relu'))
+        AE.add(Dense(2 * encoding_dim, activation='relu'))
+        AE.add(Dense(4 * encoding_dim, activation='relu'))
+        AE.add(Dense(input_dim, activation='sigmoid'))
+        AE.summary()
+        AE.compile(optimizer='adam', loss='mean_squared_error')
+
+        AE.fit(train_noisy, train_clean,
+                    epochs=epochs, batch_size=batch, shuffle=True, verbose=2,
+                    validation_data=(test_noisy, test_clean))
+
+        decoded = AE.predict(test_noisy)
+
+        # Make sure the training has succeeded by checking the residuals
+        residuals = np.mean(norm(np.abs(decoded - test_clean), axis=-1))
+        total = np.mean(norm(np.abs(test_clean), axis=-1))
+        print(residuals / total * 100)
+
+        self.autoencoder_model = AE
+
+        ### Define the ENCODER to access the CODE
+        input_img = Input(shape=(self.input_dim,))
+        encoded_layer1 = AE.layers[0]
+        encoded_layer2 = AE.layers[1]
+        encoded_layer3 = AE.layers[2]
+        encoded_layer4 = AE.layers[3]
+        encoder = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
+        encoder.summary()
+
+        self.encoder_model = encoder
+
+        self.train = [train_noisy, train_clean]
+        self.test = [test_noisy, test_clean]
+
+    def train_calibration_model(self, coef, N_iter=5000):
+
+        coef_train, coef_test = coef[:self.N_train], coef[self.N_train:]
+        psf_train, psf_test = self.encoder_model.predict(self.train[0]), self.encoder_model.predict(self.test[0])
+
+        ### MLP Regressor for HIGH orders (TRAINED ON ENCODED)
+
+        N_layer = (200, 100, 50)
+        calibration_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu',
+                                  solver='adam', max_iter=N_iter, verbose=True,
+                                  batch_size='auto', shuffle=True, tol=1e-9,
+                                  warm_start=False, alpha=1e-2, random_state=1234)
+
+        calibration_model.fit(X=psf_train, y=coef_train)
+
+        guessed = calibration_model.predict(X=psf_test)
+        print("\nCalibration model guesses:")
+        print(guessed[:5])
+        print("\nTrue Values")
+        print(coef_test[:5])
+
+        self.calibration_model = calibration_model
+
 
 if __name__ == "__main__":
 
-    N_low, N_med, N_high = 5, 4, 4
+    N_low, N_med, N_high = 5, 4, 2
     N_auto = 4000
+    N_ext = N_auto - 100
 
     path_2nets = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG')
     path_3nets = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/3_NETS')
@@ -331,72 +416,32 @@ if __name__ == "__main__":
     PSFs_AE[1] /= PEAK
     _PSFs_AE, downPSFs_AE, downPSFs_AE_flat = downsample_slicer_pixels(PSFs_AE[1])
 
-    """ (2) Load PSF data for HIGH order """
-    PSFs_AE_high = load_files(os.path.join(path_3nets, 'TRAINING_HIGH_HIGH'), N=N_auto, file_list=list_slices)
-    PSFs_AE_high[0] /= PEAK
-    PSFs_AE_high[1] /= PEAK
-    _PSFs_AE_high, downPSFs_AE_high, downPSFs_AE_high_flat = downsample_slicer_pixels(PSFs_AE_high[1])
 
-
-    N_ext = N_auto - 100
-    train_noisy, train_clean_high = downPSFs_AE_flat[:N_ext], downPSFs_AE_high_flat[:N_ext]
-
-    test_noisy, test_clean_high = downPSFs_AE_flat[N_ext:], downPSFs_AE_high_flat[N_ext:]
-
-    ### Define the AUTOENCODER architecture
-    input_dim = 2*N_crop**2
-    encoding_dim = 32
-    epochs = 2000
-    batch = 32
-
+    """ (2) Load the datasets and train each Autoencoder """
     K.clear_session()
-    AE_high = Sequential()
-    AE_high.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))
-    AE_high.add(Dense(4 * encoding_dim, activation='relu'))
-    AE_high.add(Dense(2 * encoding_dim, activation='relu'))
-    AE_high.add(Dense(encoding_dim, activation='relu'))
-    AE_high.add(Dense(2 * encoding_dim, activation='relu'))
-    AE_high.add(Dense(4 * encoding_dim, activation='relu'))
-    AE_high.add(Dense(input_dim, activation='sigmoid'))
-    AE_high.summary()
-    AE_high.compile(optimizer='adam', loss='mean_squared_error')
 
-    ### Run the TRAINING
-    AE_high.fit(train_noisy, train_clean_high,
-           epochs=epochs, batch_size=batch, shuffle=True, verbose=2,
-           validation_data=(test_noisy, test_clean_high))
+    AutoencoderHigh = Autoencoder(noisy_dataset=downPSFs_AE_flat)
+    AutoencoderHigh.load_clean_dataset(os.path.join(path_3nets, 'TRAINING_HIGH_HIGH'), N_PSF=N_auto)
+    AutoencoderHigh.train_autoencoder(N_train=N_ext)
+    AutoencoderHigh.train_calibration_model(coef=ae_high_coef)
 
-    decoded = AE_high.predict(test_noisy)
+    AutoencoderMedium = Autoencoder(noisy_dataset=downPSFs_AE_flat)
+    AutoencoderMedium.load_clean_dataset(os.path.join(path_2nets, 'TRAINING_HIGH'), N_PSF=N_auto)
+    AutoencoderMedium.train_autoencoder(N_train=N_ext)
+    AutoencoderMedium.train_calibration_model(coef=ae_med_coef)
 
-    # Make sure the training has succeeded by checking the residuals
-    residuals = np.mean(norm(np.abs(decoded - test_clean_high), axis=-1))
-    total = np.mean(norm(np.abs(test_clean_high), axis=-1))
-    print(residuals / total * 100)
-
-    input_img = Input(shape=(input_dim,))
-    encoded_layer1, encoded_layer2 = AE_high.layers[0], AE_high.layers[1]
-    encoded_layer3, encoded_layer4 = AE_high.layers[2], AE_high.layers[3]
-    encoder_high = Model(input_img, encoded_layer4(encoded_layer3(encoded_layer2(encoded_layer1(input_img)))))
-    encoder_high.summary()
-    encoded_images = encoder_high.predict(train_noisy)
-
-    ### Use the ENCODED data as training set
-    high_coef_train, high_coef_test = ae_high_coef[:N_ext], ae_high_coef[N_ext:]
-    high_psf_train, high_psf_test = encoded_images.copy(),  encoder_high.predict(test_noisy)
-
-    ### MLP Regressor for HIGH orders (TRAINED ON ENCODED)
-    N_layer = (200, 100, 50)
-    N_iter = 5000
-    high_model = MLPRegressor(hidden_layer_sizes=N_layer, activation='relu', solver='adam', max_iter=N_iter, verbose=True,
-                             batch_size='auto', shuffle=True, tol=1e-9, warm_start=True, alpha=1e-2, random_state=1234)
-
-    high_model.fit(X=high_psf_train, y=high_coef_train)
-
-    high_guessed = high_model.predict(X=high_psf_test)
-    print("\nHIGH model guesses: \n", high_guessed[:5])
-    print("\nTrue Values: \n", high_coef_test[:5])
+    AutoencoderMedium = Autoencoder(noisy_dataset=downPSFs_AE_flat)
+    AutoencoderMedium.load_clean_dataset(os.path.join(path_2nets, 'TRAINING_HIGH'), N_PSF=N_auto)
+    AutoencoderMedium.train_autoencoder(N_train=N_ext)
+    AutoencoderMedium.train_calibration_model(coef=ae_med_coef)
 
 
-    high_rms0, high_rms = evaluate_wavefront_performance(N_high, np.concatenate((np.zeros((100, 2)),high_coef_test), axis=1)
-                                                         , np.concatenate((np.zeros((100, 2)),high_guessed), axis=1),
-                                                       zern_list=zern_list_high, show_predic=True)
+    """ (3) Test the performance """
+    N_test = 250
+    path_test = os.path.abspath('H:/POP/NYQUIST/HIGH ORDERS/WITH AE LONG/3_NETS/TEST/0')
+    coef_test = np.loadtxt(os.path.join(path_test, 'test_coef.txt'))
+    PSFs_test = load_files(path_test, N=N_test, file_list=list_slices)
+    PSFs_test[0] /= PEAK
+    PSFs_test[1] /= PEAK
+    _PSFs_test, downPSFs_test, downPSFs_test_flat = downsample_slicer_pixels(PSFs_test[1])
+
