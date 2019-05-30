@@ -128,6 +128,7 @@ class Agent(object):
 
                     # Obtain the initial observation by resetting the environment.
                     self.reset_states()
+                    print("RESETING")
                     observation = deepcopy(env.reset())
                     if self.processor is not None:
                         observation = self.processor.process_observation(observation)
@@ -157,6 +158,7 @@ class Agent(object):
                             break
 
                 # At this point, we expect to be fully initialized.
+                # print('\nFully Initialized')
                 assert episode_reward is not None
                 assert episode_step is not None
                 assert observation is not None
@@ -177,12 +179,12 @@ class Agent(object):
                     observation = deepcopy(observation)
                     if self.processor is not None:
                         observation, r, done, info = self.processor.process_step(observation, r, done, info)
-                    for key, value in info.items():
-                        if not np.isreal(value):
-                            continue
-                        if key not in accumulated_info:
-                            accumulated_info[key] = np.zeros_like(value)
-                        accumulated_info[key] += value
+                    # for key, value in info.items():
+                    #     if not np.isreal(value):
+                    #         continue
+                    #     if key not in accumulated_info:
+                    #         accumulated_info[key] = np.zeros_like(value)
+                    #     accumulated_info[key] += value
                     callbacks.on_action_end(action)
                     reward += r
                     if done:
@@ -206,6 +208,7 @@ class Agent(object):
                 self.step += 1
 
                 if done:
+
                     # We are in a terminal state but the agent hasn't yet seen it. We therefore
                     # perform one more forward-backward call and simply ignore the action before
                     # resetting the environment. We need to pass in `terminal=False` here since
@@ -223,6 +226,8 @@ class Agent(object):
                     callbacks.on_episode_end(episode, episode_logs)
 
                     episode += 1
+                    print("\nEPISODE: ", episode)
+                    print("Strehl: %.3f\n" %info)
                     observation = None
                     episode_step = None
                     episode_reward = None
@@ -349,12 +354,12 @@ class Agent(object):
                         observation, r, d, info = self.processor.process_step(observation, r, d, info)
                     callbacks.on_action_end(action)
                     reward += r
-                    for key, value in info.items():
-                        if not np.isreal(value):
-                            continue
-                        if key not in accumulated_info:
-                            accumulated_info[key] = np.zeros_like(value)
-                        accumulated_info[key] += value
+                    # for key, value in info.items():
+                    #     if not np.isreal(value):
+                    #         continue
+                    #     if key not in accumulated_info:
+                    #         accumulated_info[key] = np.zeros_like(value)
+                    #     accumulated_info[key] += value
                     if d:
                         done = True
                         break
@@ -579,10 +584,11 @@ class PointSpreadFunction(object):
     ### Parameters
     rho_aper = 0.25         # Size of the aperture relative to 1.0
     N_pix = 512
-    pix = 50                # Number of pixels for the Zoom of the PSF
+    pix = 25                # Number of pixels for the Zoom of the PSF
     minPix, maxPix = (N_pix - pix) // 2, (N_pix + pix) // 2
+    stroke = 0.1
 
-    def __init__(self, N_zern):
+    def __init__(self, N_zern, initial_state):
 
         ### Zernike Wavefront
         x = np.linspace(-1, 1, self.N_pix, endpoint=True)
@@ -597,12 +603,13 @@ class PointSpreadFunction(object):
         self.H_matrix = zern.invert_model_matrix(H_flat, self.pupil)
 
         # Update the number of aberrations to match the dimensions of H
+        self.N = N_zern
         self.N_zern = self.H_matrix.shape[-1]
 
         self.PEAK = self.peak_PSF()
 
         # Keep track of the STATE of the system
-        self.state = np.zeros(self.N_zern)
+        self.state = initial_state.copy()
 
     def peak_PSF(self):
         """
@@ -639,8 +646,17 @@ class PointSpreadFunction(object):
 
         return image, strehl
 
-    def update_state(self, action):
-        self.state += action
+    def update_state(self, action, s0):
+        if action%2 == 0 and action != 2*self.N:
+            self.state[action//2] += self.stroke
+            act_s = '(+)'
+        elif action%2 != 0 and action != 2*self.N:
+            self.state[action//2] -= self.stroke
+            act_s = '(-)'
+        elif action == 2*self.N:
+            # pass Neutral Action
+            act_s = '(0)'
+        print('Strehl: %.3f | '%s0, self.state, ' Action: %d ' %(action//2) + act_s)
 
     def plot_PSF(self, zern_coef, i):
         """
@@ -650,10 +666,10 @@ class PointSpreadFunction(object):
         """
 
         PSF, strehl = self.compute_PSF(zern_coef)
-        PSF_zoom = PSF[self.minPix:self.maxPix, self.minPix:self.maxPix]
+        # PSF_zoom = PSF[self.minPix:self.maxPix, self.minPix:self.maxPix]
 
         plt.figure()
-        plt.imshow(PSF_zoom)
+        plt.imshow(PSF)
         plt.title('Iter: %d Strehl: %.3f' %(i, strehl))
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
@@ -662,13 +678,15 @@ class PsfEnv(object):
     """
     Environment class for Focal Plane Sharpening using Reinforcement Learning
     """
-    threshold = 0.85            # Threshold for Stopping: Strehl ratio > 0.85
+    threshold = 0.80            # Threshold for Stopping: Strehl ratio > 0.85
     def __init__(self, N_zern, initial_state):
-        self.PSF = PointSpreadFunction(N_zern=N_zern)
-        self.initial_state = initial_state
-        self.PSF.state = initial_state   # Override initial state
+        self.x0 = initial_state.copy()
+        print(self.x0)
+        self.PSF = PointSpreadFunction(N_zern=N_zern, initial_state=initial_state)
 
-        self.action_space = self.PSF.N_zern * [-1., 1.]
+        self.action_space = list(range(2*self.PSF.state.shape[0])) + [-1]
+        self.success = 0
+        self.PSFs_learned = 0
 
     def step(self, action):
         """
@@ -684,13 +702,31 @@ class PsfEnv(object):
             info (dict): Contains auxiliary diagnostic information (helpful for debugging, and sometimes learning).
         """
 
-        self.PSF.update_state(action)
+        # Compute the previous Strehl
+        im0, s0 = self.PSF.compute_PSF(self.PSF.state)
+
+        # Update state and recompute
+        self.PSF.update_state(action, s0)
+        new_state = self.PSF.state.copy()
         image, strehl = self.PSF.compute_PSF(self.PSF.state)
         observation = image         # An image of the PSF
-        reward = strehl             # TODO: other possible rewards
 
-        done = True if strehl > self.threshold else False       # Stop if Strehl is good enough
-        info = self.PSF.state
+        # Reward according to the gain in Strehl ratio
+        reward = strehl - s0             # TODO: other possible rewards
+        # print("Strehl: %.3f" %strehl)
+
+        # End episode if aberrations too high, Strehl too low or Strehl good enough
+        abss = [True if np.abs(x) > 3.5 else False for x in new_state]
+        done = any(abss) or strehl < 0.15 or strehl > self.threshold
+
+        info = strehl
+
+        if done:
+            print("\nDOOOOOOOOOOOOONE")
+
+        if strehl > self.threshold:
+            # Successful calibration. Increase counter
+            self.success += 1
 
         return (observation, reward, done, info)
 
@@ -701,9 +737,26 @@ class PsfEnv(object):
         # Returns
             observation (object): The initial observation of the space. Initial reward is assumed to be 0.
         """
-        self.PSF.state = self.initial_state
-        image, strehl = self.PSF.compute_PSF(self.PSF.state)
-        observation = image         # An image of the PSF
+        if self.success < 5:
+            print("Current state: ", self.PSF.state)
+            self.PSF.state = self.x0.copy()
+            print("Reseting to: ", self.PSF.state)
+            image, strehl = self.PSF.compute_PSF(self.PSF.state)
+            observation = image         # An image of the PSF
+
+        else:
+            ### We have already learned to calibrate 1 example PSF,
+            # randomize the state and keep learning
+            self.PSFs_learned += 1
+            self.success = 0
+            print("Current state: ", self.PSF.state.copy())
+            x0 = 2 * np.random.uniform(-1., 1., size=self.PSF.N_zern)
+            self.x0 = x0.round(decimals=2)
+            self.PSF.state = self.x0.copy()
+            print("Reseting to a RANDOM case: ", self.PSF.state)
+            image, strehl = self.PSF.compute_PSF(self.PSF.state)
+            observation = image         # An image of the PSF
+
         return observation
 
 class Env(object):

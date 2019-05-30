@@ -91,12 +91,6 @@ class DQNAgent(AbstractDQNAgent):
         model__: A Keras model.
         policy__: A Keras-rl policy that are defined in [policy](https://github.com/keras-rl/keras-rl/blob/master/rl/policy.py).
         test_policy__: A Keras-rl policy.
-        enable_double_dqn__: A boolean which enable target network as a second network proposed by van Hasselt et al. to decrease overfitting.
-        enable_dueling_dqn__: A boolean which enable dueling architecture proposed by Mnih et al.
-        dueling_type__: If `enable_dueling_dqn` is set to `True`, a type of dueling architecture must be chosen which calculate Q(s,a) from V(s) and A(s,a) differently. Note that `avg` is recommanded in the [paper](https://arxiv.org/abs/1511.06581).
-            `avg`: Q(s,a;theta) = V(s;theta) + (A(s,a;theta)-Avg_a(A(s,a;theta)))
-            `max`: Q(s,a;theta) = V(s;theta) + (A(s,a;theta)-max_a(A(s,a;theta)))
-            `naive`: Q(s,a;theta) = V(s;theta) + A(s,a;theta)
     """
     def __init__(self, model, policy=None, test_policy=None, *args, **kwargs):
         super(DQNAgent, self).__init__(*args, **kwargs)
@@ -118,18 +112,6 @@ class DQNAgent(AbstractDQNAgent):
 
         # State.
         self.reset_states()
-
-    def get_config(self):
-        config = super(DQNAgent, self).get_config()
-        config['enable_double_dqn'] = self.enable_double_dqn
-        config['dueling_type'] = self.dueling_type
-        config['enable_dueling_network'] = self.enable_dueling_network
-        config['model'] = get_object_config(self.model)
-        config['policy'] = get_object_config(self.policy)
-        config['test_policy'] = get_object_config(self.test_policy)
-        if self.compiled:
-            config['target_model'] = get_object_config(self.target_model)
-        return config
 
     def compile(self, optimizer, metrics=[]):
         metrics += [mean_q]  # register default metrics
@@ -244,7 +226,7 @@ class DQNAgent(AbstractDQNAgent):
             assert len(action_batch) == len(reward_batch)
 
             # Compute Q values for mini-batch update.
-            if self.enable_double_dqn:
+            if False:
                 # According to the paper "Deep Reinforcement Learning with Double Q-learning"
                 # (van Hasselt et al., 2015), in Double DQN, the online network predicts the actions
                 # while the target network is used to estimate the Q value.
