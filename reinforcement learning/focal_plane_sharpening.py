@@ -6,6 +6,7 @@ applied to NCPA calibration
 """
 import numpy as np
 from numpy.fft import fft2, fftshift
+from scipy.optimize import minimize
 import matplotlib.pyplot as plt
 import zern_core as zern
 
@@ -304,16 +305,137 @@ class FocalPlaneSharpening(object):
 
             file.close()
 
+class FPS_NelderMead(object):
+
+    def __init__(self, coef0):
+
+        self.N_zern = coef0.shape[0]
+        self.PSF = PointSpreadFunction(N_zern=self.N_zern)
+
+    def run(self, x0, stroke=0.025, max_iter=100):
+
+        self.states = [x0.copy()]
+        self.strehl_evolution = []
+        self.images = []
+        self.actuator = []
+        self.stroke = stroke
+
+        N = x0.shape[0]
+        guess = stroke*np.random.randint(low=-10, high=10, size=(N+1, N))
+        vertices = np.array(guess)
+
+        x = x0.copy()
+        _im, s0 = self.PSF.compute_PSF(x)
+        print("\nStarting Strehl: %.3f" %s0)
+        for i in range(max_iter):
+
+            vertices = np.array(self.nelder_mead_step(x, vertices))
+            best = vertices[0]
+            new_state = x + best
+            print(new_state)
+            _im, strehl = self.PSF.compute_PSF(new_state)
+            print("\nIteration: %d  || Strehl: %.3f" %(i, strehl))
+            if strehl > 0.8:
+                break
+
+
+    def round_to_stroke(self, array):
+        steps = [x // self.stroke for x in array]
+        rounded = [step * self.stroke for step in steps]
+        return np.array(rounded)
+
+    def nelder_mead_step(self, x, vertices, alpha=1.0, gamma=1.5, rho=0.25, sigma=0.5):
+        values = []
+        for vertex in vertices:
+            state = x + vertex
+            # print('\n')
+            # print(x)
+            # print(state)
+            _image, strehl = self.PSF.compute_PSF(state)
+            values.append(-strehl)
+
+        # Sort by function value
+        i_sort = np.argsort(values)
+        sorted_values = [values[i] for i in i_sort]
+        sorted_vertices = [vertices[i] for i in i_sort]
+
+        # Compute the Centroid up to N
+        vert = np.array(sorted_vertices)
+        centroid = np.mean(vert[:-1, :], axis=0)
+        # print(centroid)
+
+        # Reflection
+        reflected = centroid + alpha*(centroid - vert[-1, :])
+        r_reflected = self.round_to_stroke(reflected)
+        _image, r_strehl = self.PSF.compute_PSF(x + r_reflected)
+        if sorted_values[0] < -r_strehl < sorted_values[-2]:
+            print("1-Reflection")
+            vert[-1] = r_reflected
+            return vert
+
+        # Expansion
+        if -r_strehl < sorted_values[0]:
+
+            expanded = centroid + gamma*(reflected - centroid)
+            r_expanded = self.round_to_stroke(expanded)
+            _image, e_strehl = self.PSF.compute_PSF(x + r_expanded)
+            if -e_strehl < -r_strehl:
+                print("Expansion")
+                vert[-1] = r_expanded
+            else:
+                print("2-Reflection")
+                vert[-1] = r_reflected
+            return vert
+
+        # Contraction
+        if -r_strehl >= sorted_values[-2]:
+            if sorted_values[-2] <= -r_strehl < sorted_values[-1]:
+                ### Outside
+                contracted = centroid + rho * (reflected - centroid)
+                r_contracted = self.round_to_stroke(contracted)
+                _image, c_strehl = self.PSF.compute_PSF(x + r_contracted)
+                if -c_strehl <= sorted_values[-2]:
+                    print("Outside Contraction")
+                    vert[-1] = r_contracted
+                    return vert
+                else:
+                    for i in range(vert.shape[0]):
+                        new_v = vert[0, :] + sigma * (vert[i] - vert[0, :])
+                        vert[i] = self.round_to_stroke(new_v)
+                    print("Shrink")
+                    return vert
+
+            if -r_strehl >= sorted_values[-1]:
+                contracted = centroid - rho * (centroid - vert[-1])
+                r_contracted = self.round_to_stroke(contracted)
+                _image, c_strehl = self.PSF.compute_PSF(x + r_contracted)
+                if -c_strehl <= sorted_values[-1]:
+                    print("Inside Contraction")
+                    vert[-1] = r_contracted
+                    return vert
+            else:
+                for i in range(vert.shape[0]):
+                    new_v = vert[0, :] + sigma * (vert[i] - vert[0, :])
+                    vert[i] = self.round_to_stroke(new_v)
+                print("Shrink")
+                return vert
+
+        return vert
+
+
 if __name__ == "__main__":
 
     N_zern = 5
-    coef = np.random.uniform(-1.25, 1.25, size=N_zern)
+    coef = 2.5*np.random.uniform(-1., 1., size=N_zern)
 
-    FPS = FocalPlaneSharpening(coef)
-    states, strehls, images, actuator = FPS.run(coef, stroke=0.025, max_iter=50,
-                                      threshold=0.90, statistics=True, silent=False)
+    FPS_NM = FPS_NelderMead(coef)
+    FPS_NM.run(coef, stroke=0.05)
 
-    FPS.create_log()
+    # FPS = FocalPlaneSharpening(coef)
+    # states, strehls, images, actuator = FPS.run(coef, stroke=0.025, max_iter=50,
+    #                                   threshold=0.90, statistics=True, silent=False)
+    #
+    # FPS.create_log()
 
     # ### Multiple runs
     # N_runs = 20

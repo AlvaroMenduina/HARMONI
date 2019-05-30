@@ -647,6 +647,7 @@ class PointSpreadFunction(object):
         return image, strehl
 
     def update_state(self, action, s0):
+        template = '[' + self.N*' {:.1f} ' + ']'
         if action%2 == 0 and action != 2*self.N:
             self.state[action//2] += self.stroke
             act_s = '(+)'
@@ -656,7 +657,7 @@ class PointSpreadFunction(object):
         elif action == 2*self.N:
             # pass Neutral Action
             act_s = '(0)'
-        print('Strehl: %.3f | '%s0, self.state, ' Action: %d ' %(action//2) + act_s)
+        print('Strehl: %.3f | '%s0, template.format(*self.state), ' Action: %d ' %(action//2 + 1) + act_s)
 
     def plot_PSF(self, zern_coef, i):
         """
@@ -684,7 +685,7 @@ class PsfEnv(object):
         print(self.x0)
         self.PSF = PointSpreadFunction(N_zern=N_zern, initial_state=initial_state)
 
-        self.action_space = list(range(2*self.PSF.state.shape[0])) + [-1]
+        self.action_space = list(range(2*self.PSF.state.shape[0]))
         self.success = 0
         self.PSFs_learned = 0
 
@@ -748,10 +749,11 @@ class PsfEnv(object):
             ### We have already learned to calibrate 1 example PSF,
             # randomize the state and keep learning
             self.PSFs_learned += 1
+            print("\nPSFs learned: ", self.PSFs_learned)
             self.success = 0
             print("Current state: ", self.PSF.state.copy())
-            x0 = 2 * np.random.uniform(-1., 1., size=self.PSF.N_zern)
-            self.x0 = x0.round(decimals=2)
+            x0 = 2 * np.random.uniform(-1., 1., size=self.PSF.N)
+            self.x0 = x0.round(decimals=1)
             self.PSF.state = self.x0.copy()
             print("Reseting to a RANDOM case: ", self.PSF.state)
             image, strehl = self.PSF.compute_PSF(self.PSF.state)

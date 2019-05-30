@@ -76,7 +76,8 @@ log_filename = 'dqn_{}_log.json'.format('PSF')
 callbacks = [ModelIntervalCheckpoint(checkpoint_weights_filename, interval=250000)]
 callbacks += [FileLogger(log_filename, interval=100)]
 
-dqn.fit(enviro, callbacks=None, verbose=2, nb_steps=N_steps, log_interval=1000, nb_max_episode_steps=episode_len)
+dqn.fit(enviro, callbacks=None, verbose=2, nb_steps=N_steps, action_repetition=2,
+        log_interval=1000, nb_max_episode_steps=episode_len)
 
 
 dqn.test(enviro, nb_episodes=1, visualize=False)
