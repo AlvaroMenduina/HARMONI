@@ -13,8 +13,8 @@ from keras.optimizers import Adam
 import keras.backend as K
 
 
-N_zern = 5
-Z = 1.8
+N_zern = 3
+Z = 1.75
 initial_state = Z * np.random.uniform(-1., 1., size=N_zern)
 initial_state = initial_state.round(decimals=1)
 
@@ -46,16 +46,16 @@ model.add(Dense(nb_actions))
 model.add(Activation('linear'))
 print(model.summary())
 
-memory = SequentialMemory(limit=1000000, window_length=WINDOW_LENGTH)
+memory = SequentialMemory(limit=10000000, window_length=WINDOW_LENGTH)
 #
 # policy = LinearAnnealedPolicy(EpsGreedyQPolicy(), attr='eps', value_max=1., value_min=.1, value_test=.05,
 #                               nb_steps=1000000)
 
-episode_len = 400
+episode_len = 300
 N_episodes = 500
 N_steps = N_episodes * episode_len
 
-# N_anneal = episode_len * 200
+# N_anneal = episode_len * 100
 N_anneal = 10000
 
 policy = LinearAnnealedPolicy(EpsGreedyQPolicy(), attr='eps', value_max=1., value_min=.1, value_test=.05,
@@ -64,8 +64,8 @@ policy = LinearAnnealedPolicy(EpsGreedyQPolicy(), attr='eps', value_max=1., valu
 # dqn = DQNAgent(model=model, nb_actions=nb_actions, policy=policy, memory=memory,
 #                processor=processor, nb_steps_warmup=50000, gamma=.99, target_model_update=10000,
 #                train_interval=4, delta_clip=1.)
-dqn = DQNAgent(model=model, nb_actions=nb_actions, policy=policy, memory=memory,
-               processor=None, nb_steps_warmup=1000, gamma=.99, target_model_update=1000,
+dqn = DQNAgent(model=model, nb_actions=nb_actions, policy=policy, memory=memory, enable_double_dqn=True,
+               processor=None, nb_steps_warmup=10*episode_len, gamma=.99, target_model_update=2000,
                train_interval=4, delta_clip=1.)
 dqn.compile(Adam(lr=.00025), metrics=['mae'])
 
@@ -79,9 +79,9 @@ callbacks += [FileLogger(log_filename, interval=100)]
 dqn.fit(enviro, callbacks=None, verbose=2, nb_steps=N_steps, log_interval=1000, nb_max_episode_steps=episode_len)
 
 
-dqn.test(enviro, nb_episodes=1, visualize=False)
-
+# dqn.test(enviro, nb_episodes=1, visualize=False)
+# #
 new_state = Z * np.random.uniform(-1., 1., size=N_zern)
 enviro.x0 = new_state.copy()
 _obs = enviro.reset()
-dqn.test(enviro, nb_episodes=1, visualize=False)
+dqn.test(enviro, nb_episodes=1, nb_max_start_steps=0, visualize=False)

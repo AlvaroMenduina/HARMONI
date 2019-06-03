@@ -491,12 +491,12 @@ class FocalPlaneSharpening(object):
 
 if __name__ == "__main__":
 
-    N_zern = 5
+    N_zern = 10
     Z = 2.5
     coef = np.random.uniform(-Z, Z, size=N_zern)
 
     FPSNM = FocalPlaneSharpeningNelderMead(N_zern)
-    res = FPSNM.run(x=coef, threshold=0.80)
+    # res = FPSNM.run(x=coef, threshold=0.80)
 
     FPSNM.run_many(N_cases=25, N_zern=N_zern, Z=Z, threshold=0.80)
 
