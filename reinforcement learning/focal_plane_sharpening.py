@@ -6,9 +6,10 @@ applied to NCPA calibration
 """
 import numpy as np
 from numpy.fft import fft2, fftshift
-from scipy.optimize import minimize
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import zern_core as zern
+from scipy.optimize import minimize
 
 class PointSpreadFunction(object):
     """
@@ -73,6 +74,7 @@ class PointSpreadFunction(object):
 
         strehl = np.max(image)
 
+        image = image[self.minPix:self.maxPix, self.minPix:self.maxPix]
         return image, strehl
 
     def plot_PSF(self, zern_coef, i):
@@ -90,6 +92,197 @@ class PointSpreadFunction(object):
         plt.title('Iter: %d Strehl: %.3f' %(i, strehl))
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
+
+class FocalPlaneSharpeningNelderMead(object):
+
+    def __init__(self, N_zern, stroke=0.001):
+        """
+        Class for Focal Plane Sharpening using the Nelder-Mead ("Simplex") optimization
+
+        :param N_zern: Number of Zernike aberrations we are going to consider
+        :param stroke: step in [waves] for the deformable mirror
+        """
+
+        self.N_zern = N_zern
+        self.PSF = PointSpreadFunction(N_zern=self.N_zern)
+        self.stroke = stroke
+
+    def run_many(self, N_cases, N_zern, Z,  threshold):
+        """
+        Run many random FPS cases to analyse the convergence properties
+        :param N_cases:
+        :param N_zern:
+        :param Z: intensity of the aberrations
+        :param threshold:
+        :return:
+        """
+
+        strehls = []
+        norm_coef = []
+        image_sequences = []
+
+        iterations = []
+        dm_actuations = []
+
+        colors = cm.viridis(np.linspace(0, 1, N_cases))
+
+        for k in range(N_cases):
+            print("\n________________________________")
+            print("Random case #%d/%d" %(k+1, N_cases))
+
+            x0 = Z*np.random.uniform(-1, 1, size=N_zern)
+            norm_coef.append(np.linalg.norm(x0))
+            self.run(x0, threshold)
+
+            strehls.append(self.strehl_evolution)
+            image_sequences.append(self.images)
+            dm_actuations.append(self.f_evals)
+            iterations.append(len(self.strehl_evolution))
+
+            print(len(self.strehl_evolution))
+            print(self.f_evals)
+
+        delta_strehl = []
+        for strehl_list in strehls:
+            delta_strehl.append(strehl_list[-1] - strehl_list[0])
+
+        plt.figure()
+        plt.scatter(delta_strehl, dm_actuations)
+        plt.xlabel(r"Strehl $\Delta$")
+        plt.ylabel('N actuations')
+
+        plt.figure()
+        for k in range(N_cases):
+            plt.plot(strehls[k], color=colors[k])
+
+        plt.xlabel("Iteration")
+        plt.xlim([0, np.max(iterations)])
+        plt.ylim([0, self.threshold])
+        plt.ylabel('Strehl [ ]')
+
+        plt.figure()
+        plt.scatter(iterations, dm_actuations)
+
+        plt.show()
+
+
+
+    def run(self, x, threshold):
+        """
+        Running the Nelder-Mead algorithm for a given aberration state X
+        until we reach a Strehl ratio above threshold
+        :param x: aberration coefficients
+        :param threshold: stopping criterion for the Strehl ratio
+        :return:
+        """
+
+        ### Initialize the iteration
+        self.strehl_evolution = []
+        self.images = []
+        self.actuator = []
+        self.threshold = threshold
+        self.f_evals = 0
+
+        _im, s0 = self.PSF.compute_PSF(x)
+        print("\nInitial Strehl: %.3f\n" %s0)
+
+        # Round X to the maximum resolution (the stroke) of the DM
+        x = x.round(decimals=3)
+        self.true_state = x
+
+        # Initiliaze a random Simplex for the Nelder-Mead
+        simplex0 = np.random.uniform(-0.1, 0.1, size=(x.shape[0]+1, x.shape[0]))
+        # simplex0 = np.zeros((x.shape[0]+1, x.shape[0]))
+        simplex0.round(decimals=3)
+
+        # We need a way to stop the optimization once we go over the Strehl treshold
+        # we do that by a special Callback that raises an Exception once the Strehl is high enough
+        try:
+            call = CallbackOptimization(self)
+
+            res = minimize(self.minus_strehl, x0=np.zeros_like(x),
+                           method='Nelder-Mead',
+                           args=(x,),
+                           callback=call,
+                           options={'initial_simplex':simplex0,
+                                    'return_all':True})
+            x_final = res['x']
+
+        except StopOptimization:
+
+            x_final = call.x
+            residual = self.true_state + x_final
+            s = self.minus_strehl(x_final, self.true_state)
+            template = '[ ' + x_final.shape[0] * ' {:.3f} ' + ']'
+            print("\nConvergence Results:")
+            print("__________________________________________________________")
+            print("Initial Strehl: %.3f  || Final Strehl: %.3f" %(s0, -s))
+            print("Residual aberrations: ", template.format(*residual))
+            print("Number of Strehl evaluations: %d" %self.f_evals)
+
+        return x_final
+
+    def minus_strehl(self, x_actuator, true_state):
+        """
+        Function to Minimize, minus the Strehl ratio
+        :param x_actuator: the guess of the DM correction
+        :param true_state: aberration coefficients
+        :return:
+        """
+
+        # Round the actuator command to the maximum resolution
+        x_actuator = x_actuator.round(decimals=3)
+        corrected = true_state + x_actuator
+        _image, strehl = self.PSF.compute_PSF(corrected)
+
+        # Increase the counter every time we try a correction
+        self.f_evals += 1
+
+        return -strehl
+
+    def callback(self, x_actuator):
+        """
+        Internal Callback to keep track of progress and check the stop criterion
+        :param x_actuator: current guess of the actuator
+        :return:
+        """
+        im, st = self.PSF.compute_PSF(self.true_state + x_actuator.round(decimals=3))
+        print("Strehl: %.3f" %st)
+
+        # Add iteration info
+        self.strehl_evolution.append(st)
+        self.images.append(im)
+        self.actuator.append(x_actuator)
+
+        # Check if we are done
+        if st > self.threshold:
+            return True
+        else:
+            return False
+
+class StopOptimization(Exception):
+    pass
+
+class CallbackOptimization(object):
+
+    def __init__(self, FPS):
+        self.FPS = FPS
+
+    def __call__(self, xk):
+        """
+        At the end of each Nelder-Mead iteration
+        CallbackOptimization will call FPS.callback and
+        check the current Strehl
+
+        If the Strehl is high enough it will raise an Exception
+        and end the optimization
+        :param xk: current guess
+        :return:
+        """
+        end_optim = self.FPS.callback(xk)
+        if end_optim:
+            self.x = xk
+            raise StopOptimization
 
 class FocalPlaneSharpening(object):
 
@@ -305,131 +498,16 @@ class FocalPlaneSharpening(object):
 
             file.close()
 
-class FPS_NelderMead(object):
-
-    def __init__(self, coef0):
-
-        self.N_zern = coef0.shape[0]
-        self.PSF = PointSpreadFunction(N_zern=self.N_zern)
-
-    def run(self, x0, stroke=0.025, max_iter=100):
-
-        self.states = [x0.copy()]
-        self.strehl_evolution = []
-        self.images = []
-        self.actuator = []
-        self.stroke = stroke
-
-        N = x0.shape[0]
-        guess = stroke*np.random.randint(low=-10, high=10, size=(N+1, N))
-        vertices = np.array(guess)
-
-        x = x0.copy()
-        _im, s0 = self.PSF.compute_PSF(x)
-        print("\nStarting Strehl: %.3f" %s0)
-        for i in range(max_iter):
-
-            vertices = np.array(self.nelder_mead_step(x, vertices))
-            best = vertices[0]
-            new_state = x + best
-            print(new_state)
-            _im, strehl = self.PSF.compute_PSF(new_state)
-            print("\nIteration: %d  || Strehl: %.3f" %(i, strehl))
-            if strehl > 0.8:
-                break
-
-
-    def round_to_stroke(self, array):
-        steps = [x // self.stroke for x in array]
-        rounded = [step * self.stroke for step in steps]
-        return np.array(rounded)
-
-    def nelder_mead_step(self, x, vertices, alpha=1.0, gamma=1.5, rho=0.25, sigma=0.5):
-        values = []
-        for vertex in vertices:
-            state = x + vertex
-            # print('\n')
-            # print(x)
-            # print(state)
-            _image, strehl = self.PSF.compute_PSF(state)
-            values.append(-strehl)
-
-        # Sort by function value
-        i_sort = np.argsort(values)
-        sorted_values = [values[i] for i in i_sort]
-        sorted_vertices = [vertices[i] for i in i_sort]
-
-        # Compute the Centroid up to N
-        vert = np.array(sorted_vertices)
-        centroid = np.mean(vert[:-1, :], axis=0)
-        # print(centroid)
-
-        # Reflection
-        reflected = centroid + alpha*(centroid - vert[-1, :])
-        r_reflected = self.round_to_stroke(reflected)
-        _image, r_strehl = self.PSF.compute_PSF(x + r_reflected)
-        if sorted_values[0] < -r_strehl < sorted_values[-2]:
-            print("1-Reflection")
-            vert[-1] = r_reflected
-            return vert
-
-        # Expansion
-        if -r_strehl < sorted_values[0]:
-
-            expanded = centroid + gamma*(reflected - centroid)
-            r_expanded = self.round_to_stroke(expanded)
-            _image, e_strehl = self.PSF.compute_PSF(x + r_expanded)
-            if -e_strehl < -r_strehl:
-                print("Expansion")
-                vert[-1] = r_expanded
-            else:
-                print("2-Reflection")
-                vert[-1] = r_reflected
-            return vert
-
-        # Contraction
-        if -r_strehl >= sorted_values[-2]:
-            if sorted_values[-2] <= -r_strehl < sorted_values[-1]:
-                ### Outside
-                contracted = centroid + rho * (reflected - centroid)
-                r_contracted = self.round_to_stroke(contracted)
-                _image, c_strehl = self.PSF.compute_PSF(x + r_contracted)
-                if -c_strehl <= sorted_values[-2]:
-                    print("Outside Contraction")
-                    vert[-1] = r_contracted
-                    return vert
-                else:
-                    for i in range(vert.shape[0]):
-                        new_v = vert[0, :] + sigma * (vert[i] - vert[0, :])
-                        vert[i] = self.round_to_stroke(new_v)
-                    print("Shrink")
-                    return vert
-
-            if -r_strehl >= sorted_values[-1]:
-                contracted = centroid - rho * (centroid - vert[-1])
-                r_contracted = self.round_to_stroke(contracted)
-                _image, c_strehl = self.PSF.compute_PSF(x + r_contracted)
-                if -c_strehl <= sorted_values[-1]:
-                    print("Inside Contraction")
-                    vert[-1] = r_contracted
-                    return vert
-            else:
-                for i in range(vert.shape[0]):
-                    new_v = vert[0, :] + sigma * (vert[i] - vert[0, :])
-                    vert[i] = self.round_to_stroke(new_v)
-                print("Shrink")
-                return vert
-
-        return vert
-
-
 if __name__ == "__main__":
 
     N_zern = 5
-    coef = 2.5*np.random.uniform(-1., 1., size=N_zern)
+    Z = 2.5
+    coef = np.random.uniform(-Z, Z, size=N_zern)
 
-    FPS_NM = FPS_NelderMead(coef)
-    FPS_NM.run(coef, stroke=0.05)
+    FPSNM = FocalPlaneSharpeningNelderMead(N_zern)
+    # res = FPSNM.run(x=coef, threshold=0.80)
+
+    FPSNM.run_many(N_cases=50, N_zern=N_zern, Z=Z, threshold=0.80)
 
     # FPS = FocalPlaneSharpening(coef)
     # states, strehls, images, actuator = FPS.run(coef, stroke=0.025, max_iter=50,

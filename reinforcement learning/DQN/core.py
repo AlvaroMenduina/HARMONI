@@ -617,7 +617,7 @@ class PointSpreadFunction(object):
         normalize everything by it
         """
 
-        im, strehl = self.compute_PSF(np.zeros(self.N_zern))
+        im, strehl, c0 = self.compute_PSF(np.zeros(self.N_zern))
 
         return strehl
 
@@ -644,20 +644,27 @@ class PointSpreadFunction(object):
 
         strehl = np.max(image)
 
-        return image, strehl
+        # Core intensity
+        pix = 9
+        minPix, maxPix = (self.pix - pix) // 2 + 1, (self.pix + pix) // 2 + 1
+        im_core = image[minPix:maxPix, minPix:maxPix]
+        core = np.mean(im_core)
+
+        return image, strehl, core 
 
     def update_state(self, action, s0):
-        template = '[' + self.N*' {:.1f} ' + ']'
         if action%2 == 0 and action != 2*self.N:
-            self.state[action//2] += self.stroke
+            self.state[action//2] += 1.*self.stroke
             act_s = '(+)'
         elif action%2 != 0 and action != 2*self.N:
-            self.state[action//2] -= self.stroke
+            self.state[action//2] -= 1.*self.stroke
             act_s = '(-)'
         elif action == 2*self.N:
             # pass Neutral Action
             act_s = '(0)'
-        print('Strehl: %.3f | '%s0, template.format(*self.state), ' Action: %d ' %(action//2 + 1) + act_s)
+        template = '[ ' + self.N*' {:.3f} ' + ' ]'
+        # print('Strehl: %.3f | '%s0, self.state, ' Action: %d ' %(action//2) + act_s)
+        print(' || Strehl: %.3f | '%s0, template.format(*self.state), ' Action: %d ' %(action//2+1) + act_s)
 
     def plot_PSF(self, zern_coef, i):
         """
@@ -666,7 +673,7 @@ class PointSpreadFunction(object):
         :param i: iteration (for labelling purposes)
         """
 
-        PSF, strehl = self.compute_PSF(zern_coef)
+        PSF, strehl, core = self.compute_PSF(zern_coef)
         # PSF_zoom = PSF[self.minPix:self.maxPix, self.minPix:self.maxPix]
 
         plt.figure()
@@ -679,14 +686,14 @@ class PsfEnv(object):
     """
     Environment class for Focal Plane Sharpening using Reinforcement Learning
     """
-    threshold = 0.80            # Threshold for Stopping: Strehl ratio > 0.85
+    threshold = 0.85            # Threshold for Stopping: Strehl ratio > 0.85
     def __init__(self, N_zern, initial_state):
         self.x0 = initial_state.copy()
         print(self.x0)
         self.PSF = PointSpreadFunction(N_zern=N_zern, initial_state=initial_state)
 
         self.action_space = list(range(2*self.PSF.state.shape[0]))
-        self.success = 0
+        self.success, self.failure = 0, 0
         self.PSFs_learned = 0
 
     def step(self, action):
@@ -704,30 +711,50 @@ class PsfEnv(object):
         """
 
         # Compute the previous Strehl
-        im0, s0 = self.PSF.compute_PSF(self.PSF.state)
+        im0, s0, c0 = self.PSF.compute_PSF(self.PSF.state)
 
         # Update state and recompute
         self.PSF.update_state(action, s0)
         new_state = self.PSF.state.copy()
-        image, strehl = self.PSF.compute_PSF(self.PSF.state)
+        image, strehl, core = self.PSF.compute_PSF(self.PSF.state)
         observation = image         # An image of the PSF
 
         # Reward according to the gain in Strehl ratio
-        reward = strehl - s0             # TODO: other possible rewards
+        r1 = strehl - s0             # TODO: other possible rewards
+        r2 = 10*(core - c0)
+        r3 = -0.05          # Discourage (+) then (-) same action
+        reward = r1 + r2 + r3
         # print("Strehl: %.3f" %strehl)
-
-        # End episode if aberrations too high, Strehl too low or Strehl good enough
-        abss = [True if np.abs(x) > 3.5 else False for x in new_state]
-        done = any(abss) or strehl < 0.15 or strehl > self.threshold
+        # template = '\nStrehl gain: {:.4f} || Core gain: {:.4f} || Total Reward {:.4f}'
+        # print(template.format(r1, r2, reward))
 
         info = strehl
 
-        if done:
-            print("\nDOOOOOOOOOOOOONE")
+        # End episode if aberrations too high, Strehl too low or Strehl good enough
+        abss = [True if np.abs(x) > 3.5 else False for x in new_state]
+        failure = any(abss) or strehl < 0.15
+        success = True if strehl > self.threshold else False
 
-        if strehl > self.threshold:
-            # Successful calibration. Increase counter
+
+        if failure:
+
+            self.failure += 1
+            total = self.success + self.failure
+            print("\n------- FAILED -------- (%d/%d)" % (self.failure, total))
+            reward -= 2
+            done = True
+
+        elif success:
+
             self.success += 1
+            total = self.success + self.failure
+            print("\n------- SUCCESS -------- (%d/%d)" %(self.success, total))
+            reward += 1
+            # Successful calibration. Increase counter
+            done = True
+
+        else:
+            done = False
 
         return (observation, reward, done, info)
 
@@ -738,26 +765,35 @@ class PsfEnv(object):
         # Returns
             observation (object): The initial observation of the space. Initial reward is assumed to be 0.
         """
-        if self.success < 5:
-            print("Current state: ", self.PSF.state)
-            self.PSF.state = self.x0.copy()
-            print("Reseting to: ", self.PSF.state)
-            image, strehl = self.PSF.compute_PSF(self.PSF.state)
-            observation = image         # An image of the PSF
 
-        else:
-            ### We have already learned to calibrate 1 example PSF,
-            # randomize the state and keep learning
-            self.PSFs_learned += 1
-            print("\nPSFs learned: ", self.PSFs_learned)
-            self.success = 0
-            print("Current state: ", self.PSF.state.copy())
-            x0 = 2 * np.random.uniform(-1., 1., size=self.PSF.N)
-            self.x0 = x0.round(decimals=1)
-            self.PSF.state = self.x0.copy()
-            print("Reseting to a RANDOM case: ", self.PSF.state)
-            image, strehl = self.PSF.compute_PSF(self.PSF.state)
-            observation = image         # An image of the PSF
+        print("Current state: ", self.PSF.state.copy())
+        x0 = 2 * np.random.uniform(-1., 1., size=self.PSF.N)
+        # self.x0 = x0.round(decimals=1)
+        self.x0 = x0.copy()
+        self.PSF.state = self.x0.copy()
+        print("Reseting to a RANDOM case: ", self.PSF.state)
+        image, strehl, core = self.PSF.compute_PSF(self.PSF.state)
+        observation = image  # An image of the PSF
+
+        # if self.success < 5:
+        #     print("Current state: ", self.PSF.state)
+        #     self.PSF.state = self.x0.copy()
+        #     print("Reseting to: ", self.PSF.state)
+        #     image, strehl, core = self.PSF.compute_PSF(self.PSF.state)
+        #     observation = image         # An image of the PSF
+        #
+        # else:
+        #     ### We have already learned to calibrate 1 example PSF,
+        #     # randomize the state and keep learning
+        #     self.PSFs_learned += 1
+        #     self.success = 0
+        #     print("Current state: ", self.PSF.state.copy())
+        #     x0 = 2 * np.random.uniform(-1., 1., size=self.PSF.N_zern)
+        #     self.x0 = x0.round(decimals=2)
+        #     self.PSF.state = self.x0.copy()
+        #     print("Reseting to a RANDOM case: ", self.PSF.state)
+        #     image, strehl, core = self.PSF.compute_PSF(self.PSF.state)
+        #     observation = image         # An image of the PSF
 
         return observation
 
