@@ -650,7 +650,7 @@ class PointSpreadFunction(object):
         im_core = image[minPix:maxPix, minPix:maxPix]
         core = np.mean(im_core)
 
-        return image, strehl, core
+        return image, strehl, core 
 
     def update_state(self, action, s0):
         if action%2 == 0 and action != 2*self.N:
