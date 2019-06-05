@@ -645,8 +645,8 @@ class PointSpreadFunction(object):
         strehl = np.max(image)
 
         # Core intensity
-        pix = 4
-        minPix, maxPix = (self.pix - pix) // 2, (self.pix + pix) // 2
+        pix = 9
+        minPix, maxPix = (self.pix - pix) // 2 + 1, (self.pix + pix) // 2 + 1
         im_core = image[minPix:maxPix, minPix:maxPix]
         core = np.mean(im_core)
 
@@ -654,15 +654,15 @@ class PointSpreadFunction(object):
 
     def update_state(self, action, s0):
         if action%2 == 0 and action != 2*self.N:
-            self.state[action//2] += 1.1*self.stroke
+            self.state[action//2] += 1.*self.stroke
             act_s = '(+)'
         elif action%2 != 0 and action != 2*self.N:
-            self.state[action//2] -= 0.9*self.stroke
+            self.state[action//2] -= 1.*self.stroke
             act_s = '(-)'
         elif action == 2*self.N:
             # pass Neutral Action
             act_s = '(0)'
-        template = '[ ' + self.N*' {:.1f} ' + ' ]'
+        template = '[ ' + self.N*' {:.3f} ' + ' ]'
         # print('Strehl: %.3f | '%s0, self.state, ' Action: %d ' %(action//2) + act_s)
         print(' || Strehl: %.3f | '%s0, template.format(*self.state), ' Action: %d ' %(action//2+1) + act_s)
 
@@ -686,7 +686,7 @@ class PsfEnv(object):
     """
     Environment class for Focal Plane Sharpening using Reinforcement Learning
     """
-    threshold = 0.80            # Threshold for Stopping: Strehl ratio > 0.85
+    threshold = 0.85            # Threshold for Stopping: Strehl ratio > 0.85
     def __init__(self, N_zern, initial_state):
         self.x0 = initial_state.copy()
         print(self.x0)
@@ -721,8 +721,8 @@ class PsfEnv(object):
 
         # Reward according to the gain in Strehl ratio
         r1 = strehl - s0             # TODO: other possible rewards
-        r2 = core - c0
-        r3 = -0.01          # Discourage (+) then (-) same action
+        r2 = 10*(core - c0)
+        r3 = -0.05          # Discourage (+) then (-) same action
         reward = r1 + r2 + r3
         # print("Strehl: %.3f" %strehl)
         # template = '\nStrehl gain: {:.4f} || Core gain: {:.4f} || Total Reward {:.4f}'
@@ -768,7 +768,8 @@ class PsfEnv(object):
 
         print("Current state: ", self.PSF.state.copy())
         x0 = 2 * np.random.uniform(-1., 1., size=self.PSF.N)
-        self.x0 = x0.round(decimals=1)
+        # self.x0 = x0.round(decimals=1)
+        self.x0 = x0.copy()
         self.PSF.state = self.x0.copy()
         print("Reseting to a RANDOM case: ", self.PSF.state)
         image, strehl, core = self.PSF.compute_PSF(self.PSF.state)

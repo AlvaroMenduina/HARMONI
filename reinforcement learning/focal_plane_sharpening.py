@@ -142,6 +142,15 @@ class FocalPlaneSharpeningNelderMead(object):
             print(len(self.strehl_evolution))
             print(self.f_evals)
 
+        delta_strehl = []
+        for strehl_list in strehls:
+            delta_strehl.append(strehl_list[-1] - strehl_list[0])
+
+        plt.figure()
+        plt.scatter(delta_strehl, dm_actuations)
+        plt.xlabel(r"Strehl $\Delta$")
+        plt.ylabel('N actuations')
+
         plt.figure()
         for k in range(N_cases):
             plt.plot(strehls[k], color=colors[k])
@@ -491,14 +500,14 @@ class FocalPlaneSharpening(object):
 
 if __name__ == "__main__":
 
-    N_zern = 10
+    N_zern = 5
     Z = 2.5
     coef = np.random.uniform(-Z, Z, size=N_zern)
 
     FPSNM = FocalPlaneSharpeningNelderMead(N_zern)
     # res = FPSNM.run(x=coef, threshold=0.80)
 
-    FPSNM.run_many(N_cases=25, N_zern=N_zern, Z=Z, threshold=0.80)
+    FPSNM.run_many(N_cases=50, N_zern=N_zern, Z=Z, threshold=0.80)
 
     # FPS = FocalPlaneSharpening(coef)
     # states, strehls, images, actuator = FPS.run(coef, stroke=0.025, max_iter=50,
