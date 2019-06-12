@@ -34,20 +34,22 @@ elif K.image_dim_ordering() == 'th':
     model.add(Permute((1, 2, 3), input_shape=input_shape))
 else:
     raise RuntimeError('Unknown image_dim_ordering.')
-model.add(Convolution2D(32, (4, 4), strides=(2, 2)))
+model.add(Convolution2D(32, (6, 6), strides=(2, 2)))
 model.add(Activation('relu'))
 model.add(Convolution2D(64, (4, 4), strides=(2, 2)))
 model.add(Activation('relu'))
 model.add(Convolution2D(64, (3, 3), strides=(1, 1)))
 model.add(Activation('relu'))
 model.add(Flatten())
-model.add(Dense(512))
+model.add(Dense(128))
+model.add(Dense(64))
+model.add(Dense(32))
 model.add(Activation('relu'))
 model.add(Dense(nb_actions))
 model.add(Activation('linear'))
 print(model.summary())
 
-memory = SequentialMemory(limit=10000000, window_length=WINDOW_LENGTH)
+memory = SequentialMemory(limit=100000000, window_length=WINDOW_LENGTH)
 #
 # policy = LinearAnnealedPolicy(EpsGreedyQPolicy(), attr='eps', value_max=1., value_min=.1, value_test=.05,
 #                               nb_steps=1000000)
@@ -56,8 +58,8 @@ episode_len = 300
 N_episodes = 1000
 N_steps = N_episodes * episode_len
 
-# N_anneal = episode_len * 100
-N_anneal = 100000
+N_anneal = episode_len * 800
+# N_anneal = 150000
 
 policy = LinearAnnealedPolicy(EpsGreedyQPolicy(), attr='eps', value_max=1., value_min=.1, value_test=.05,
                               nb_steps=N_anneal)
@@ -66,8 +68,8 @@ policy = LinearAnnealedPolicy(EpsGreedyQPolicy(), attr='eps', value_max=1., valu
 #                processor=processor, nb_steps_warmup=50000, gamma=.99, target_model_update=10000,
 #                train_interval=4, delta_clip=1.)
 dqn = DQNAgent(model=model, nb_actions=nb_actions, policy=policy, memory=memory, enable_double_dqn=True,
-               processor=None, nb_steps_warmup=25*episode_len, gamma=.90, target_model_update=1500,
-               train_interval=4, delta_clip=1.)
+               processor=None, nb_steps_warmup=5*episode_len, gamma=.90, target_model_update=500,
+               train_interval=1, delta_clip=1.)
 dqn.compile(Adam(lr=.00025), metrics=['mae'])
 
 # dqn.fit(enviro, callbacks=None, nb_steps=1750000, log_interval=10000)
@@ -77,7 +79,7 @@ log_filename = 'dqn_{}_log.json'.format('PSF')
 callbacks = [ModelIntervalCheckpoint(checkpoint_weights_filename, interval=250000)]
 callbacks += [FileLogger(log_filename, interval=100)]
 
-dqn.fit(enviro, callbacks=None, verbose=2, nb_steps=N_steps, action_repetition=2,
+dqn.fit(enviro, callbacks=None, verbose=2, nb_steps=N_steps, action_repetition=1,
         log_interval=1000, nb_max_episode_steps=episode_len)
 
 
@@ -85,37 +87,37 @@ dqn.fit(enviro, callbacks=None, verbose=2, nb_steps=N_steps, action_repetition=2
 
 
 
-new_state = Z * np.random.uniform(-1., 1., size=N_zern)
-# new_state = np.array([1, 0.5])
-enviro.x0 = new_state.copy()
-_obs = enviro.reset()
-dqn.test(enviro, nb_episodes=1, nb_max_start_steps=0, visualize=False)
-
-# Try with lower gamma, more immediate reward
-
-# Check what's going on
-
-success = np.loadtxt('success.txt')
-failure = np.loadtxt('failure.txt')
-stuck = np.loadtxt('stuck.txt')
-
-start = stuck[:,:2]
-end = stuck[:, 3:-1]
-
-plt.figure()
-plt.xlim([-Z, Z])
-plt.ylim([-Z, Z])
-plt.xlabel(r'$a_1$')
-plt.ylabel(r'$a_2$')
-plt.grid(True)
-plt.scatter(success[:,0], success[:, 1], color='green', marker='^',label='Success')
-plt.scatter(failure[:,0], failure[:, 1], color='red', marker='s', label='Failure')
-plt.scatter(start[:,0], start[:, 1], color='orange', label='Stuck')
-
-for i in range(stuck.shape[0]):
-    x0, y0 = start[i,0], start[i, 1]
-    lx, ly = end[i,0] - x0, end[i, 1] - y0
-    plt.arrow(x0, y0, lx, ly, color='black', linestyle='-.')
-
-plt.legend()
-plt.show()
+# new_state = Z * np.random.uniform(-1., 1., size=N_zern)
+# # new_state = np.array([1, 0.5])
+# enviro.x0 = new_state.copy()
+# _obs = enviro.reset()
+# dqn.test(enviro, nb_episodes=1, nb_max_start_steps=0, visualize=False)
+#
+# # Try with lower gamma, more immediate reward
+#
+# # Check what's going on
+#
+# success = np.loadtxt('success.txt')
+# failure = np.loadtxt('failure.txt')
+# stuck = np.loadtxt('stuck.txt')
+#
+# start = stuck[:,:2]
+# end = stuck[:, 3:-1]
+#
+# plt.figure()
+# plt.xlim([-Z, Z])
+# plt.ylim([-Z, Z])
+# plt.xlabel(r'$a_1$')
+# plt.ylabel(r'$a_2$')
+# plt.grid(True)
+# plt.scatter(success[:,0], success[:, 1], color='green', marker='^',label='Success')
+# plt.scatter(failure[:,0], failure[:, 1], color='red', marker='s', label='Failure')
+# plt.scatter(start[:,0], start[:, 1], color='orange', label='Stuck')
+#
+# for i in range(stuck.shape[0]):
+#     x0, y0 = start[i,0], start[i, 1]
+#     lx, ly = end[i,0] - x0, end[i, 1] - y0
+#     plt.arrow(x0, y0, lx, ly, color='black', linestyle='-.')
+#
+# plt.legend()
+# plt.show()

@@ -650,7 +650,7 @@ class PointSpreadFunction(object):
         im_core = image[minPix:maxPix, minPix:maxPix]
         core = np.mean(im_core)
 
-        return image, strehl, core 
+        return image, strehl, core
 
     def update_state(self, action, s0):
         if action%2 == 0 and action != 2*self.N:
@@ -673,7 +673,7 @@ class PointSpreadFunction(object):
         :param i: iteration (for labelling purposes)
         """
 
-        PSF, strehl, core = self.compute_PSF(zern_coef)
+        PSF, strehl = self.compute_PSF(zern_coef)
         # PSF_zoom = PSF[self.minPix:self.maxPix, self.minPix:self.maxPix]
 
         plt.figure()
@@ -741,7 +741,7 @@ class PsfEnv(object):
             self.failure += 1
             total = self.success + self.failure
             print("\n------- FAILED -------- (%d/%d)" % (self.failure, total))
-            reward -= 2
+            reward -= 50
             done = True
 
         elif success:
