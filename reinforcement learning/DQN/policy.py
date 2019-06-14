@@ -143,7 +143,7 @@ class EpsGreedyQPolicy(Policy):
         nb_actions = q_values.shape[0]
 
         if np.random.uniform() < self.eps:
-            print('Random Action')
+            # print('Random Action')
             action = np.random.randint(0, nb_actions)
         else:
             action = np.argmax(q_values)

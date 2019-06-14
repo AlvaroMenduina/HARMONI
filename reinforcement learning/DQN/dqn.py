@@ -1,5 +1,4 @@
 from __future__ import division
-import warnings
 import core
 from memory import SequentialMemory
 from policy import LinearAnnealedPolicy, EpsGreedyQPolicy
@@ -19,7 +18,7 @@ Z = 2.5
 initial_state = Z * np.random.uniform(-1., 1., size=N_zern)
 # initial_state = initial_state.round(decimals=1)
 
-enviro = core.PsfEnv(N_zern=N_zern, initial_state=initial_state)
+enviro = core.PsfEnv(N_zern=N_zern, initial_state=initial_state, Z=Z)
 nb_actions = len(enviro.action_space)
 WINDOW_LENGTH = 1
 PIX = enviro.PSF.pix
@@ -34,16 +33,16 @@ elif K.image_dim_ordering() == 'th':
     model.add(Permute((1, 2, 3), input_shape=input_shape))
 else:
     raise RuntimeError('Unknown image_dim_ordering.')
-model.add(Convolution2D(32, (6, 6), strides=(2, 2)))
+model.add(Convolution2D(8, (6, 6), strides=(2, 2)))
 model.add(Activation('relu'))
-model.add(Convolution2D(64, (4, 4), strides=(2, 2)))
+model.add(Convolution2D(16, (4, 4), strides=(2, 2)))
 model.add(Activation('relu'))
-model.add(Convolution2D(64, (3, 3), strides=(1, 1)))
+model.add(Convolution2D(32, (3, 3), strides=(1, 1)))
 model.add(Activation('relu'))
 model.add(Flatten())
-model.add(Dense(128))
 model.add(Dense(64))
 model.add(Dense(32))
+model.add(Dense(16))
 model.add(Activation('relu'))
 model.add(Dense(nb_actions))
 model.add(Activation('linear'))
@@ -121,3 +120,21 @@ dqn.fit(enviro, callbacks=None, verbose=2, nb_steps=N_steps, action_repetition=1
 #
 # plt.legend()
 # plt.show()
+
+plt.rc('text', usetex=True)
+plt.rc('font', family='serif')
+
+plt.figure()
+M = 5
+N = np.array([2, 3, 4, 5])
+K = np.array([5, 10, 15, 20])
+for n in N:
+    # r = M**K / (n*M**(K/n))
+    # log_r = np.log10(r)
+    log_r = K * (1 - 1/n) *np.log10(M) - np.log10(n)
+    plt.plot(K, log_r, label=n)
+# plt.axhline(y=1.0, color='black', linestyle='--')
+plt.ylim([0, 10])
+plt.xlim([5, 20])
+plt.legend(title=r'$N$ Networks')
+plt.show()
