@@ -584,9 +584,9 @@ class PointSpreadFunction(object):
     ### Parameters
     rho_aper = 0.25         # Size of the aperture relative to 1.0
     N_pix = 512
-    pix = 25                # Number of pixels for the Zoom of the PSF
+    pix = 20                # Number of pixels for the Zoom of the PSF
     minPix, maxPix = (N_pix - pix) // 2, (N_pix + pix) // 2
-    stroke = 0.1
+    stroke = 0.05
 
     def __init__(self, N_zern, initial_state):
 
