@@ -360,6 +360,10 @@ if __name__ == "__main__":
     epochs = 2000
     batch = 32
 
+    from keras.utils import plot_model
+
+    plot_model(AE_high, to_file='model.png')
+
     K.clear_session()
     AE_high = Sequential()
     AE_high.add(Dense(16 * encoding_dim, input_shape=(input_dim, ), activation='relu'))

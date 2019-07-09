@@ -72,7 +72,7 @@ policy = LinearAnnealedPolicy(EpsGreedyQPolicy(), attr='eps', value_max=1., valu
 #                processor=processor, nb_steps_warmup=50000, gamma=.99, target_model_update=10000,
 #                train_interval=4, delta_clip=1.)
 dqn = DQNAgent(model=model, nb_actions=nb_actions, policy=policy, memory=memory, enable_double_dqn=True,
-               processor=None, nb_steps_warmup=5*episode_len, gamma=.90, target_model_update=1000,
+               processor=None, nb_steps_warmup=5*episode_len, gamma=.90, target_model_update=100,
                train_interval=1, delta_clip=1.)
 dqn.compile(Adam(lr=.00025), metrics=['mae'])
 
@@ -91,40 +91,40 @@ dqn.fit(enviro, callbacks=None, verbose=2, nb_steps=N_steps, action_repetition=1
 
 
 
-new_state = Z * np.random.uniform(-1., 1., size=N_zern)
-# new_state = np.array([1, 0.5])
-enviro.x0 = new_state.copy()
-_obs = enviro.reset()
-dqn.test(enviro, nb_episodes=1, nb_max_start_steps=0, visualize=False)
-
-# Try with lower gamma, more immediate reward
-
-# Check what's going on
-
-success = np.loadtxt('success.txt')
-failure = np.loadtxt('failure.txt')
-stuck = np.loadtxt('stuck.txt')
-
-start = stuck[:,:2]
-end = stuck[:, 3:-1]
-
-plt.figure()
-plt.xlim([-Z, Z])
-plt.ylim([-Z, Z])
-plt.xlabel(r'$a_1$')
-plt.ylabel(r'$a_2$')
-plt.grid(True)
-plt.scatter(success[:,0], success[:, 1], color='green', marker='^',label='Success')
-plt.scatter(failure[:,0], failure[:, 1], color='red', marker='s', label='Failure')
-plt.scatter(start[:,0], start[:, 1], color='orange', label='Stuck')
-
-for i in range(stuck.shape[0]):
-    x0, y0 = start[i,0], start[i, 1]
-    lx, ly = end[i,0] - x0, end[i, 1] - y0
-    plt.arrow(x0, y0, lx, ly, color='black', linestyle='-.')
-
-plt.legend()
-plt.show()
+# new_state = Z * np.random.uniform(-1., 1., size=N_zern)
+# # new_state = np.array([1, 0.5])
+# enviro.x0 = new_state.copy()
+# _obs = enviro.reset()
+# dqn.test(enviro, nb_episodes=1, nb_max_start_steps=0, visualize=False)
+#
+# # Try with lower gamma, more immediate reward
+#
+# # Check what's going on
+#
+# success = np.loadtxt('success.txt')
+# failure = np.loadtxt('failure.txt')
+# stuck = np.loadtxt('stuck.txt')
+#
+# start = stuck[:,:2]
+# end = stuck[:, 3:-1]
+#
+# plt.figure()
+# plt.xlim([-Z, Z])
+# plt.ylim([-Z, Z])
+# plt.xlabel(r'$a_1$')
+# plt.ylabel(r'$a_2$')
+# plt.grid(True)
+# plt.scatter(success[:,0], success[:, 1], color='green', marker='^',label='Success')
+# plt.scatter(failure[:,0], failure[:, 1], color='red', marker='s', label='Failure')
+# plt.scatter(start[:,0], start[:, 1], color='orange', label='Stuck')
+#
+# for i in range(stuck.shape[0]):
+#     x0, y0 = start[i,0], start[i, 1]
+#     lx, ly = end[i,0] - x0, end[i, 1] - y0
+#     plt.arrow(x0, y0, lx, ly, color='black', linestyle='-.')
+#
+# plt.legend()
+# plt.show()
 
 plt.rc('text', usetex=True)
 plt.rc('font', family='serif')
