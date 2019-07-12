@@ -20,6 +20,7 @@ import zern_core as zern
 from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Activation
 from keras.models import Sequential
 from keras import backend as K
+from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
@@ -105,34 +106,48 @@ class PointSpreadFunction(object):
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
 
-def generate_training_set(PSF_model, N_samples=1500):
+def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="simple"):
 
-    _im, s = PSF_model.compute_PSF(np.zeros(N_zern))
-    N_pix = _im.shape[0]
-    extra_coefs = generate_sampling(2, N_zern, 0.2, -0.10)
-    N_channels = (extra_coefs.shape[0] + 1)
 
-    training = np.zeros((N_samples, N_pix, N_pix, N_channels))
-    perfect = np.zeros((N_samples, 128, 128))
+    # Generate extra coefficients for the Deformable Mirror corrections
+    if sampling == "simple":        # Scales as 2 * N_zern
+        extra_coefs = simple_sampling(N_zern, dm_stroke)
+
+    elif sampling == "complete":        # Scales as 2 ^ N_zern
+        extra_coefs = generate_sampling(2, N_zern, 2*dm_stroke, -dm_stroke)
+
+    else:
+        raise Exception
+
+    N_channels = 1 + extra_coefs.shape[0]
+
+    # Perfect PSF (128x128) - For the Loss function
+    im_perfect, _s = PSF_model.compute_PSF(np.zeros(N_zern), crop=False)
+    perfect = np.zeros((N_samples, 128, 128))           # Store the PSF N_sample times
+
+    # Training set contains (25x25)-images of: Nominal PSF + PSFs with corrections
+    training = np.zeros((N_samples, pix, pix, N_channels))
+    # Store the Phi_0 coefficients for later
     coefs = np.zeros((N_samples, N_zern))
 
-    im_perfect, _s = PSF_model.compute_PSF(np.zeros(N_zern), crop=False)
     for i in range(N_samples):
+
         rand_coef = np.random.uniform(low=-Z, high=Z, size=N_zern)
         coefs[i] = rand_coef
         im0, _s = PSF_model.compute_PSF(rand_coef)
-        # nom_im = [ims.flatten()]
+        # Store the images in a least and then turn it into array
         nom_im = [im0]
-        # print(ims.flatten().shape)
-        for c in extra_coefs:
-            ims, _s = PSF_model.compute_PSF(rand_coef + c)
-            # nom_im.append(ims.flatten())
-            nom_im.append(ims - im0)
-            # print(len(nom_im))
-            # print(nom_im[1].shape)
-        training[i] = np.moveaxis(np.array(nom_im), 0, -1)
-        perfect[i] = fftshift(im_perfect)
 
+        for c in extra_coefs:
+
+            ims, _s = PSF_model.compute_PSF(rand_coef + c)
+            # Difference between NOMINAL and CORRECTED
+            nom_im.append(ims - im0)
+
+        training[i] = np.moveaxis(np.array(nom_im), 0, -1)
+        # NOTE: Tensorflow does not have FFTSHIFT operation. So we have to fftshift the Perfect PSF
+        # back to the weird un-shifted format.
+        perfect[i] = fftshift(im_perfect)
 
     return training, coefs, perfect
 
@@ -153,21 +168,168 @@ def generate_sampling(sampling, N_zern, delta, start=0.0):
         coefs[:, i] = index
     return coefs
 
+def simple_sampling(N_zern, dm_stroke):
+    """
+    Extra coefficients in the form:
+    [-x, 0, ..., 0]
+    [+x, 0, ..., 0]
+    [0, -x, 0, ..., 0]
+    [0, +x, 0, ..., 0]
+            ...
+
+    The previous sampling scheme scales as sampling ^ N_zern. In contrast,
+    this scales as 2 * N_zern
+    """
+    coefs = np.empty((2* N_zern, N_zern))
+    for i in range(N_zern):
+        dummy = np.zeros((2, N_zern))
+        dummy[0, i] = dm_stroke
+        dummy[1, i] = -dm_stroke
+
+        coefs[2*i:2*i+2] = dummy
+    return coefs
+
 
 if __name__ == "__main__":
-    extra_coefs = generate_sampling(2, N_zern, 0.3, -0.15)
+
+    plt.rc('font', family='serif')
+    plt.rc('text', usetex=False)
+
+    # Sanity check: plot a PSF
     coef = np.random.uniform(low=-Z, high=Z, size=N_zern)
     print(coef)
-
     PSF = PointSpreadFunction(N_zern)
-    PSF.plot_PSF(coef, i=0)
+    PSF.plot_PSF(coef)
     plt.show()
 
-    train_images, train_coefs, perfect = generate_training_set(PSF, N_samples=500)
-    input_shape = (pix, pix, extra_coefs.shape[0]+1, )
+    ### Convolutional Neural Networks
+    sampling = "simple"
 
-    from keras.backend.tensorflow_backend import tf
-    num_classes = N_zern
+    N_channels = 2*N_zern + 1 if sampling == "simple" else 2**N_zern + 1
+    input_shape = (pix, pix, N_channels,)
+    N_classes = N_zern
+    N_train, N_test = 500, 50
+    N_samples = N_train + N_test
+
+    # Generate the Training and Test sets
+    _images, _coefs, _perfect = generate_training_set(PSF, N_samples=N_samples, sampling=sampling)
+    train_images, train_coefs, perfect_psf = _images[:N_train], _coefs[:N_train], _perfect[:N_train]
+    test_images, test_coefs = _images[N_train:], _coefs[N_train:]
+    dummy = np.zeros_like(train_coefs)
+
+    k = 0
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
+    ax1.set_title(r'$PSF(\Phi_0)$')
+    plt.colorbar(im1, ax=ax1)
+
+    ax2 = plt.subplot(1, 3, 2)
+    im2 = ax2.imshow(train_images[k, :, :, 1], cmap='bwr')
+    ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
+    plt.colorbar(im2, ax=ax2)
+
+    ax3 = plt.subplot(1, 3, 3)
+    im3 = ax3.imshow(train_images[k, :, :, 2], cmap='bwr')
+    ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
+    plt.colorbar(im3, ax=ax3)
+
+    plt.show()
+
+    # CNN Model
+    model = Sequential()
+    model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
+                     activation='relu',
+                     input_shape=input_shape))
+    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Flatten())
+    # model.add(Dense(512, activation='relu'))
+    # model.add(Dense(512, activation='relu'))
+    model.add(Dense(N_classes))
+    # model.add(Activation('linear'))
+    model.summary()
+
+
+    # Some bits for the Loss function definition
+    H = PSF.H_matrix.copy().T
+    # Roll it to match the Theano convention for dot product that TF uses
+    H = np.rollaxis(H, 1, 0)            # Model Matrix to compute the Phase with Zernikes
+    pup = PSF.pupil.copy()              # Pupil Mask
+    peak = PSF.PEAK.copy()              # Peak to normalize the FFT calculations
+
+    # Transform them to TensorFlow
+    pupt = tf.constant(pup, dtype=tf.float32)
+    ht = tf.constant(H, dtype=tf.float32)
+    coef_t = tf.constant(train_coefs, dtype=tf.float32)
+    perfect_t = tf.constant(perfect_psf, dtype=tf.float32)
+
+    def loss(y_true, y_pred):
+        """
+        Custom Keras Loss function
+        :param y_true: unused because we want it to be unsupervised
+        :param y_pred: predicted corrections for the PSF
+        :return:
+
+        Notes: Keras doesn't like dealing with Complex numbers so we separate the pupil function
+
+        P = P_mask * exp( 1i * Phase)
+
+        into Real and Imaginary parts using Euler's formula and then join them back into a Complex64
+        because Tensorflow expects it that way for the Fourier Transform
+        """
+
+        # Phase includes the unknown Phi_0 (coef_t) and the Predictions
+        phase = K.dot(coef_t + y_pred, ht)
+
+        cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
+        complex_phase = tf.complex(cos_x, sin_x)
+        image = (K.abs(tf.fft2d(complex_phase)))**2 / peak
+
+        # Compute the Difference between the PSF after applying a correction and a Perfect PSF
+        res = K.mean(K.sum((image - perfect_t)**2))
+
+        # We can train it to maximize the Strehl ratio on
+        # strehl = K.max(image, axis=(1, 2)) / peak
+        # print(strehl.shape)
+        # res = -K.mean(strehl)
+
+        return res
+
+    model.compile(optimizer='adam', loss=loss)
+    train_history = model.fit(x=train_images, y=dummy, epochs=250, batch_size=N_train, shuffle=False, verbose=1)
+    # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
+    # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
+
+    # Check predictions
+    guess = model.predict(test_images)
+    print(guess[:5])
+    print("\nTrue Values:")
+    print(test_coefs[:5])
+
+    # Plot a comparison Before & After
+    PSF.plot_PSF(test_coefs[-1])
+    PSF.plot_PSF(test_coefs[-1] + guess[-1])
+    plt.show()
+
+    # Some convergence results
+    loss_hist = train_history.history['loss']
+    plt.figure()
+    plt.semilogy(loss_hist)
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.show()
+
+    ## Further analysis
+
+    """
+    - Range of Z intensities over which we can operate. Maybe too small is difficult. Tiny features
+    - Instead of 2^N_zern use 2*N_zern. 1 correction per aberration (+-)
+    - Impact of strength of DM stroke. Too small, probably impossible to calibrate
+    - Impact of underlying aberrations we do not know. Noise
+    """
+
 
     # MLP
     # model = Sequential()
@@ -178,63 +340,7 @@ if __name__ == "__main__":
     # model.add(Dense(N_zern, activation='relu'))
     # model.summary()
 
-    # CNN
-    model = Sequential()
-    model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
-                     activation='relu',
-                     input_shape=input_shape))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(64, (3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Flatten())
-    # model.add(Dense(1024, activation='relu'))
-    # model.add(Dense(512, activation='relu'))
-    model.add(Dense(num_classes))
-    # model.add(Activation('linear'))
-    model.summary()
 
-    H = PSF.H_matrix.copy().T
-    H = np.rollaxis(H, 1, 0)
-    pup = PSF.pupil.copy()
-    peak = PSF.PEAK.copy()
-
-
-    pupt = tf.constant(pup, dtype=tf.float32)
-    ht = tf.constant(H, dtype=tf.float32)
-    coef_t = tf.constant(train_coefs[:-10], dtype=tf.float32)
-    perfect_t = tf.constant(perfect[:-10], dtype=tf.float32)
-
-    def loss(y_true, y_pred):
-        phase = K.dot(coef_t + y_pred, ht)
-        print(phase.shape)
-
-        cos_x = pupt * K.cos(phase)
-        sin_x = pupt * K.sin(phase)
-        complex_phase = tf.complex(cos_x, sin_x)
-        image = (K.abs(tf.fft2d(complex_phase)))**2 / peak
-        print(image.shape)
-
-        res = K.mean(K.sum((image - perfect_t)**2))
-
-
-        # strehl = K.max(image, axis=(1, 2)) / peak
-        # print(strehl.shape)
-        # res = -K.mean(strehl)
-
-        return res
-
-    model.compile(optimizer='adam', loss=loss)
-
-    model.fit(x=train_images[:-10], y=train_coefs[:-10], epochs=50, batch_size=490, shuffle=False, verbose=1)
-    guess = model.predict(train_images[-10:])
-    # print(guess)
-    print(train_coefs[-10:])
-
-    print(train_coefs[-10:] + guess)
-
-    PSF.plot_PSF(train_coefs[-1], i=0)
-    PSF.plot_PSF(train_coefs[-1] + guess[-1], i=0)
-    plt.show()
     #
     # # Super Interesting stuff
     # # How to get the gradients in Keras

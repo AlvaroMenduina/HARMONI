@@ -19,7 +19,7 @@ i_central = 20
 
 # POP arrays - Nyquist sampled PSF
 x_size = 3.328           # Physical size of arraxy at Image Plane
-N_pix = 512              # Number of pixels in the Zemax BFL
+N_pix = 256              # Number of pixels in the Zemax BFL
 N_crop = 64             # Crop to a smaller region around the PSF
 min_pix = N_pix//2 - N_crop//2
 max_pix = N_pix//2 + N_crop//2
