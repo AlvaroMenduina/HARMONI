@@ -17,6 +17,7 @@ from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
 import zern_core as zern
 
+import keras
 from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Activation
 from keras.models import Sequential
 from keras import backend as K
@@ -24,8 +25,8 @@ from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
-N_zern = 3                  # Number of aberrations to consider
-Z = 1.25                    # Strength of the aberrations
+N_zern = 25                  # Number of aberrations to consider
+Z = 0.75                    # Strength of the aberrations
 pix = 25                    # Pixels to crop the PSF
 
 class PointSpreadFunction(object):
@@ -106,7 +107,7 @@ class PointSpreadFunction(object):
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
 
-def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="simple"):
+def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="simple", N_cases=2):
 
 
     # Generate extra coefficients for the Deformable Mirror corrections
@@ -115,6 +116,9 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
 
     elif sampling == "complete":        # Scales as 2 ^ N_zern
         extra_coefs = generate_sampling(2, N_zern, 2*dm_stroke, -dm_stroke)
+
+    elif sampling == "random":          # Random displacements for 2*N_cases
+        extra_coefs = random_sampling(N_zern, dm_stroke, N_cases)
 
     else:
         raise Exception
@@ -189,6 +193,32 @@ def simple_sampling(N_zern, dm_stroke):
         coefs[2*i:2*i+2] = dummy
     return coefs
 
+def random_sampling(N_zern, dm_stroke, N_cases=3):
+    """
+    Extra coefficients using random displacements for a total of 2 * N_cases
+
+    Example:
+        [ -1, 0, 2, -3, ...]
+        [ 1, 0, -2,  3, ...]  # A pair of opposite sign, with size N_zern
+
+        ...
+        [ 3, 1, -2, -1, ...]
+        [-3, -1, 2,  1, ...]
+
+
+
+    """
+
+    coefs = np.empty((2 * N_cases, N_zern))
+    alpha = 3
+    for i in range(N_cases):
+        dummy = dm_stroke * np.random.randint(low=-alpha, high=alpha, size=N_zern)
+
+        coefs[2*i] = dummy
+        coefs[2*i+1] = -dummy
+    return coefs
+
+losses, strehls = [], []
 
 if __name__ == "__main__":
 
@@ -202,20 +232,21 @@ if __name__ == "__main__":
     PSF.plot_PSF(coef)
     plt.show()
 
-    ### Convolutional Neural Networks
-    sampling = "simple"
 
-    N_channels = 2*N_zern + 1 if sampling == "simple" else 2**N_zern + 1
-    input_shape = (pix, pix, N_channels,)
-    N_classes = N_zern
+    N_classes, N_cases = N_zern, 3
     N_train, N_test = 500, 50
     N_samples = N_train + N_test
+    sampling = "random"
 
     # Generate the Training and Test sets
-    _images, _coefs, _perfect = generate_training_set(PSF, N_samples=N_samples, sampling=sampling)
+    _images, _coefs, _perfect = generate_training_set(PSF, N_samples=N_samples, sampling=sampling, N_cases=N_cases)
     train_images, train_coefs, perfect_psf = _images[:N_train], _coefs[:N_train], _perfect[:N_train]
     test_images, test_coefs = _images[N_train:], _coefs[N_train:]
     dummy = np.zeros_like(train_coefs)
+
+    ### Convolutional Neural Networks
+    N_channels = train_images.shape[-1]
+    input_shape = (pix, pix, N_channels,)
 
     k = 0
     f, (ax1, ax2, ax3) = plt.subplots(1, 3)
@@ -265,6 +296,7 @@ if __name__ == "__main__":
     coef_t = tf.constant(train_coefs, dtype=tf.float32)
     perfect_t = tf.constant(perfect_psf, dtype=tf.float32)
 
+
     def loss(y_true, y_pred):
         """
         Custom Keras Loss function
@@ -297,6 +329,16 @@ if __name__ == "__main__":
 
         return res
 
+    def compute_strehl():
+        guess = model.predict(test_images)
+        strehls = []
+        for g, c in zip(guess, test_coefs):
+            print(g)
+            print(c)
+            _im, s = PSF.compute_PSF(g + c)
+            strehls.append(s)
+        return np.array(strehls)
+
     model.compile(optimizer='adam', loss=loss)
     train_history = model.fit(x=train_images, y=dummy, epochs=250, batch_size=N_train, shuffle=False, verbose=1)
     # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
@@ -321,6 +363,13 @@ if __name__ == "__main__":
     plt.ylabel('Loss')
     plt.show()
 
+    N_cases = [1, 2, 3]
+
+    losses.append(loss_hist)
+    strehls.append(compute_strehl())
+
+
+
     ## Further analysis
 
     """
@@ -328,6 +377,8 @@ if __name__ == "__main__":
     - Instead of 2^N_zern use 2*N_zern. 1 correction per aberration (+-)
     - Impact of strength of DM stroke. Too small, probably impossible to calibrate
     - Impact of underlying aberrations we do not know. Noise
+    
+    - Instead of using 2*N_zern + 1, why not N images with random commands?
     """
 
 
@@ -339,6 +390,35 @@ if __name__ == "__main__":
     # model.add(Dense(50, activation='relu'))
     # model.add(Dense(N_zern, activation='relu'))
     # model.summary()
+
+    # # Validation tensors
+    # val_coef = tf.constant(test_coefs, dtype=tf.float32)
+    # val_perfect = tf.constant(perfect_psf[:N_test], dtype=tf.float32)
+    #
+    # class CustomCallback(keras.callbacks.Callback):
+    #     def on_train_begin(self, logs={}):
+    #         self.losses = []
+    #
+    #
+    #     def on_train_end(self, logs={}):
+    #         return
+    #
+    #     def on_epoch_begin(self, epoch, logs={}):
+    #         return
+    #
+    #     def on_epoch_end(self, epoch, logs={}):
+    #         self.losses.append(logs.get('loss'))
+    #         y_pred = self.model.predict(self.validation_data[0])
+    #         print(y_pred)
+    #         return
+    #
+    #     def on_batch_begin(self, batch, logs={}):
+    #         return
+    #
+    #     def on_batch_end(self, batch, logs={}):
+    #         return
+
+    # custom_callback = CustomCallback()
 
 
     #
