@@ -147,6 +147,7 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
             ims, _s = PSF_model.compute_PSF(rand_coef + c)
             # Difference between NOMINAL and CORRECTED
             nom_im.append(ims - im0)
+            # nom_im.append(ims)
 
         training[i] = np.moveaxis(np.array(nom_im), 0, -1)
         # NOTE: Tensorflow does not have FFTSHIFT operation. So we have to fftshift the Perfect PSF
@@ -251,24 +252,24 @@ if __name__ == "__main__":
         N_channels = train_images.shape[-1]
         input_shape = (pix, pix, N_channels,)
 
-        # k = 0
-        # f, (ax1, ax2, ax3) = plt.subplots(1, 3)
-        # ax1 = plt.subplot(1, 3, 1)
-        # im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
-        # ax1.set_title(r'$PSF(\Phi_0)$')
-        # plt.colorbar(im1, ax=ax1)
-        #
-        # ax2 = plt.subplot(1, 3, 2)
-        # im2 = ax2.imshow(train_images[k, :, :, 1], cmap='bwr')
-        # ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
-        # plt.colorbar(im2, ax=ax2)
-        #
-        # ax3 = plt.subplot(1, 3, 3)
-        # im3 = ax3.imshow(train_images[k, :, :, 2], cmap='bwr')
-        # ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
-        # plt.colorbar(im3, ax=ax3)
-        #
-        # plt.show()
+        k = 0
+        f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        ax1 = plt.subplot(1, 3, 1)
+        im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
+        ax1.set_title(r'$PSF(\Phi_0)$')
+        plt.colorbar(im1, ax=ax1)
+
+        ax2 = plt.subplot(1, 3, 2)
+        im2 = ax2.imshow(train_images[k, :, :, 1], cmap='hot')
+        ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
+        plt.colorbar(im2, ax=ax2)
+
+        ax3 = plt.subplot(1, 3, 3)
+        im3 = ax3.imshow(train_images[k, :, :, 2], cmap='hot')
+        ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
+        plt.colorbar(im3, ax=ax3)
+
+        plt.show()
 
         # CNN Model
         model = Sequential()
@@ -381,11 +382,23 @@ if __name__ == "__main__":
 
 
     plt.figure()
-    for l, s in zip(loss_array, strehls):
-        plt.semilogy(l)
-
-    # plt.legend()
+    for i, l in enumerate(loss_array):
+        plt.semilogy(l, label=i+1)
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend(title='Number of cases')
     plt.show()
+
+    plt.figure()
+    for i, s in enumerate(strehl_array):
+        plt.hist(s, label=i+1, histtype='step')
+    # plt.xlabel('Epoch')
+    # plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
+
+    strehls = np.array(strehl_array)
+    s_mean = np.mean(strehls, axis=1)
 
 
 
