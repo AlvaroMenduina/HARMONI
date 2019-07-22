@@ -146,8 +146,8 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
 
             ims, _s = PSF_model.compute_PSF(rand_coef + c)
             # Difference between NOMINAL and CORRECTED
-            nom_im.append(ims - im0)
-            # nom_im.append(ims)
+            # nom_im.append(ims - im0)
+            nom_im.append(ims)
 
         training[i] = np.moveaxis(np.array(nom_im), 0, -1)
         # NOTE: Tensorflow does not have FFTSHIFT operation. So we have to fftshift the Perfect PSF
@@ -252,24 +252,24 @@ if __name__ == "__main__":
         N_channels = train_images.shape[-1]
         input_shape = (pix, pix, N_channels,)
 
-        k = 0
-        f, (ax1, ax2, ax3) = plt.subplots(1, 3)
-        ax1 = plt.subplot(1, 3, 1)
-        im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
-        ax1.set_title(r'$PSF(\Phi_0)$')
-        plt.colorbar(im1, ax=ax1)
-
-        ax2 = plt.subplot(1, 3, 2)
-        im2 = ax2.imshow(train_images[k, :, :, 1], cmap='hot')
-        ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
-        plt.colorbar(im2, ax=ax2)
-
-        ax3 = plt.subplot(1, 3, 3)
-        im3 = ax3.imshow(train_images[k, :, :, 2], cmap='hot')
-        ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
-        plt.colorbar(im3, ax=ax3)
-
-        plt.show()
+        # k = 0
+        # f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        # ax1 = plt.subplot(1, 3, 1)
+        # im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
+        # ax1.set_title(r'$PSF(\Phi_0)$')
+        # plt.colorbar(im1, ax=ax1)
+        #
+        # ax2 = plt.subplot(1, 3, 2)
+        # im2 = ax2.imshow(train_images[k, :, :, 1], cmap='bwr')
+        # ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
+        # plt.colorbar(im2, ax=ax2)
+        #
+        # ax3 = plt.subplot(1, 3, 3)
+        # im3 = ax3.imshow(train_images[k, :, :, 2], cmap='bwr')
+        # ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
+        # plt.colorbar(im3, ax=ax3)
+        #
+        # plt.show()
 
         # CNN Model
         model = Sequential()
@@ -344,7 +344,7 @@ if __name__ == "__main__":
             return np.array(strehls)
 
         model.compile(optimizer='adam', loss=loss)
-        train_history = model.fit(x=train_images, y=dummy, epochs=500, batch_size=N_train, shuffle=False, verbose=1)
+        train_history = model.fit(x=train_images, y=dummy, epochs=250, batch_size=N_train, shuffle=False, verbose=1)
         # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
         # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
 
@@ -352,6 +352,17 @@ if __name__ == "__main__":
 
         loss_array.append(loss_hist)
         strehl_array.append(compute_strehl())
+
+    plt.figure()
+    plt.semilogy(l_PSF, label='PSF')
+    plt.semilogy(l_Diff, label='Diff')
+    plt.legend(title='Approach')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.xlim([0, 250])
+    plt.show()
+
+
 
     # Check predictions
     guess = model.predict(test_images)
