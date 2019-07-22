@@ -233,116 +233,124 @@ if __name__ == "__main__":
     plt.show()
 
 
-    N_classes, N_cases = N_zern, 3
-    N_train, N_test = 500, 50
-    N_samples = N_train + N_test
-    sampling = "random"
+    loss_array, strehl_array = [], []
 
-    # Generate the Training and Test sets
-    _images, _coefs, _perfect = generate_training_set(PSF, N_samples=N_samples, sampling=sampling, N_cases=N_cases)
-    train_images, train_coefs, perfect_psf = _images[:N_train], _coefs[:N_train], _perfect[:N_train]
-    test_images, test_coefs = _images[N_train:], _coefs[N_train:]
-    dummy = np.zeros_like(train_coefs)
+    for N_cases in [1, 2, 3]:
+        N_classes = N_zern
+        N_train, N_test = 500, 50
+        N_samples = N_train + N_test
+        sampling = "random"
 
-    ### Convolutional Neural Networks
-    N_channels = train_images.shape[-1]
-    input_shape = (pix, pix, N_channels,)
+        # Generate the Training and Test sets
+        _images, _coefs, _perfect = generate_training_set(PSF, N_samples=N_samples, sampling=sampling, N_cases=N_cases)
+        train_images, train_coefs, perfect_psf = _images[:N_train], _coefs[:N_train], _perfect[:N_train]
+        test_images, test_coefs = _images[N_train:], _coefs[N_train:]
+        dummy = np.zeros_like(train_coefs)
 
-    k = 0
-    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
-    ax1 = plt.subplot(1, 3, 1)
-    im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
-    ax1.set_title(r'$PSF(\Phi_0)$')
-    plt.colorbar(im1, ax=ax1)
+        ### Convolutional Neural Networks
+        N_channels = train_images.shape[-1]
+        input_shape = (pix, pix, N_channels,)
 
-    ax2 = plt.subplot(1, 3, 2)
-    im2 = ax2.imshow(train_images[k, :, :, 1], cmap='bwr')
-    ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
-    plt.colorbar(im2, ax=ax2)
+        # k = 0
+        # f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        # ax1 = plt.subplot(1, 3, 1)
+        # im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
+        # ax1.set_title(r'$PSF(\Phi_0)$')
+        # plt.colorbar(im1, ax=ax1)
+        #
+        # ax2 = plt.subplot(1, 3, 2)
+        # im2 = ax2.imshow(train_images[k, :, :, 1], cmap='bwr')
+        # ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
+        # plt.colorbar(im2, ax=ax2)
+        #
+        # ax3 = plt.subplot(1, 3, 3)
+        # im3 = ax3.imshow(train_images[k, :, :, 2], cmap='bwr')
+        # ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
+        # plt.colorbar(im3, ax=ax3)
+        #
+        # plt.show()
 
-    ax3 = plt.subplot(1, 3, 3)
-    im3 = ax3.imshow(train_images[k, :, :, 2], cmap='bwr')
-    ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
-    plt.colorbar(im3, ax=ax3)
-
-    plt.show()
-
-    # CNN Model
-    model = Sequential()
-    model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
-                     activation='relu',
-                     input_shape=input_shape))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(64, (3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Flatten())
-    # model.add(Dense(512, activation='relu'))
-    # model.add(Dense(512, activation='relu'))
-    model.add(Dense(N_classes))
-    # model.add(Activation('linear'))
-    model.summary()
-
-
-    # Some bits for the Loss function definition
-    H = PSF.H_matrix.copy().T
-    # Roll it to match the Theano convention for dot product that TF uses
-    H = np.rollaxis(H, 1, 0)            # Model Matrix to compute the Phase with Zernikes
-    pup = PSF.pupil.copy()              # Pupil Mask
-    peak = PSF.PEAK.copy()              # Peak to normalize the FFT calculations
-
-    # Transform them to TensorFlow
-    pupt = tf.constant(pup, dtype=tf.float32)
-    ht = tf.constant(H, dtype=tf.float32)
-    coef_t = tf.constant(train_coefs, dtype=tf.float32)
-    perfect_t = tf.constant(perfect_psf, dtype=tf.float32)
+        # CNN Model
+        model = Sequential()
+        model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
+                         activation='relu',
+                         input_shape=input_shape))
+        model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+        model.add(Conv2D(64, (3, 3), activation='relu'))
+        model.add(MaxPooling2D(pool_size=(2, 2)))
+        model.add(Flatten())
+        # model.add(Dense(512, activation='relu'))
+        # model.add(Dense(512, activation='relu'))
+        model.add(Dense(N_classes))
+        # model.add(Activation('linear'))
+        model.summary()
 
 
-    def loss(y_true, y_pred):
-        """
-        Custom Keras Loss function
-        :param y_true: unused because we want it to be unsupervised
-        :param y_pred: predicted corrections for the PSF
-        :return:
+        # Some bits for the Loss function definition
+        H = PSF.H_matrix.copy().T
+        # Roll it to match the Theano convention for dot product that TF uses
+        H = np.rollaxis(H, 1, 0)            # Model Matrix to compute the Phase with Zernikes
+        pup = PSF.pupil.copy()              # Pupil Mask
+        peak = PSF.PEAK.copy()              # Peak to normalize the FFT calculations
 
-        Notes: Keras doesn't like dealing with Complex numbers so we separate the pupil function
+        # Transform them to TensorFlow
+        pupt = tf.constant(pup, dtype=tf.float32)
+        ht = tf.constant(H, dtype=tf.float32)
+        coef_t = tf.constant(train_coefs, dtype=tf.float32)
+        perfect_t = tf.constant(perfect_psf, dtype=tf.float32)
 
-        P = P_mask * exp( 1i * Phase)
 
-        into Real and Imaginary parts using Euler's formula and then join them back into a Complex64
-        because Tensorflow expects it that way for the Fourier Transform
-        """
+        def loss(y_true, y_pred):
+            """
+            Custom Keras Loss function
+            :param y_true: unused because we want it to be unsupervised
+            :param y_pred: predicted corrections for the PSF
+            :return:
 
-        # Phase includes the unknown Phi_0 (coef_t) and the Predictions
-        phase = K.dot(coef_t + y_pred, ht)
+            Notes: Keras doesn't like dealing with Complex numbers so we separate the pupil function
 
-        cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
-        complex_phase = tf.complex(cos_x, sin_x)
-        image = (K.abs(tf.fft2d(complex_phase)))**2 / peak
+            P = P_mask * exp( 1i * Phase)
 
-        # Compute the Difference between the PSF after applying a correction and a Perfect PSF
-        res = K.mean(K.sum((image - perfect_t)**2))
+            into Real and Imaginary parts using Euler's formula and then join them back into a Complex64
+            because Tensorflow expects it that way for the Fourier Transform
+            """
 
-        # We can train it to maximize the Strehl ratio on
-        # strehl = K.max(image, axis=(1, 2)) / peak
-        # print(strehl.shape)
-        # res = -K.mean(strehl)
+            # Phase includes the unknown Phi_0 (coef_t) and the Predictions
+            phase = K.dot(coef_t + y_pred, ht)
 
-        return res
+            cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
+            complex_phase = tf.complex(cos_x, sin_x)
+            image = (K.abs(tf.fft2d(complex_phase)))**2 / peak
 
-    def compute_strehl():
-        guess = model.predict(test_images)
-        strehls = []
-        for g, c in zip(guess, test_coefs):
-            print(g)
-            print(c)
-            _im, s = PSF.compute_PSF(g + c)
-            strehls.append(s)
-        return np.array(strehls)
+            # Compute the Difference between the PSF after applying a correction and a Perfect PSF
+            res = K.mean(K.sum((image - perfect_t)**2))
 
-    model.compile(optimizer='adam', loss=loss)
-    train_history = model.fit(x=train_images, y=dummy, epochs=250, batch_size=N_train, shuffle=False, verbose=1)
-    # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
-    # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
+            # We can train it to maximize the Strehl ratio on
+            # strehl = K.max(image, axis=(1, 2)) / peak
+            # print(strehl.shape)
+            # res = -K.mean(strehl)
+
+            return res
+
+        def compute_strehl():
+            guess = model.predict(test_images)
+            strehls = []
+            for g, c in zip(guess, test_coefs):
+                print(g)
+                print(c)
+                _im, s = PSF.compute_PSF(g + c)
+                strehls.append(s)
+            return np.array(strehls)
+
+        model.compile(optimizer='adam', loss=loss)
+        train_history = model.fit(x=train_images, y=dummy, epochs=500, batch_size=N_train, shuffle=False, verbose=1)
+        # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
+        # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
+
+        loss_hist = train_history.history['loss']
+
+        loss_array.append(loss_hist)
+        strehl_array.append(compute_strehl())
 
     # Check predictions
     guess = model.predict(test_images)
@@ -367,6 +375,17 @@ if __name__ == "__main__":
 
     losses.append(loss_hist)
     strehls.append(compute_strehl())
+
+    loss_array = [losses[:-2], losses[-1]]
+    strehl_array = [strehls[:-2], strehls[-1]]
+
+
+    plt.figure()
+    for l, s in zip(loss_array, strehls):
+        plt.semilogy(l)
+
+    # plt.legend()
+    plt.show()
 
 
 
