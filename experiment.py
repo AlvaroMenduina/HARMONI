@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import zern_core as zern
 
 import keras
-from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Activation
+from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Activation, Dropout
 from keras.models import Sequential
 from keras import backend as K
 from keras.backend.tensorflow_backend import tf
@@ -26,7 +26,7 @@ from numpy.linalg import norm as norm
 
 # PARAMETERS
 N_zern = 25                  # Number of aberrations to consider
-Z = 0.75                    # Strength of the aberrations
+Z = 1.0                    # Strength of the aberrations
 pix = 25                    # Pixels to crop the PSF
 
 class PointSpreadFunction(object):
@@ -146,8 +146,8 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
 
             ims, _s = PSF_model.compute_PSF(rand_coef + c)
             # Difference between NOMINAL and CORRECTED
-            # nom_im.append(ims - im0)
-            nom_im.append(ims)
+            nom_im.append(ims - im0)
+            # nom_im.append(ims)
 
         training[i] = np.moveaxis(np.array(nom_im), 0, -1)
         # NOTE: Tensorflow does not have FFTSHIFT operation. So we have to fftshift the Perfect PSF
@@ -219,7 +219,6 @@ def random_sampling(N_zern, dm_stroke, N_cases=3):
         coefs[2*i+1] = -dummy
     return coefs
 
-losses, strehls = [], []
 
 if __name__ == "__main__":
 
@@ -232,7 +231,6 @@ if __name__ == "__main__":
     PSF = PointSpreadFunction(N_zern)
     PSF.plot_PSF(coef)
     plt.show()
-
 
     loss_array, strehl_array = [], []
 
@@ -277,10 +275,12 @@ if __name__ == "__main__":
                          activation='relu',
                          input_shape=input_shape))
         model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+        # model.add(Dropout(0.5))
         model.add(Conv2D(64, (3, 3), activation='relu'))
         model.add(MaxPooling2D(pool_size=(2, 2)))
+        # model.add(Dropout(0.5))
         model.add(Flatten())
-        # model.add(Dense(512, activation='relu'))
+        # model.add(Dense(50, activation='relu'))
         # model.add(Dense(512, activation='relu'))
         model.add(Dense(N_classes))
         # model.add(Activation('linear'))
@@ -333,15 +333,57 @@ if __name__ == "__main__":
 
             return res
 
-        def compute_strehl():
-            guess = model.predict(test_images)
+        def compute_strehl(PSF_images, true_coef):
+            """
+            For a given set of PSF images and their associated aberration coefficients,
+            it computes the predicted correction, and the Strehl ratio after that correction is applied
+            :param PSF_images:
+            :param true_coef:
+            :return:
+            """
+            guess_coef = model.predict(PSF_images)
             strehls = []
-            for g, c in zip(guess, test_coefs):
-                print(g)
-                print(c)
+            for g, c in zip(guess_coef, true_coef):
+                # print(g)
+                # print(c)
                 _im, s = PSF.compute_PSF(g + c)
                 strehls.append(s)
             return np.array(strehls)
+
+        def post_analysis(test_images, test_coefs, N_show=5):
+            """
+
+            :param test_images:
+            :param test_coefs:
+            :param N_show:
+            :return:
+            """
+            initial_strehls = compute_strehl(test_images, np.zeros_like(test_coefs))
+            final_strehls = compute_strehl(test_images, test_coefs)
+
+            plt.figure()    # Show a comparison of Strehl ratios
+            plt.hist(initial_strehls, histtype='step', label='Before')
+            plt.hist(final_strehls, histtype='step', label='After')
+            plt.xlabel('Strehl Ratio')
+            plt.legend(title='Stage')
+
+            for k in range(N_show):     # Show the PSF comparison (Before / After)
+
+                guess_coef = model.predict(test_images)
+                final_PSF, _s = PSF.compute_PSF(guess_coef[k] + test_coefs[k])
+
+                f, (ax1, ax2) = plt.subplots(1, 2)
+                ax1 = plt.subplot(1, 2, 1)
+                im1 = ax1.imshow(test_images[k, :, :, 0], cmap='hot')
+                ax1.set_title('Before %.3f' %initial_strehls[k])
+                plt.colorbar(im1, ax=ax1)
+
+                ax2 = plt.subplot(1, 2, 2)
+                im2 = ax2.imshow(final_PSF, cmap='hot')
+                ax2.set_title('After %.3f' %final_strehls[k])
+                plt.colorbar(im2, ax=ax2)
+
+
 
         model.compile(optimizer='adam', loss=loss)
         train_history = model.fit(x=train_images, y=dummy, epochs=250, batch_size=N_train, shuffle=False, verbose=1)
@@ -351,7 +393,26 @@ if __name__ == "__main__":
         loss_hist = train_history.history['loss']
 
         loss_array.append(loss_hist)
-        strehl_array.append(compute_strehl())
+        strehl_array.append(compute_strehl(test_images, test_coefs))
+
+
+    plt.figure()
+    for i, l in enumerate(loss_array):
+        plt.semilogy(l, label=i+1)
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend(title='Number of cases')
+
+    plt.figure()
+    for i, s in enumerate(strehl_array):
+        plt.hist(s, label=i+1, histtype='step')
+    plt.legend()
+    plt.show()
+
+    strehls = np.array(strehl_array)
+    s_mean = np.mean(strehls, axis=1)
+
+    # ===============================================================================================================  #
 
     plt.figure()
     plt.semilogy(l_PSF, label='PSF')
@@ -391,25 +452,51 @@ if __name__ == "__main__":
     loss_array = [losses[:-2], losses[-1]]
     strehl_array = [strehls[:-2], strehls[-1]]
 
+    """ Visualizing the Layers """
+    from keras import models
+    layer_outputs = [layer.output for layer in model.layers[:4]]  # Extracts the outputs of the top 12 layers
+    activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
 
-    plt.figure()
-    for i, l in enumerate(loss_array):
-        plt.semilogy(l, label=i+1)
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend(title='Number of cases')
-    plt.show()
+    img_tensor = test_images[1:2]
+    M = img_tensor.shape[-1]
+    for k in range(M):
+        plt.figure()
+        plt.imshow(img_tensor[0,:,:,k], cmap='hot')
+        plt.colorbar()
+        plt.title('Channel %d' %k)
 
-    plt.figure()
-    for i, s in enumerate(strehl_array):
-        plt.hist(s, label=i+1, histtype='step')
-    # plt.xlabel('Epoch')
-    # plt.ylabel('Loss')
-    plt.legend()
-    plt.show()
+    activations = activation_model.predict(img_tensor)
+    first_layer_activation = activations[0]
+    print(first_layer_activation.shape)
 
-    strehls = np.array(strehl_array)
-    s_mean = np.mean(strehls, axis=1)
+
+    layer_names = []
+    for layer in model.layers[:4]:
+        layer_names.append(layer.name)  # Names of the layers, so you can have them as part of your plot
+
+    images_per_row = 16
+    for layer_name, layer_activation in zip(layer_names, activations):  # Displays the feature maps
+        n_features = layer_activation.shape[-1]  # Number of features in the feature map
+        size = layer_activation.shape[1]  # The feature map has shape (1, size, size, n_features).
+        print(size)
+        n_cols = n_features // images_per_row  # Tiles the activation channels in this matrix
+        display_grid = np.zeros((size * n_cols, images_per_row * size))
+        for col in range(n_cols):  # Tiles each filter into a big horizontal grid
+            for row in range(images_per_row):
+                channel_image = layer_activation[0,:, :,col * images_per_row + row]
+                # channel_image -= channel_image.mean()  # Post-processes the feature to make it visually palatable
+                # channel_image /= channel_image.std()
+                # channel_image *= 64
+                # channel_image += 128
+                # channel_image = np.clip(channel_image, 0, 255).astype('uint8')
+                display_grid[col * size: (col + 1) * size,  # Displays the grid
+                row * size: (row + 1) * size] = channel_image
+        scale = 1. / size
+        plt.figure(figsize=(scale * display_grid.shape[1],
+                            scale * display_grid.shape[0]))
+        plt.title(layer_name)
+        plt.grid(False)
+        plt.imshow(display_grid, aspect='auto', cmap='hot')
 
 
 
@@ -422,6 +509,9 @@ if __name__ == "__main__":
     - Impact of underlying aberrations we do not know. Noise
     
     - Instead of using 2*N_zern + 1, why not N images with random commands?
+    
+    - Whether to use Dropout or not. Dropout makes it worse
+    - CNN output visualization to understand it
     """
 
 
