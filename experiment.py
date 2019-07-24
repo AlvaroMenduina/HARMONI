@@ -367,6 +367,7 @@ if __name__ == "__main__":
             plt.hist(final_strehls, histtype='step', label='After')
             plt.xlabel('Strehl Ratio')
             plt.legend(title='Stage')
+            plt.savefig('Strehl_Hist')
 
             for k in range(N_show):     # Show the PSF comparison (Before / After)
 
@@ -383,6 +384,8 @@ if __name__ == "__main__":
                 im2 = ax2.imshow(final_PSF, cmap='hot')
                 ax2.set_title('After %.3f' %final_strehls[k])
                 plt.colorbar(im2, ax=ax2)
+
+                plt.savefig(k)
 
 
 
