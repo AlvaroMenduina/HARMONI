@@ -154,7 +154,7 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
         # back to the weird un-shifted format.
         perfect[i] = fftshift(im_perfect)
 
-    return training, coefs, perfect
+    return training, coefs, perfect, extra_coefs
 
 def generate_sampling(sampling, N_zern, delta, start=0.0):
     """
@@ -241,7 +241,7 @@ if __name__ == "__main__":
         sampling = "random"
 
         # Generate the Training and Test sets
-        _images, _coefs, _perfect = generate_training_set(PSF, N_samples=N_samples, sampling=sampling, N_cases=N_cases)
+        _images, _coefs, _perfect, _extra = generate_training_set(PSF, N_samples=N_samples, sampling=sampling, N_cases=N_cases)
         train_images, train_coefs, perfect_psf = _images[:N_train], _coefs[:N_train], _perfect[:N_train]
         test_images, test_coefs = _images[N_train:], _coefs[N_train:]
         dummy = np.zeros_like(train_coefs)
@@ -509,7 +509,8 @@ if __name__ == "__main__":
     # Trying to see what the CNN does.
     # Let's
 
-    extra_coefs = simple_sampling(N_zern, dm_stroke=0.1)
+    # extra_coefs = simple_sampling(N_zern, dm_stroke=0.1)
+    extra_coefs = random_sampling(N_zern, dm_stroke=0.1, N_cases=3)
     coef0 = test_coefs[0]
     im0, _s = PSF.compute_PSF(coef0)
     nom_im = [im0]
@@ -517,6 +518,7 @@ if __name__ == "__main__":
         ims, _s = PSF.compute_PSF(coef0 + c)
         nom_im.append(ims - im0)
     im0 = np.moveaxis(np.array(nom_im), 0, -1)
+    im0 = im0[np.newaxis, :, :, :]
 
     coef1 = coef0.copy()
     coef1[0] *= 2.0         # Poke one of the Zernikes
