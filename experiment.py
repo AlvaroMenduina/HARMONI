@@ -385,7 +385,7 @@ if __name__ == "__main__":
                 ax2.set_title('After %.3f' %final_strehls[k])
                 plt.colorbar(im2, ax=ax2)
 
-                plt.savefig(k)
+                plt.savefig('%d' %k)
 
 
 
