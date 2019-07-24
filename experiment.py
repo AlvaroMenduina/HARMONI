@@ -528,30 +528,79 @@ if __name__ == "__main__":
         ims, _s = PSF.compute_PSF(coef1 + c)
         nom_im.append(ims - im1)
     im1 = np.moveaxis(np.array(nom_im), 0, -1)
+    im1 = im1[np.newaxis, :, :, :]
 
     plt.figure()
     plt.imshow(im0[0, :, :, 0], cmap='hot')
     plt.colorbar()
+    plt.title('Nominal Image')
 
     plt.figure()
     plt.imshow(im1[0, :, :, 0], cmap='hot')
     plt.colorbar()
+    plt.title('New Image')
 
     plt.figure()
     plt.imshow(im1[0, :, :, 0] - im0[0, :, :, 0], cmap='hot')
-    plt.colorbar()
+    plt.colorbar('Residuals')
 
 
+    activations0 = activation_model.predict(im0)
+    activations1 = activation_model.predict(im1)
+    diff_activ = activations0 - activations1
 
-    M = img_tensor.shape[-1]
-    for k in range(M):
-        plt.figure()
-        plt.imshow(img_tensor[0,:,:,k], cmap='hot')
-        plt.colorbar()
-        plt.title('Channel %d' %k)
+    images_per_row = 16
+    for layer_name, layer_activation in zip(layer_names, activations0):  # Displays the feature maps
+        n_features = layer_activation.shape[-1]  # Number of features in the feature map
+        size = layer_activation.shape[1]  # The feature map has shape (1, size, size, n_features).
+        n_cols = n_features // images_per_row  # Tiles the activation channels in this matrix
+        display_grid = np.zeros((size * n_cols, images_per_row * size))
+        for col in range(n_cols):  # Tiles each filter into a big horizontal grid
+            for row in range(images_per_row):
+                channel_image = layer_activation[0,:, :,col * images_per_row + row]
+                display_grid[col * size: (col + 1) * size,  # Displays the grid
+                row * size: (row + 1) * size] = channel_image
+        scale = 1. / size
+        plt.figure(figsize=(scale * display_grid.shape[1],
+                            scale * display_grid.shape[0]))
+        plt.title(layer_name)
+        plt.grid(False)
+        plt.imshow(display_grid, aspect='auto', cmap='hot')
 
-    activations = activation_model.predict(img_tensor)
+    for layer_name, layer_activation in zip(layer_names, activations1):  # Displays the feature maps
+        n_features = layer_activation.shape[-1]  # Number of features in the feature map
+        size = layer_activation.shape[1]  # The feature map has shape (1, size, size, n_features).
+        n_cols = n_features // images_per_row  # Tiles the activation channels in this matrix
+        display_grid = np.zeros((size * n_cols, images_per_row * size))
+        for col in range(n_cols):  # Tiles each filter into a big horizontal grid
+            for row in range(images_per_row):
+                channel_image = layer_activation[0,:, :,col * images_per_row + row]
+                display_grid[col * size: (col + 1) * size,  # Displays the grid
+                row * size: (row + 1) * size] = channel_image
+        scale = 1. / size
+        plt.figure(figsize=(scale * display_grid.shape[1],
+                            scale * display_grid.shape[0]))
+        plt.title(layer_name)
+        plt.grid(False)
+        plt.imshow(display_grid, aspect='auto', cmap='hot')
 
+
+    for layer_name, layer_activation in zip(layer_names, diff_activ):  # Displays the feature maps
+        n_features = layer_activation.shape[-1]  # Number of features in the feature map
+        size = layer_activation.shape[1]  # The feature map has shape (1, size, size, n_features).
+        n_cols = n_features // images_per_row  # Tiles the activation channels in this matrix
+        display_grid = np.zeros((size * n_cols, images_per_row * size))
+        for col in range(n_cols):  # Tiles each filter into a big horizontal grid
+            for row in range(images_per_row):
+                channel_image = layer_activation[0,:, :,col * images_per_row + row]
+                display_grid[col * size: (col + 1) * size,  # Displays the grid
+                row * size: (row + 1) * size] = channel_image
+        scale = 1. / size
+        plt.figure(figsize=(scale * display_grid.shape[1],
+                            scale * display_grid.shape[0]))
+        plt.title(layer_name)
+        plt.grid(False)
+        plt.imshow(display_grid, aspect='auto', cmap='bwr')
 
 
     ## _________________________________________________________________________________________________ ##
