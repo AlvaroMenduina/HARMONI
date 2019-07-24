@@ -271,12 +271,12 @@ if __name__ == "__main__":
 
         # CNN Model
         model = Sequential()
-        model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
+        model.add(Conv2D(64, kernel_size=(3, 3), strides=(1, 1),
                          activation='relu',
                          input_shape=input_shape))
         model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
         # model.add(Dropout(0.5))
-        model.add(Conv2D(64, (3, 3), activation='relu'))
+        model.add(Conv2D(128, (3, 3), activation='relu'))
         model.add(MaxPooling2D(pool_size=(2, 2)))
         # model.add(Dropout(0.5))
         model.add(Flatten())
@@ -358,7 +358,8 @@ if __name__ == "__main__":
             :param N_show:
             :return:
             """
-            initial_strehls = compute_strehl(test_images, np.zeros_like(test_coefs))
+            # initial_strehls = compute_strehl(test_images, np.zeros_like(test_coefs))
+            initial_strehls = np.max(test_images[:,:,:,0], axis=(1,2))
             final_strehls = compute_strehl(test_images, test_coefs)
 
             plt.figure()    # Show a comparison of Strehl ratios
@@ -386,7 +387,7 @@ if __name__ == "__main__":
 
 
         model.compile(optimizer='adam', loss=loss)
-        train_history = model.fit(x=train_images, y=dummy, epochs=250, batch_size=N_train, shuffle=False, verbose=1)
+        train_history = model.fit(x=train_images, y=dummy, epochs=750, batch_size=N_train, shuffle=False, verbose=1)
         # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
         # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
 
@@ -395,13 +396,14 @@ if __name__ == "__main__":
         loss_array.append(loss_hist)
         strehl_array.append(compute_strehl(test_images, test_coefs))
 
-
+    LL = [loss_array[:-2], loss_array[-2], loss_array[-1]]
     plt.figure()
-    for i, l in enumerate(loss_array):
+    for i, l in enumerate(LL):
         plt.semilogy(l, label=i+1)
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.legend(title='Number of cases')
+    plt.show()
 
     plt.figure()
     for i, s in enumerate(strehl_array):
@@ -427,9 +429,9 @@ if __name__ == "__main__":
 
     # Check predictions
     guess = model.predict(test_images)
-    print(guess[:5])
+    print(guess[-1, :5])
     print("\nTrue Values:")
-    print(test_coefs[:5])
+    print(test_coefs[-1, :5])
 
     # Plot a comparison Before & After
     PSF.plot_PSF(test_coefs[-1])
@@ -453,11 +455,12 @@ if __name__ == "__main__":
     strehl_array = [strehls[:-2], strehls[-1]]
 
     """ Visualizing the Layers """
+
     from keras import models
-    layer_outputs = [layer.output for layer in model.layers[:4]]  # Extracts the outputs of the top 12 layers
+    layer_outputs = [layer.output for layer in model.layers[:3]]  # Extracts the outputs of the top 12 layers
     activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
 
-    img_tensor = test_images[1:2]
+    img_tensor = test_images[:1]
     M = img_tensor.shape[-1]
     for k in range(M):
         plt.figure()
@@ -471,7 +474,7 @@ if __name__ == "__main__":
 
 
     layer_names = []
-    for layer in model.layers[:4]:
+    for layer in model.layers[:3]:
         layer_names.append(layer.name)  # Names of the layers, so you can have them as part of your plot
 
     images_per_row = 16
@@ -498,9 +501,72 @@ if __name__ == "__main__":
         plt.grid(False)
         plt.imshow(display_grid, aspect='auto', cmap='hot')
 
+    ## _________________________________________________________________________________________________ ##
+
+    # Trying to see what the CNN does.
+    # Let's
+
+    extra_coefs = simple_sampling(N_zern, dm_stroke=0.1)
+    coef0 = test_coefs[0]
+    im0, _s = PSF.compute_PSF(coef0)
+    nom_im = [im0]
+    for c in extra_coefs:
+        ims, _s = PSF.compute_PSF(coef0 + c)
+        nom_im.append(ims - im0)
+    im0 = np.moveaxis(np.array(nom_im), 0, -1)
+
+    coef1 = coef0.copy()
+    coef1[0] *= 2.0         # Poke one of the Zernikes
+    im1, _s = PSF.compute_PSF(coef1)
+    nom_im = [im1]
+    for c in extra_coefs:
+        ims, _s = PSF.compute_PSF(coef1 + c)
+        nom_im.append(ims - im1)
+    im1 = np.moveaxis(np.array(nom_im), 0, -1)
+
+    plt.figure()
+    plt.imshow(im0[0, :, :, 0], cmap='hot')
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(im1[0, :, :, 0], cmap='hot')
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(im1[0, :, :, 0] - im0[0, :, :, 0], cmap='hot')
+    plt.colorbar()
 
 
-    ## Further analysis
+
+    M = img_tensor.shape[-1]
+    for k in range(M):
+        plt.figure()
+        plt.imshow(img_tensor[0,:,:,k], cmap='hot')
+        plt.colorbar()
+        plt.title('Channel %d' %k)
+
+    activations = activation_model.predict(img_tensor)
+
+
+
+    ## _________________________________________________________________________________________________ ##
+
+    # Checking how the FILTERS look like
+
+    conv = model.layers[0]
+    init = tf.global_variables_initializer()
+
+    with tf.Session() as sess:
+        sess.run(init)
+        v = sess.run(conv.weights[0])
+        print(v[:,:,0,0])
+        i = 1
+        for k in range(5):
+            plt.figure()
+            plt.imshow(v[:,:,k,i])
+    plt.show()
+
+        ## Further analysis
 
     """
     - Range of Z intensities over which we can operate. Maybe too small is difficult. Tiny features
@@ -512,6 +578,9 @@ if __name__ == "__main__":
     
     - Whether to use Dropout or not. Dropout makes it worse
     - CNN output visualization to understand it
+    - Influence of Number of channels
+    
+    - Recurrent NN??
     """
 
 
