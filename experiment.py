@@ -392,7 +392,7 @@ if __name__ == "__main__":
 
 
         model.compile(optimizer='adam', loss=loss)
-        train_history = model.fit(x=train_images, y=dummy, epochs=750, batch_size=N_train, shuffle=False, verbose=1)
+        train_history = model.fit(x=train_images, y=dummy, epochs=250, batch_size=N_train, shuffle=False, verbose=1)
         # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
         # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
 
@@ -462,7 +462,7 @@ if __name__ == "__main__":
     """ Visualizing the Layers """
 
     from keras import models
-    layer_outputs = [layer.output for layer in model.layers[:3]]  # Extracts the outputs of the top 12 layers
+    layer_outputs = [layer.output for layer in model.layers]  # Extracts the outputs of the top 12 layers
     activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
 
     img_tensor = test_images[:1]
@@ -524,7 +524,7 @@ if __name__ == "__main__":
     im0 = im0[np.newaxis, :, :, :]
 
     coef1 = coef0.copy()
-    coef1[0] *= 2.0         # Poke one of the Zernikes
+    coef1[-1] *= 2.         # Poke one of the Zernikes
     im1, _s = PSF.compute_PSF(coef1)
     nom_im = [im1]
     for c in extra_coefs:
@@ -549,10 +549,12 @@ if __name__ == "__main__":
     plt.title('Residuals')
 
 
+    layer_outputs = [layer.output for layer in model.layers[:4]]  # Extracts the outputs of the top 12 layers
+    activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
 
     activations0 = activation_model.predict(im0)
     activations1 = activation_model.predict(im1)
-    diff_activ = [a - b for (a,b) in zip(activations0 - activations1)] 
+    diff_activ = [a - b for (a,b) in zip(activations0, activations1)]
 
     images_per_row = 16
     for layer_name, layer_activation in zip(layer_names, activations0):  # Displays the feature maps
