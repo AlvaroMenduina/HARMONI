@@ -545,12 +545,14 @@ if __name__ == "__main__":
 
     plt.figure()
     plt.imshow(im1[0, :, :, 0] - im0[0, :, :, 0], cmap='hot')
-    plt.colorbar('Residuals')
+    plt.colorbar()
+    plt.title('Residuals')
+
 
 
     activations0 = activation_model.predict(im0)
     activations1 = activation_model.predict(im1)
-    diff_activ = activations0 - activations1
+    diff_activ = [a - b for (a,b) in zip(activations0 - activations1)] 
 
     images_per_row = 16
     for layer_name, layer_activation in zip(layer_names, activations0):  # Displays the feature maps
