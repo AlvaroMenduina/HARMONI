@@ -235,8 +235,10 @@ if __name__ == "__main__":
     loss_array, strehl_array = [], []
 
     for N_cases in [1, 2, 3]:
+
+        N_cases = 3
         N_classes = N_zern
-        N_train, N_test = 500, 50
+        N_train, N_test = 500, 100
         N_samples = N_train + N_test
         sampling = "random"
 
