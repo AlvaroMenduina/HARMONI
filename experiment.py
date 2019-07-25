@@ -512,7 +512,8 @@ if __name__ == "__main__":
     # Let's
 
     # extra_coefs = simple_sampling(N_zern, dm_stroke=0.1)
-    extra_coefs = random_sampling(N_zern, dm_stroke=0.1, N_cases=3)
+    # extra_coefs = random_sampling(N_zern, dm_stroke=0.1, N_cases=3)
+    extra_coefs = _extra
     coef0 = test_coefs[0]
     im0, _s = PSF.compute_PSF(coef0)
     nom_im = [im0]
