@@ -549,12 +549,20 @@ if __name__ == "__main__":
     plt.title('Residuals')
 
 
-    layer_outputs = [layer.output for layer in model.layers[:4]]  # Extracts the outputs of the top 12 layers
+    layer_outputs = [layer.output for layer in model.layers]  # Extracts the outputs of the top 12 layers
     activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
 
     activations0 = activation_model.predict(im0)
     activations1 = activation_model.predict(im1)
     diff_activ = [a - b for (a,b) in zip(activations0, activations1)]
+
+    k = 1
+    ran = activations0[-k].shape[-1]
+    plt.figure()
+    plt.scatter(range(ran), activations0[-k][0])
+    plt.scatter(range(ran), activations1[-k][0])
+    plt.scatter(ran, coef0[-1], edgecolors='black')
+    plt.show()
 
     images_per_row = 16
     for layer_name, layer_activation in zip(layer_names, activations0):  # Displays the feature maps
@@ -607,7 +615,11 @@ if __name__ == "__main__":
                             scale * display_grid.shape[0]))
         plt.title(layer_name)
         plt.grid(False)
-        plt.imshow(display_grid, aspect='auto', cmap='bwr')
+        plt.imshow(display_grid, cmap='bwr')
+        m = min(display_grid.min(), -display_grid.max())
+        plt.clim(m, -m)
+        plt.colorbar()
+    plt.show()
 
 
     ## _________________________________________________________________________________________________ ##
