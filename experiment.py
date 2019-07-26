@@ -12,6 +12,7 @@ the PSF(Phi_0 + Correction) and a perfect PSF
 
 """
 
+import os
 import numpy as np
 from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
@@ -238,7 +239,7 @@ if __name__ == "__main__":
 
         N_cases = 3
         N_classes = N_zern
-        N_train, N_test = 500, 100
+        N_train, N_test = 1500, 200
         N_samples = N_train + N_test
         sampling = "random"
 
@@ -392,7 +393,7 @@ if __name__ == "__main__":
 
 
         model.compile(optimizer='adam', loss=loss)
-        train_history = model.fit(x=train_images, y=dummy, epochs=250, batch_size=N_train, shuffle=False, verbose=1)
+        train_history = model.fit(x=train_images, y=dummy, epochs=1000, batch_size=N_train, shuffle=False, verbose=1)
         # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
         # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
 
@@ -514,7 +515,7 @@ if __name__ == "__main__":
     # extra_coefs = simple_sampling(N_zern, dm_stroke=0.1)
     # extra_coefs = random_sampling(N_zern, dm_stroke=0.1, N_cases=3)
     extra_coefs = _extra
-    coef0 = test_coefs[0]
+    coef0 = test_coefs[1]
     im0, _s = PSF.compute_PSF(coef0)
     nom_im = [im0]
     for c in extra_coefs:
@@ -524,7 +525,7 @@ if __name__ == "__main__":
     im0 = im0[np.newaxis, :, :, :]
 
     coef1 = coef0.copy()
-    coef1[-1] *= 2.         # Poke one of the Zernikes
+    coef1[0] += 0.25         # Poke one of the Zernikes
     im1, _s = PSF.compute_PSF(coef1)
     nom_im = [im1]
     for c in extra_coefs:
@@ -533,20 +534,34 @@ if __name__ == "__main__":
     im1 = np.moveaxis(np.array(nom_im), 0, -1)
     im1 = im1[np.newaxis, :, :, :]
 
-    plt.figure()
-    plt.imshow(im0[0, :, :, 0], cmap='hot')
-    plt.colorbar()
-    plt.title('Nominal Image')
+    j_channel = 4
+    i1, i2 = im0[0, :, :, j_channel], im1[0, :, :, j_channel]
+    i3 = i2 - i1
+    mins = min(i3.min(), -i3.max())
+    maxs = max(i1.max(), i2.max())
 
-    plt.figure()
-    plt.imshow(im1[0, :, :, 0], cmap='hot')
-    plt.colorbar()
-    plt.title('New Image')
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(i1, cmap='bwr')
+    ax1.set_title('Nominal Image')
+    # img1.set_clim(0, maxs)
+    img1.set_clim(-maxs, maxs)
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
 
-    plt.figure()
-    plt.imshow(im1[0, :, :, 0] - im0[0, :, :, 0], cmap='hot')
-    plt.colorbar()
-    plt.title('Residuals')
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(i2, cmap='bwr')
+    ax2.set_title('Poked Image')
+    # img2.set_clim(0, maxs)
+    img2.set_clim(-maxs, maxs)
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(i3, cmap='bwr')
+    ax3.set_title('Residual')
+    img3.set_clim(mins, -mins)
+    c3 = plt.colorbar(img3, ax=ax3, orientation='horizontal')
+
+    plt.savefig(os.path.join('Experiment','PokedComparison_channel%d') %j_channel)
 
 
     layer_outputs = [layer.output for layer in model.layers]  # Extracts the outputs of the top 12 layers
@@ -559,9 +574,16 @@ if __name__ == "__main__":
     k = 1
     ran = activations0[-k].shape[-1]
     plt.figure()
-    plt.scatter(range(ran), activations0[-k][0])
-    plt.scatter(range(ran), activations1[-k][0])
-    plt.scatter(ran, coef0[-1], edgecolors='black')
+    # plt.scatter(range(ran), coef0)
+    plt.scatter(range(ran), activations0[-k][0], label='Nominal')
+    # plt.scatter(range(ran), coef0 + activations0[-k][0], color='black')
+    plt.scatter(range(ran), activations1[-k][0], label=r'Poked $Z[0]$')
+    # plt.scatter(0.2, -coef0[0], color='black')
+    # plt.scatter(0.2, -coef1[0], color='red')
+    plt.xlabel('Zernike coefficient')
+    plt.ylabel(r'Value [$\lambda$]')
+    plt.legend(title='Network predictions')
+    plt.savefig(os.path.join('Experiment', 'Poked_predicitons'))
     plt.show()
 
     images_per_row = 16
@@ -580,7 +602,8 @@ if __name__ == "__main__":
                             scale * display_grid.shape[0]))
         plt.title(layer_name)
         plt.grid(False)
-        plt.imshow(display_grid, aspect='auto', cmap='hot')
+        plt.imshow(np.log10(display_grid), aspect='auto', cmap='binary')
+        plt.savefig(os.path.join('Experiment', layer_name + '_nom_LOG'))
 
     for layer_name, layer_activation in zip(layer_names, activations1):  # Displays the feature maps
         n_features = layer_activation.shape[-1]  # Number of features in the feature map
@@ -597,7 +620,8 @@ if __name__ == "__main__":
                             scale * display_grid.shape[0]))
         plt.title(layer_name)
         plt.grid(False)
-        plt.imshow(display_grid, aspect='auto', cmap='hot')
+        plt.imshow(display_grid, aspect='auto', cmap='binary')
+        plt.savefig(os.path.join('Experiment', layer_name + '_poke'))
 
 
     for layer_name, layer_activation in zip(layer_names, diff_activ):  # Displays the feature maps
@@ -615,10 +639,12 @@ if __name__ == "__main__":
                             scale * display_grid.shape[0]))
         plt.title(layer_name)
         plt.grid(False)
-        plt.imshow(display_grid, cmap='bwr')
-        m = min(display_grid.min(), -display_grid.max())
-        plt.clim(m, -m)
-        plt.colorbar()
+        plt.imshow(np.log10(np.abs(display_grid)), cmap='binary')
+        # m = min(display_grid.min(), -display_grid.max())
+        # plt.clim(m, -m)
+        plt.savefig(os.path.join('Experiment', layer_name + '_diff_LOG'))
+
+        # plt.colorbar(orientation='horizontal')
     plt.show()
 
 
