@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import zern_core as zern
 
 import keras
+from keras import models
 from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Activation, Dropout
 from keras.models import Sequential
 from keras import backend as K
@@ -26,8 +27,8 @@ from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
-N_zern = 25                  # Number of aberrations to consider
-Z = 1.0                    # Strength of the aberrations
+N_zern = 50                  # Number of aberrations to consider
+Z = 0.75                    # Strength of the aberrations
 pix = 25                    # Pixels to crop the PSF
 
 class PointSpreadFunction(object):
@@ -239,7 +240,7 @@ if __name__ == "__main__":
 
         N_cases = 3
         N_classes = N_zern
-        N_train, N_test = 1500, 200
+        N_train, N_test = 5000, 200
         N_samples = N_train + N_test
         sampling = "random"
 
@@ -353,7 +354,7 @@ if __name__ == "__main__":
                 strehls.append(s)
             return np.array(strehls)
 
-        def post_analysis(test_images, test_coefs, N_show=5):
+        def post_analysis(test_images, test_coefs, N_show=5, path='Z50'):
             """
 
             :param test_images:
@@ -370,7 +371,7 @@ if __name__ == "__main__":
             plt.hist(final_strehls, histtype='step', label='After')
             plt.xlabel('Strehl Ratio')
             plt.legend(title='Stage')
-            plt.savefig('Strehl_Hist')
+            plt.savefig(os.path.join('Experiment', path, 'Strehl_Hist'))
 
             for k in range(N_show):     # Show the PSF comparison (Before / After)
 
@@ -388,12 +389,12 @@ if __name__ == "__main__":
                 ax2.set_title('After %.3f' %final_strehls[k])
                 plt.colorbar(im2, ax=ax2)
 
-                plt.savefig('%d' %k)
+                plt.savefig(os.path.join('Experiment', path, '%d' %k))
 
 
 
         model.compile(optimizer='adam', loss=loss)
-        train_history = model.fit(x=train_images, y=dummy, epochs=1000, batch_size=N_train, shuffle=False, verbose=1)
+        train_history = model.fit(x=train_images, y=dummy, epochs=1500, batch_size=N_train, shuffle=False, verbose=1)
         # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
         # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
 
@@ -462,7 +463,7 @@ if __name__ == "__main__":
 
     """ Visualizing the Layers """
 
-    from keras import models
+
     layer_outputs = [layer.output for layer in model.layers]  # Extracts the outputs of the top 12 layers
     activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
 
@@ -534,7 +535,7 @@ if __name__ == "__main__":
     im1 = np.moveaxis(np.array(nom_im), 0, -1)
     im1 = im1[np.newaxis, :, :, :]
 
-    j_channel = 4
+    j_channel = 0
     i1, i2 = im0[0, :, :, j_channel], im1[0, :, :, j_channel]
     i3 = i2 - i1
     mins = min(i3.min(), -i3.max())
