@@ -35,7 +35,7 @@ from numpy.linalg import norm as norm
 
 # PARAMETERS
 Z = 1.25                    # Strength of the aberrations
-pix = 25                    # Pixels to crop the PSF
+pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
@@ -230,6 +230,9 @@ def adapt_training_set_coef(PSF_model_high, PSF_model_low, train_coef, test_coef
         c_high = coef_high[i]
         coef_low[i] = ls_phase_fit(c_high)
 
+        if i%100 == 0:
+            print(i)
+
     return coef_low[:N_train], coef_low[N_train:]
 
 
@@ -249,10 +252,16 @@ if __name__ == "__main__":
 
     c_act = np.random.uniform(-1, 1, size=N_act)
     phase0 = np.dot(rbf_mat[0], c_act)
+    p0 = min(phase0.min(), -phase0.max())
 
     plt.figure()
-    plt.imshow(phase0, cmap='bwr')
+    plt.imshow(phase0, extent=(-1,1,-1,1), cmap='bwr')
     plt.colorbar()
+    plt.clim(p0, -p0)
+    for c in centers[0]:
+        plt.scatter(c[0], c[1], color='black', s=4)
+    plt.xlim([-1, 1])
+    plt.ylim([-1, 1])
     plt.show()
 
     """ (2) Define a lower order actuator model """
@@ -298,38 +307,188 @@ if __name__ == "__main__":
     PSF = PointSpreadFunction(rbf_mat)
     PSF_low = PointSpreadFunction(rbf_mat_low)
 
-    N_train, N_test = 5000, 100
+    N_train, N_test = 15000, 300
     train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = generate_training_set(PSF, PSF_low, N_train, N_test)
+    # train_PSF2, test_PSF2, train_coef2, test_coef2, train_low2, test_low2 = generate_training_set(PSF, PSF_low, N_train, N_test)
+    #
+    # train_PSF = np.concatenate([train_PSF, train_PSF2], axis=0)
+    # test_PSF = np.concatenate([test_PSF, test_PSF2], axis=0)
+    # train_coef = np.concatenate([train_coef, train_coef2], axis=0)
+    # test_coef = np.concatenate([test_coef, test_coef2], axis=0)
+    # train_low = np.concatenate([train_low, train_low2], axis=0)
+    # test_low = np.concatenate([test_low, test_low2], axis=0)
+
+    """ Crop to 20-pixels """
+    def crop_datacubes(datacube, crop_pix=20):
+        N_PSF, pix = datacube.shape[0], datacube.shape[1]
+        minPix, maxPix = (pix + 1 - crop_pix) // 2, (pix + 1 + crop_pix) // 2
+        new_data = np.empty((N_PSF, crop_pix, crop_pix, 2))
+        for k in range(N_PSF):
+            new_data[k, :, :, 0] =  datacube[k,:,:,0][minPix:maxPix, minPix:maxPix]
+            new_data[k, :, :, 1] =  datacube[k,:,:,1][minPix:maxPix, minPix:maxPix]
+        return new_data
+
+
+    train_PSF_crop = crop_datacubes(train_PSF)
+    test_PSF_crop = crop_datacubes(test_PSF)
+
 
     N_channels = 2
     input_shape = (pix, pix, N_channels,)
+    input_shape = (20, 20, N_channels,)
+
+    from keras.regularizers import l2
 
     model = Sequential()
     model.add(Conv2D(64, kernel_size=(3, 3), strides=(1, 1),
                      activation='relu',
                      input_shape=input_shape))
     model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(Conv2D(128, (3, 3), activation='relu'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     model.add(Flatten())
     model.add(Dense(N_act_low))
     model.summary()
 
     model.compile(optimizer='adam', loss='mean_squared_error')
-    train_history = model.fit(x=train_PSF, y=train_low,
-                              validation_data=(test_PSF, test_low),
+    train_history = model.fit(x=train_PSF_crop, y=train_low,
+                              validation_data=(test_PSF_crop, test_low),
                               epochs=250, batch_size=32, shuffle=True, verbose=1)
 
-    def performance_check(model, test_PSF, test_coef):
+    guess_low = model.predict(test_PSF)
+    residual_low = test_low - guess_low
 
+    def draw_actuator_commands(commands, centers=centers_low):
+        cent, delta = centers
+        x = np.linspace(-1, 1, N_PIX, endpoint=True)
+        xx, yy = np.meshgrid(x, x)
+        image = np.zeros((N_PIX, N_PIX))
+        for i, (xc, yc) in enumerate(cent):
+            act_mask = (xx - xc)**2 + (yy - yc)**2 <= (delta/2)**2
+            image += commands[i] * act_mask
+
+        return image
+
+    def command_check(model, test_PSF, test_low):
+        N_test = test_low.shape[0]
+        guess_low = model.predict(test_PSF)
+        residual_low = test_low - guess_low
+        error = []
+        for k in range(N_test):
+            c = residual_low[k]
+            im = np.abs(draw_actuator_commands(c))
+            error.append(im)
+            # m_act = min(im.min(), -im.max())
+            # plt.figure()
+            # plt.imshow(im, cmap='bwr')
+            # plt.clim(m_act, -m_act)
+            # plt.colorbar()
+        err = np.array(error)
+        mean_err = np.mean(err, axis=0)
+        plt.figure()
+        plt.imshow(mean_err, cmap='Reds')
+        plt.colorbar()
+        plt.clim(np.min(mean_err[np.nonzero(mean_err)]), mean_err.max())
+        plt.title(r'Average Actuator Error (Absolute Value)')
+        plt.show()
+
+
+    def performance_check(PSF_high, PSF_low, model, test_PSF, test_coef, test_low):
+
+        pupil_mask = PSF_high.pupil_mask
         s0 = np.max(test_PSF[:,:,:,0], axis=(1,2))      # Initial Strehl ratios
+
+        guess_low = model.predict(test_PSF)
+        residual_low = test_low - guess_low
+        n_test = norm(test_low, axis=1)
+        n_residual = norm(residual_low, axis=1)
+        improve = 100 * np.mean((n_test - n_residual) / n_test)
+        print('Average improvement [Norm LOW coefficients] : %.2f per cent' %improve)
+
+        RMS0, RMS_ideal, RMS_true = [], [], []
+
+        for k in range(10):
+
+            phase_high = np.dot(PSF_high.RBF_mat, test_coef[k])
+            phase_fit_low = np.dot(PSF_low.RBF_mat, test_low[k])
+            ideal_residual = phase_high - phase_fit_low
+            phase_guess_low = np.dot(PSF_low.RBF_mat, guess_low[k])
+            true_residual = phase_high - phase_guess_low
+
+            rms = []
+            for p in [phase_high, phase_fit_low, ideal_residual, phase_guess_low, true_residual]:
+                _flat = p[pupil_mask]
+                rms.append(np.std(_flat))
+
+            RMS0.append(rms[0])
+            RMS_ideal.append(rms[2])
+            RMS_true.append((rms[-1]))
+
+        # plt.figure()
+        # plt.hist(RMS0, histtype='step', label='Initial Wavefront')
+        # plt.hist(RMS_ideal, histtype='step', label='Ideal Residual')
+        # plt.hist(RMS_true, histtype='step', label='Machine Learning Residual')
+        # plt.xlabel(r'RMS wavefront $\lambda$')
+        # plt.xlim([0, 1.25])
+        # plt.legend()
+
+        # return RMS_ideal, RMS_true
+
+            mins = min(phase_high.min(), phase_fit_low.min())
+            maxs = max(phase_high.max(), phase_fit_low.max())
+
+            m = min(mins, -maxs)
+            mapp = 'bwr'
+            f, ((ax1, ax2, ax3),(ax4, ax5, ax6)) = plt.subplots(2, 3)
+            ax1 = plt.subplot(2, 3, 1)
+            img1 = ax1.imshow(phase_high, cmap=mapp)
+            ax1.set_title('True Wavefront [High Freq.]  $\sigma=%.2f \lambda$' %rms[0])
+            img1.set_clim(m, -m)
+            # plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+            ax2 = plt.subplot(2, 3, 2)
+            img2 = ax2.imshow(phase_fit_low, cmap=mapp)
+            ax2.set_title('Low Order Actuator Fit')
+            img2.set_clim(m, -m)
+            # plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+            ax3 = plt.subplot(2, 3, 3)
+            img3 = ax3.imshow(ideal_residual, cmap=mapp)
+            ax3.set_title(r'Ideal Residual [True - Fit]  $\sigma=%.2f \lambda$' %rms[2])
+            img3.set_clim(m, -m)
+            # plt.colorbar(img3, ax=ax3, orientation='horizontal')
+            # plt.show()
+
+            ax4 = plt.subplot(2, 3, 4)
+            img4 = ax4.imshow(draw_actuator_commands(guess_low[k], centers_low2), cmap=mapp)
+            ax4.set_title('Actuators')
+            m_act = min(guess_low[k].min(), -guess_low[k].max())
+            img4.set_clim(m_act, -m_act)
+            # plt.colorbar(img4, ax=ax4, orientation='horizontal')
+
+            ax5 = plt.subplot(2, 3, 5)
+            img5 = ax5.imshow(phase_guess_low, cmap=mapp)
+            ax5.set_title('Machine Learning Guess')
+            img5.set_clim(m, -m)
+            # plt.colorbar(img5, ax=ax5, orientation='horizontal')
+
+            ax6 = plt.subplot(2, 3, 6)
+            img6 = ax6.imshow(true_residual, cmap=mapp)
+            ax6.set_title('True Residual [True - Guess]  $\sigma=%.2f \lambda$' %rms[-1])
+            img6.set_clim(m, -m)
+            # plt.colorbar(img6, ax=ax6, orientation='horizontal')
+
+    r_i, r_t = performance_check(PSF, PSF_low, model, test_PSF, test_coef, test_low)
+    performance_check(PSF, PSF_low2, model2, test_PSF, test_coef, test_low2)
+    plt.show()
 
 
 
 
     """ Repeat the training for a new actuator model """
 
-    centers_low2 = actuator_centres(N_actuators=17)
+    centers_low2 = actuator_centres(N_actuators=14)
+    plot_actuators(centers_low2)
     N_act_low2 = len(centers_low2[0])
     rbf_mat_low2 = rbf_matrix(centers_low2)
     PSF_low2 = PointSpreadFunction(rbf_mat_low2)
@@ -339,7 +498,7 @@ if __name__ == "__main__":
                      activation='relu',
                      input_shape=input_shape))
     model2.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model2.add(Conv2D(64, (3, 3), activation='relu'))
+    model2.add(Conv2D(128, (3, 3), activation='relu'))
     model2.add(MaxPooling2D(pool_size=(2, 2)))
     model2.add(Flatten())
     model2.add(Dense(N_act_low2))
@@ -349,6 +508,33 @@ if __name__ == "__main__":
     train_history2 = model2.fit(x=train_PSF, y=train_low2,
                               validation_data=(test_PSF, test_low2),
                               epochs=250, batch_size=32, shuffle=True, verbose=1)
+
+    performance_check(PSF, PSF_low2, model2, test_PSF, test_coef, test_low2)
+    plt.show()
+
+    centers_low3 = actuator_centres(N_actuators=11)
+    plot_actuators(centers_low3)
+    N_act_low3 = len(centers_low3[0])
+    rbf_mat_low3 = rbf_matrix(centers_low3)
+    PSF_low3 = PointSpreadFunction(rbf_mat_low3)
+    train_low3, test_low3 = adapt_training_set_coef(PSF, PSF_low3, train_coef, test_coef)
+    model3 = Sequential()
+    model3.add(Conv2D(64, kernel_size=(3, 3), strides=(1, 1),
+                     activation='relu',
+                     input_shape=input_shape))
+    model3.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+    model3.add(Conv2D(128, (3, 3), activation='relu'))
+    model3.add(MaxPooling2D(pool_size=(2, 2)))
+    model3.add(Flatten())
+    model3.add(Dense(N_act_low3))
+    model3.summary()
+
+    model3.compile(optimizer='adam', loss='mean_squared_error')
+    train_history3 = model3.fit(x=train_PSF, y=train_low3,
+                              validation_data=(test_PSF, test_low3),
+                              epochs=250, batch_size=32, shuffle=True, verbose=1)
+
+    performance_check(PSF, PSF_low3, model3, test_PSF, test_coef, test_low3)
 
 
 
