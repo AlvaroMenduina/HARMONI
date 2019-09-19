@@ -27,15 +27,9 @@ from keras import backend as K
 from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
-# # PARAMETERS
-# N_zern = 18                  # Number of aberrations to consider
-# Z = 1.25                    # Strength of the aberrations
-# pix = 25                    # Pixels to crop the PSF
-# N_PIX = 256
-
 # PARAMETERS
 Z = 1.25                    # Strength of the aberrations
-pix = 30                    # Pixels to crop the PSF
+pix = 25                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
@@ -182,6 +176,76 @@ class LS_fit(object):
         result = least_squares(self.residuals, x0, args=(true_phase,))
         return result.x
 
+class Zernike_fit(object):
+
+    def __init__(self, PSF_mat, N_zern=100):
+
+        self.PSF_mat = PSF_mat
+
+        x = np.linspace(-1, 1, N_PIX, endpoint=True)
+        xx, yy = np.meshgrid(x, x)
+        rho, theta = np.sqrt(xx ** 2 + yy ** 2), np.arctan2(xx, yy)
+        self.pupil = (rho <= RHO_APER) & (rho > RHO_OBSC)
+
+        rho, theta = rho[self.pupil], theta[self.pupil]
+        zernike = zern.ZernikeNaive(mask=self.pupil)
+        _phase = zernike(coef=np.zeros(N_zern), rho=rho / RHO_APER, theta=theta, normalize_noll=False,
+                         mode='Jacobi', print_option='Silent')
+        H_flat = zernike.model_matrix
+        self.H_matrix = zern.invert_model_matrix(H_flat, self.pupil)
+        self.N_zern = self.H_matrix.shape[-1]
+
+    def residuals(self, x, wavefront):
+        zernike_phase = np.dot(self.H_matrix, x)
+        return (wavefront - zernike_phase)[self.pupil]
+
+    def __call__(self, PSF_coef, **kwargs):
+        wavefront = np.dot(self.PSF_mat, PSF_coef)
+        x0 = np.zeros(self.N_zern)
+        result = least_squares(self.residuals, x0, args=(wavefront,))
+
+        x = result.x
+        zernike_phase = np.dot(self.H_matrix, x)
+
+        wf = wavefront[self.pupil]
+        zf = zernike_phase[self.pupil]
+        residual = wf - zf
+        rms0 = np.std(wf)
+        rmsz = np.std(zf)
+        rmsr = np.std(residual)
+
+        print("\nFit Wavefront to Zernike Polynomials: ")
+        print("Initial RMS: %.3f" %rms0)
+        print("Residual RMS after correction: %.3f" %rmsr)
+
+        # mins = min(wavefront.min(), zernike_phase.min())
+        # maxs = max(wavefront.max(), zernike_phase.max())
+        #
+        # m = min(mins, -maxs)
+        # mapp = 'bwr'
+        # f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        # ax1 = plt.subplot(1, 3, 1)
+        # img1 = ax1.imshow(wavefront, cmap=mapp)
+        # ax1.set_title('True Wavefront')
+        # img1.set_clim(m, -m)
+        # plt.colorbar(img1, ax=ax1, orientation='horizontal')
+        #
+        # ax2 = plt.subplot(1, 3, 2)
+        # img2 = ax2.imshow(zernike_phase, cmap=mapp)
+        # ax2.set_title('Zernike Fit Wavefront')
+        # img2.set_clim(m, -m)
+        # plt.colorbar(img2, ax=ax2, orientation='horizontal')
+        #
+        # ax3 = plt.subplot(1, 3, 3)
+        # img3 = ax3.imshow(wavefront - zernike_phase, cmap=mapp)
+        # ax3.set_title('Residual')
+        # img3.set_clim(m, -m)
+        # plt.colorbar(img3, ax=ax3, orientation='horizontal')
+        # # plt.show()
+
+        return result.x
+
+
 def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=500):
 
     N_samples = N_train + N_test
@@ -319,23 +383,23 @@ if __name__ == "__main__":
     # test_low = np.concatenate([test_low, test_low2], axis=0)
 
     """ Crop to 20-pixels """
-    def crop_datacubes(datacube, crop_pix=20):
-        N_PSF, pix = datacube.shape[0], datacube.shape[1]
-        minPix, maxPix = (pix + 1 - crop_pix) // 2, (pix + 1 + crop_pix) // 2
-        new_data = np.empty((N_PSF, crop_pix, crop_pix, 2))
-        for k in range(N_PSF):
-            new_data[k, :, :, 0] =  datacube[k,:,:,0][minPix:maxPix, minPix:maxPix]
-            new_data[k, :, :, 1] =  datacube[k,:,:,1][minPix:maxPix, minPix:maxPix]
-        return new_data
-
-
-    train_PSF_crop = crop_datacubes(train_PSF)
-    test_PSF_crop = crop_datacubes(test_PSF)
+    # def crop_datacubes(datacube, crop_pix=25):
+    #     N_PSF, pix = datacube.shape[0], datacube.shape[1]
+    #     minPix, maxPix = (pix + 1 - crop_pix) // 2, (pix + 1 + crop_pix) // 2
+    #     new_data = np.empty((N_PSF, crop_pix, crop_pix, 2))
+    #     for k in range(N_PSF):
+    #         new_data[k, :, :, 0] =  datacube[k,:,:,0][minPix:maxPix, minPix:maxPix]
+    #         new_data[k, :, :, 1] =  datacube[k,:,:,1][minPix:maxPix, minPix:maxPix]
+    #     return new_data
+    #
+    #
+    # train_PSF_crop = crop_datacubes(train_PSF)
+    # test_PSF_crop = crop_datacubes(test_PSF)
 
 
     N_channels = 2
     input_shape = (pix, pix, N_channels,)
-    input_shape = (20, 20, N_channels,)
+    # input_shape = (25, 25, N_channels,)
 
     from keras.regularizers import l2
 
@@ -351,8 +415,8 @@ if __name__ == "__main__":
     model.summary()
 
     model.compile(optimizer='adam', loss='mean_squared_error')
-    train_history = model.fit(x=train_PSF_crop, y=train_low,
-                              validation_data=(test_PSF_crop, test_low),
+    train_history = model.fit(x=train_PSF, y=train_low,
+                              validation_data=(test_PSF, test_low),
                               epochs=250, batch_size=32, shuffle=True, verbose=1)
 
     guess_low = model.predict(test_PSF)
@@ -392,6 +456,118 @@ if __name__ == "__main__":
         plt.title(r'Average Actuator Error (Absolute Value)')
         plt.show()
 
+    def psd_check(PSF_low, model, test_PSF, test_low):
+
+        guess_low = model.predict(test_PSF)
+
+        p0, pr = [], []
+        for k in range(10):
+            phase0 = np.dot(PSF_low.RBF_mat, test_low[k])
+            residual = np.dot(PSF_low.RBF_mat, test_low[k] - guess_low[k])
+
+            four = fftshift(fft2(phase0, norm='ortho'))
+            psd = (np.abs(four)) ** 2
+
+            psd_2dx = psd[N_PIX // 2, N_PIX // 2:]
+            psd_2dy = psd[N_PIX // 2:, N_PIX // 2]
+            freq = fftshift(np.fft.fftfreq(N_PIX, d=2 / N_PIX))
+            p0.append((psd_2dy + psd_2dx)/2)
+
+            f_res = fftshift(fft2(residual, norm='ortho'))
+            psd_res = (np.abs(f_res)) ** 2
+            psd_res_2dx = psd_res[N_PIX // 2, N_PIX // 2:]
+            psd_res_2dy = psd_res[N_PIX // 2:, N_PIX // 2]
+            pr.append((psd_res_2dx + psd_res_2dy)/2)
+
+        p0 = np.array(p0)
+        p0 = np.mean(p0, axis=0)
+
+        pr = np.array(pr)
+        pr = np.mean(pr, axis=0)
+
+        plt.figure()
+        plt.plot(freq[N_PIX // 2:], p0)
+        plt.scatter(freq[N_PIX // 2:], p0)
+        plt.plot(freq[N_PIX // 2:], pr)
+        plt.scatter(freq[N_PIX // 2:], pr)
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.xlabel(r'$\lambda / D$')
+        plt.show()
+
+
+
+
+
+
+    z_fit = Zernike_fit(PSF_low.RBF_mat, N_zern=150)
+    def fit_zernikes(z_fit, PSF_low, model, test_PSF, test_low, k=0):
+        guess_low = model.predict(test_PSF)
+        residual_low = test_low - guess_low
+
+        # phase_fit_low = np.dot(PSF_low.RBF_mat, test_low[k])
+        # phase_guess_low = np.dot(PSF_low.RBF_mat, guess_low[k])
+        # residual = phase_fit_low - phase_guess_low
+        # m = min(phase_fit_low.min(), -phase_fit_low.max())
+        #
+        # # plt.figure()
+        # # plt.imshow(phase_fit_low, cmap='bwr')
+        # # plt.clim(m, -m)
+        # # plt.colorbar()
+        # #
+        # # plt.figure()
+        # # plt.imshow(residual, cmap='bwr')
+        # # plt.clim(m, -m)
+        # # plt.colorbar()
+
+        z_true = z_fit(test_low[k])
+        z_resi = z_fit(residual_low[k])
+        N_zern = z_fit.N_zern
+
+        return z_true, z_resi
+
+    def extract_radial_orders(zern_coef):
+        N = zern_coef.shape[0]
+        cop = zern_coef.copy()
+        radial = []
+        for k in np.arange(1, N):
+            if len(cop)==0:
+                break
+            extract = cop[:k]
+            cop = cop[k:]
+            print(len(cop))
+            radial.extend([np.mean(extract)])
+        return radial
+
+    Z_t, Z_r = [], []
+    for k in range(100):
+        z1, z2 = fit_zernikes(z_fit, PSF_low, model, test_PSF, test_low, k)
+        Z_t.append(np.abs(z1))
+        Z_r.append(np.abs(z2))
+
+    Z_t = np.array(Z_t)
+    Z_t = np.mean(Z_t, axis=0)
+
+    Z_r = np.array(Z_r)
+    Z_r = np.mean(Z_r, axis=0)
+
+    N_zern = z_fit.N_zern
+    # nn = np.arange(N_zern)
+    nn = np.arange(len(extract_radial_orders(Z_t)))
+    plt.figure()
+    plt.scatter(nn, extract_radial_orders(Z_t), label='Before calibration', s=15)
+    plt.scatter(nn, extract_radial_orders(Z_r), label='Residual after', s=15)
+    # plt.yscale('log')
+    # plt.ylim([-5, 0])
+    plt.xlabel(r'Zernike radial order')
+    plt.ylabel(r'Zernike coefficient')
+    plt.legend()
+    plt.show()
+
+
+
+
+
 
     def performance_check(PSF_high, PSF_low, model, test_PSF, test_coef, test_low):
 
@@ -407,7 +583,7 @@ if __name__ == "__main__":
 
         RMS0, RMS_ideal, RMS_true = [], [], []
 
-        for k in range(10):
+        for k in range(300):
 
             phase_high = np.dot(PSF_high.RBF_mat, test_coef[k])
             phase_fit_low = np.dot(PSF_low.RBF_mat, test_low[k])
@@ -424,13 +600,13 @@ if __name__ == "__main__":
             RMS_ideal.append(rms[2])
             RMS_true.append((rms[-1]))
 
-        # plt.figure()
-        # plt.hist(RMS0, histtype='step', label='Initial Wavefront')
-        # plt.hist(RMS_ideal, histtype='step', label='Ideal Residual')
-        # plt.hist(RMS_true, histtype='step', label='Machine Learning Residual')
-        # plt.xlabel(r'RMS wavefront $\lambda$')
-        # plt.xlim([0, 1.25])
-        # plt.legend()
+        plt.figure()
+        plt.hist(RMS0, histtype='step', label='Initial Wavefront')
+        plt.hist(RMS_ideal, histtype='step', label='Ideal Residual')
+        plt.hist(RMS_true, histtype='step', label='Machine Learning Residual')
+        plt.xlabel(r'RMS wavefront $\lambda$')
+        plt.xlim([0, 1.25])
+        plt.legend()
 
         # return RMS_ideal, RMS_true
 
@@ -478,7 +654,7 @@ if __name__ == "__main__":
             img6.set_clim(m, -m)
             # plt.colorbar(img6, ax=ax6, orientation='horizontal')
 
-    r_i, r_t = performance_check(PSF, PSF_low, model, test_PSF, test_coef, test_low)
+    r_i, r_t = performance_check(PSF, PSF_low, model, test_PSF_crop, test_coef, test_low)
     performance_check(PSF, PSF_low2, model2, test_PSF, test_coef, test_low2)
     plt.show()
 
