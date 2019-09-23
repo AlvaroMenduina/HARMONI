@@ -29,7 +29,7 @@ from numpy.linalg import norm as norm
 
 # PARAMETERS
 Z = 1.25                    # Strength of the aberrations
-pix = 25                    # Pixels to crop the PSF
+pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
@@ -330,7 +330,7 @@ if __name__ == "__main__":
 
     """ (2) Define a lower order actuator model """
 
-    centers_low = actuator_centres(N_actuators=17)
+    centers_low = actuator_centres(N_actuators=21)
     N_act_low = len(centers_low[0])
     plot_actuators(centers_low)
     rbf_mat_low = rbf_matrix(centers_low)
@@ -419,8 +419,196 @@ if __name__ == "__main__":
                               validation_data=(test_PSF, test_low),
                               epochs=250, batch_size=32, shuffle=True, verbose=1)
 
+
     guess_low = model.predict(test_PSF)
     residual_low = test_low - guess_low
+
+    def background_sensitivity(PSF_low, model, test_PSF, test_low):
+        pupil_mask = PSF_low.pupil_mask
+        guess_nominal = model.predict(test_PSF)
+        residual_nominal = test_low - guess_nominal
+        k = 1
+        phase0 = np.dot(PSF_low.RBF_mat, test_low[k])
+        c = min(phase0.min(), -phase0.max())
+
+        # alpha = np.array([0.01, 0.02, 0.05, 0.10, 0.15, 0.20, 0.25])
+        alpha = np.linspace(0, 0.01, 11)
+        err = []
+        for a in alpha:
+            print(a)
+            PSF_copy = test_PSF.copy()
+            PSF_copy += a
+
+            guess = model.predict(PSF_copy)
+            residual = test_low - guess
+            error = (norm(residual) - norm(residual_nominal)) / norm(residual_nominal)
+            err.append(error)
+
+            res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
+            res_phase = np.dot(PSF_low.RBF_mat, residual[k])
+
+            c2 = min(res_phase.min(), -res_phase.max())
+
+            plt.figure()
+            f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+            ax1 = plt.subplot(1, 3, 1)
+            img1 = ax1.imshow(phase0, cmap=mapp)
+            ax1.set_title('True Wavefront')
+            img1.set_clim(c, -c)
+            plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+            ax2 = plt.subplot(1, 3, 2)
+            img2 = ax2.imshow(res_phase_nom, cmap=mapp)
+            ax2.set_title(r'Nominal Guess')
+            img2.set_clim(c, -c)
+            plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+            ax3 = plt.subplot(1, 3, 3)
+            img3 = ax3.imshow(res_phase, cmap=mapp)
+            ax3.set_title('Background Guess')
+            img3.set_clim(c, -c)
+            plt.colorbar(img3, ax=ax3, orientation='horizontal')
+
+            plt.show()
+
+        plt.figure()
+        plt.plot(alpha, err)
+        plt.ylabel('Residual error gain')
+        plt.xlabel('Background')
+        plt.show()
+
+
+
+
+
+
+
+    def roll_sensitivity(PSF_low, model, test_PSF, test_low, p=1):
+        pupil_mask = PSF_low.pupil_mask
+        guess_nominal = model.predict(test_PSF)
+        residual_nominal = test_low - guess_nominal
+
+        # Roll 1 X-axis
+        PSF_copy = test_PSF.copy()
+        roll_PSF = np.roll(PSF_copy, axis=2, shift=p)
+        guess = model.predict(roll_PSF)
+        residual = test_low - guess
+        error = (norm(residual) - norm(residual_nominal)) / norm(residual_nominal)
+        print('Roll 1-pix in X')
+        print('Error: %.3f' %error)
+
+        s0, s1, s2 = [], [], []
+        for k in range(test_PSF.shape[0]):
+            res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
+            res_phase = np.dot(PSF_low.RBF_mat, residual[k])
+
+            r0 = np.std(np.dot(PSF_low.RBF_mat, test_low[k])[pupil_mask])
+            rms0 = np.std(res_phase_nom[pupil_mask])
+            rms = np.std(res_phase[pupil_mask])
+            s0.append(r0)
+            s1.append(rms0)
+            s2.append(rms)
+
+        plt.figure()
+        plt.hist(s0, histtype='step', label='Before correction')
+        plt.hist(s1, histtype='step', label='After correction')
+        plt.hist(s2, histtype='step', label='%d-pix shift' %p)
+        plt.legend()
+        plt.xlabel('RMS')
+        plt.xlim([0, 1.2])
+        plt.show()
+
+
+        for k in range(10):
+            res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
+            res_phase = np.dot(PSF_low.RBF_mat, residual[k])
+            guess_phase = np.dot(PSF_low.RBF_mat, guess[k])
+            c = min(guess_phase.min(), -guess_phase.max())
+
+            r0 = np.std(np.dot(PSF_low.RBF_mat, test_low[k])[pupil_mask])
+            rms0 = np.std(res_phase_nom[pupil_mask])
+            rms = np.std(res_phase[pupil_mask])
+
+            f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+            ax1 = plt.subplot(1, 3, 1)
+            img1 = ax1.imshow(np.dot(PSF_low.RBF_mat, test_low[k]), cmap=mapp)
+            ax1.set_title('True Wavefront (Initial $\sigma=%.2f$ $\lambda$)' %r0)
+            img1.set_clim(c, -c)
+            plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+            ax2 = plt.subplot(1, 3, 2)
+            img2 = ax2.imshow(np.dot(PSF_low.RBF_mat, guess_nominal[k]), cmap=mapp)
+            ax2.set_title(r'Nominal Guess (Residual $\sigma=%.2f$ $\lambda$)' %rms0)
+            img2.set_clim(c, -c)
+            plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+            ax3 = plt.subplot(1, 3, 3)
+            img3 = ax3.imshow(np.dot(PSF_low.RBF_mat, guess[k]), cmap=mapp)
+            ax3.set_title('Roll Guess (Residual $\sigma=%.2f$ $\lambda$)' %rms)
+            img3.set_clim(c, -c)
+            plt.colorbar(img3, ax=ax3, orientation='horizontal')
+
+    roll_sensitivity(PSF_low, model, test_PSF, test_low)
+
+
+
+    def pixel_sensitivity(PSF_low, model, test_PSF, test_low, alpha=0.1):
+
+        pupil_mask = PSF_low.pupil_mask
+        guess_nominal = model.predict(test_PSF)
+        residual_nominal = test_low - guess_nominal
+
+        heat_mat = np.empty((pix, pix))
+        radial = np.empty((pix, pix))
+        rms_map = np.empty((pix, pix))
+        for i in range(pix):
+            for j in range(pix):
+
+                r = np.sqrt((i - pix//2)**2 + (j - pix//2)**2)
+                radial[i, j] = r
+                print(i, j, r)
+                PSF_copy = test_PSF.copy()
+                PSF_copy[:, i, j, 0] = alpha
+                PSF_copy[:, i, j, 1] = alpha
+
+                guess = model.predict(PSF_copy)
+                residual = test_low - guess
+                error = (norm(residual) - norm(residual_nominal)) / norm(residual_nominal)
+                heat_mat[i,j] = error
+
+                # command_check(model, PSF_copy, test_low)
+                #
+                # RMS_nom, RMS = [], []
+                # for k in range(test_PSF.shape[0]):
+                #     res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
+                #     res_phase = np.dot(PSF_low.RBF_mat, residual[k])
+                #     RMS_nom.append(np.std(res_phase_nom[pupil_mask]))
+                #     RMS.append(np.std(res_phase[pupil_mask]))
+                #
+                # rms_map[i,j] = np.mean(RMS) - np.mean(RMS_nom)
+
+        c = max(-heat_mat.min(), heat_mat.max())
+        plt.figure()
+        plt.imshow(heat_mat, cmap='Reds')
+        plt.colorbar()
+        plt.clim(heat_mat.min(), heat_mat.max())
+        # plt.title(r'Relative increase')
+
+        plt.figure()
+        plt.scatter(radial.flatten(), heat_mat.flatten())
+        plt.xlabel('Distance to central pixel')
+        plt.ylabel('Norm increase')
+
+        # c1 = min(heat_mat.min(), -heat_mat.max())
+        # plt.figure()
+        # plt.imshow(rms_map, cmap='bwr')
+        # plt.colorbar()
+        # plt.clim(rms_map.min(), rms_map.max())
+        # plt.show()
+
+        return heat_mat, rms_map
+
+    m1, m2 = pixel_sensitivity(PSF_low, model, test_PSF, test_low)
 
     def draw_actuator_commands(commands, centers=centers_low):
         cent, delta = centers
@@ -547,19 +735,24 @@ if __name__ == "__main__":
 
     Z_t = np.array(Z_t)
     Z_t = np.mean(Z_t, axis=0)
+    s_t = np.std(Z_t, axis=0)
 
     Z_r = np.array(Z_r)
     Z_r = np.mean(Z_r, axis=0)
+    s_r = np.std(Z_r, axis=0)
 
     N_zern = z_fit.N_zern
     # nn = np.arange(N_zern)
-    nn = np.arange(len(extract_radial_orders(Z_t)))
+    # nn = np.arange(len(extract_radial_orders(Z_t)))
     plt.figure()
-    plt.scatter(nn, extract_radial_orders(Z_t), label='Before calibration', s=15)
-    plt.scatter(nn, extract_radial_orders(Z_r), label='Residual after', s=15)
+    plt.errorbar(nn, extract_radial_orders(Z_t), extract_radial_orders(s_t)/2, fmt='o', label='Before calibration')
+    plt.errorbar(nn, Z_r, s_r/2, fmt='o', label='Residual after')
+    # plt.scatter(nn, extract_radial_orders(Z_t), label='Before calibration', s=15)
+    # plt.scatter(nn, extract_radial_orders(Z_r), label='Residual after', s=15)
     # plt.yscale('log')
     # plt.ylim([-5, 0])
-    plt.xlabel(r'Zernike radial order')
+    # plt.xlabel(r'Zernike radial order')
+    plt.xlabel(r'Zernike Polynomial')
     plt.ylabel(r'Zernike coefficient')
     plt.legend()
     plt.show()
