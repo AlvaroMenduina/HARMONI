@@ -476,6 +476,7 @@ if __name__ == "__main__":
         plt.ylabel('Residual error gain')
         plt.xlabel('Background')
         plt.show()
+        
 
 
 
