@@ -424,7 +424,7 @@ if __name__ == "__main__":
     residual_low = test_low - guess_low
 
     def background_sensitivity(PSF_low, model, test_PSF, test_low):
-        pupil_mask = PSF_low.pupil_mask
+        pupil_mask = PSF_low.pupil_mask 
         guess_nominal = model.predict(test_PSF)
         residual_nominal = test_low - guess_nominal
         k = 1
@@ -476,7 +476,7 @@ if __name__ == "__main__":
         plt.ylabel('Residual error gain')
         plt.xlabel('Background')
         plt.show()
-        
+
 
 
 
