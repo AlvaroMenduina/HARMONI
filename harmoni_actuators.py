@@ -1,15 +1,15 @@
 """
-==========================================================
-                      Multiwavelength
-==========================================================
+========================================================================================================================
+                                          ~~  HARMONI Simulations  ~~
 
-Experiments: see if adding Multiwavelength information improves
+                                            Actuator Model Tests
 
-(1) The resilience against FLAT FIELDING errors
+========================================================================================================================
 
-(2) The overall quality of the PREDICTIONS
+Experiments: Machine Learning calibration with the new model for the wavefronts
+Demonstrate that we need not use Zernike polynomials
 
-** So far we will not use Zemax, to make everything quicker
+Model: Deformable Mirror actuator model with Gaussian influence functions
 
 """
 
@@ -21,19 +21,43 @@ import zern_core as zern
 from scipy.optimize import least_squares
 
 from keras import models
-from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Activation, Dropout
+from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten
 from keras.models import Sequential
 from keras import backend as K
 from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
-Z = 1.25                    # Strength of the aberrations
+Z = 1.25                    # Strength of the aberrations -> relates to the Strehl ratio
 pix = 30                    # Pixels to crop the PSF
-N_PIX = 256
-RHO_APER = 0.5
-RHO_OBSC = 0.15
+N_PIX = 256                 # Pixels for the Fourier arrays
+RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
+RHO_OBSC = 0.15             # Central obscuration
 
+def radial_grid(N_radial=5, r_min=1.25*RHO_OBSC, r_max=0.9*RHO_APER):
+    """
+    Centers for actuators in a radial grid with 'approximately' constant distance
+    between actuators
+    :param N_radial:
+    :param r_min:
+    :param r_max:
+    :return:
+    """
+
+    radius = np.linspace(r_min, r_max, N_radial, endpoint=True)
+    r0 = (r_max - r_min) / N_radial
+    act = []
+    d_theta, arc_delta = 0, 0
+    for r in radius:
+        N_arc = int(np.ceil(2*np.pi*r / r0))
+
+        theta = np.linspace(0, 2*np.pi, N_arc) + d_theta + arc_delta/2
+        arc_delta = 2 * np.pi / N_arc
+        d_theta += arc_delta/2
+        # print(r, N_arc)
+        for t in theta:
+            act.append([r*np.cos(t), r*np.sin(t)])
+    return act, r0
 
 def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     """
@@ -56,7 +80,7 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     for x_c, y_c in zip(x_f, y_f):
         r = np.sqrt(x_c ** 2 + y_c ** 2)
         if r < 0.95 * rho_aper and r > 1.1 * rho_obsc:
-            act.append([x_c, y_c])
+            act.extend([x_c, y_c])
     total_act = len(act)
     print('Total Actuators: ', total_act)
     return act, delta
@@ -75,7 +99,7 @@ def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     for k in range(N_act):
         xc, yc = cent[k][0], cent[k][1]
         r2 = (xx - xc) ** 2 + (yy - yc) ** 2
-        matrix[:, :, k] = pupil * np.exp(-r2 / (1. * delta) ** 2)
+        matrix[:, :, k] = pupil * np.exp(-r2 / (0.75 * delta) ** 2)
 
     mat_flat = matrix[pupil]
 
@@ -308,7 +332,8 @@ if __name__ == "__main__":
     """ (1) Define the ACTUATORS """
 
     N_actuators = 25
-    centers = actuator_centres(N_actuators)
+    # centers = actuator_centres(N_actuators)
+    centers = radial_grid(N_radial=5)
     N_act = len(centers[0])
     plot_actuators(centers)
 
@@ -330,7 +355,8 @@ if __name__ == "__main__":
 
     """ (2) Define a lower order actuator model """
 
-    centers_low = actuator_centres(N_actuators=21)
+    # centers_low = actuator_centres(N_actuators=21)
+    centers_low = radial_grid(N_radial=3)
     N_act_low = len(centers_low[0])
     plot_actuators(centers_low)
     rbf_mat_low = rbf_matrix(centers_low)
@@ -371,7 +397,7 @@ if __name__ == "__main__":
     PSF = PointSpreadFunction(rbf_mat)
     PSF_low = PointSpreadFunction(rbf_mat_low)
 
-    N_train, N_test = 15000, 300
+    N_train, N_test = 1500, 300
     train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = generate_training_set(PSF, PSF_low, N_train, N_test)
     # train_PSF2, test_PSF2, train_coef2, test_coef2, train_low2, test_low2 = generate_training_set(PSF, PSF_low, N_train, N_test)
     #
@@ -403,7 +429,7 @@ if __name__ == "__main__":
 
     from keras.regularizers import l2
 
-    model = Sequential()
+    model = models.Sequential()
     model.add(Conv2D(64, kernel_size=(3, 3), strides=(1, 1),
                      activation='relu',
                      input_shape=input_shape))
@@ -417,14 +443,14 @@ if __name__ == "__main__":
     model.compile(optimizer='adam', loss='mean_squared_error')
     train_history = model.fit(x=train_PSF, y=train_low,
                               validation_data=(test_PSF, test_low),
-                              epochs=250, batch_size=32, shuffle=True, verbose=1)
+                              epochs=200, batch_size=32, shuffle=True, verbose=1)
 
 
     guess_low = model.predict(test_PSF)
     residual_low = test_low - guess_low
 
     def background_sensitivity(PSF_low, model, test_PSF, test_low):
-        pupil_mask = PSF_low.pupil_mask 
+        pupil_mask = PSF_low.pupil_mask
         guess_nominal = model.predict(test_PSF)
         residual_nominal = test_low - guess_nominal
         k = 1
@@ -553,17 +579,17 @@ if __name__ == "__main__":
 
 
 
-    def pixel_sensitivity(PSF_low, model, test_PSF, test_low, alpha=0.1):
-
+    def pixel_sensitivity(PSF_low, model, test_PSF, test_low, alpha=0.01):
+        P = pix//2+1
         pupil_mask = PSF_low.pupil_mask
         guess_nominal = model.predict(test_PSF)
         residual_nominal = test_low - guess_nominal
 
-        heat_mat = np.empty((pix, pix))
-        radial = np.empty((pix, pix))
-        rms_map = np.empty((pix, pix))
-        for i in range(pix):
-            for j in range(pix):
+        heat_mat = np.empty((P, P))
+        radial = np.empty((P, P))
+        rms_map = np.empty((P, P))
+        for i in range(P):
+            for j in range(P):
 
                 r = np.sqrt((i - pix//2)**2 + (j - pix//2)**2)
                 radial[i, j] = r
@@ -577,16 +603,14 @@ if __name__ == "__main__":
                 error = (norm(residual) - norm(residual_nominal)) / norm(residual_nominal)
                 heat_mat[i,j] = error
 
-                # command_check(model, PSF_copy, test_low)
-                #
-                # RMS_nom, RMS = [], []
-                # for k in range(test_PSF.shape[0]):
-                #     res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
-                #     res_phase = np.dot(PSF_low.RBF_mat, residual[k])
-                #     RMS_nom.append(np.std(res_phase_nom[pupil_mask]))
-                #     RMS.append(np.std(res_phase[pupil_mask]))
-                #
-                # rms_map[i,j] = np.mean(RMS) - np.mean(RMS_nom)
+                RMS_nom, RMS = [], []
+                for k in range(test_PSF.shape[0]):
+                    res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
+                    res_phase = np.dot(PSF_low.RBF_mat, residual[k])
+                    RMS_nom.append(np.std(res_phase_nom[pupil_mask]))
+                    RMS.append(np.std(res_phase[pupil_mask]))
+
+                rms_map[i,j] = np.mean(RMS) - np.mean(RMS_nom)
 
         c = max(-heat_mat.min(), heat_mat.max())
         plt.figure()
@@ -600,16 +624,20 @@ if __name__ == "__main__":
         plt.xlabel('Distance to central pixel')
         plt.ylabel('Norm increase')
 
-        # c1 = min(heat_mat.min(), -heat_mat.max())
-        # plt.figure()
-        # plt.imshow(rms_map, cmap='bwr')
-        # plt.colorbar()
-        # plt.clim(rms_map.min(), rms_map.max())
-        # plt.show()
+        c1 = min(heat_mat.min(), -heat_mat.max())
+        plt.figure()
+        plt.imshow(rms_map, cmap='bwr')
+        plt.colorbar()
+        plt.clim(rms_map.min(), rms_map.max())
+        plt.show()
 
-        return heat_mat, rms_map
+        return heat_mat, rms_map, radial
 
-    m1, m2 = pixel_sensitivity(PSF_low, model, test_PSF, test_low)
+    m1, m2, r1 = pixel_sensitivity(PSF_low, model, test_PSF, test_low)
+
+    plt.figure()
+    plt.scatter(r1.flatten(), m1.flatten(), label=0.01)
+    plt.scatter(r11.flatten(), m11.flatten(), label=0.02)
 
     def draw_actuator_commands(commands, centers=centers_low):
         cent, delta = centers
