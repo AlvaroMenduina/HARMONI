@@ -16,6 +16,7 @@ import os
 import numpy as np
 from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 import zern_core as zern
 
 import keras
@@ -27,9 +28,73 @@ from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
-N_zern = 50                  # Number of aberrations to consider
-Z = 0.75                    # Strength of the aberrations
-pix = 25                    # Pixels to crop the PSF
+Z = 1.25                    # Strength of the aberrations -> relates to the Strehl ratio
+pix = 30                    # Pixels to crop the PSF
+N_PIX = 256                 # Pixels for the Fourier arrays
+RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
+RHO_OBSC = 0.15             # Central obscuration
+
+
+
+def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
+    """
+    Computes the (Xc, Yc) coordinates of actuator centres
+    inside a circle of rho_aper, assuming there are N_actuators
+    along the [-1, 1] line
+
+    :param N_actuators:
+    :param rho_aper:
+    :return:
+    """
+
+    x0 = np.linspace(-1., 1., N_actuators, endpoint=True)
+    delta = x0[1] - x0[0]
+    xx, yy = np.meshgrid(x0, x0)
+    x_f = xx.flatten()
+    y_f = yy.flatten()
+
+    act = []
+    for x_c, y_c in zip(x_f, y_f):
+        r = np.sqrt(x_c ** 2 + y_c ** 2)
+        if r < 0.95 * rho_aper and r > 1.1 * rho_obsc:
+            act.append([x_c, y_c])
+    total_act = len(act)
+    print('Total Actuators: ', total_act)
+    return act, delta
+
+def plot_actuators(centers):
+    N_act = len(centers[0])
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    circ1 = Circle((0,0), RHO_APER, linestyle='--', fill=None)
+    circ2 = Circle((0,0), RHO_OBSC, linestyle='--', fill=None)
+    ax.add_patch(circ1)
+    ax.add_patch(circ2)
+    for c in centers[0]:
+        ax.scatter(c[0], c[1], color='red')
+    ax.set_aspect('equal')
+    plt.xlim([-1, 1])
+    plt.ylim([-1, 1])
+    plt.title('%d actuators' %N_act)
+
+def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
+
+    cent, delta = centres
+    N_act = len(cent)
+    matrix = np.empty((N_PIX, N_PIX, N_act))
+    x0 = np.linspace(-1., 1., N_PIX, endpoint=True)
+    xx, yy = np.meshgrid(x0, x0)
+    rho = np.sqrt(xx ** 2 + yy ** 2)
+    pupil = (rho <= rho_aper) & (rho >= rho_obsc)
+
+    for k in range(N_act):
+        xc, yc = cent[k][0], cent[k][1]
+        r2 = (xx - xc) ** 2 + (yy - yc) ** 2
+        matrix[:, :, k] = pupil * np.exp(-r2 / (1 * delta) ** 2)
+
+    mat_flat = matrix[pupil]
+
+    return matrix, pupil, mat_flat
 
 class PointSpreadFunction(object):
     """
@@ -37,30 +102,16 @@ class PointSpreadFunction(object):
     for a given set of Zernike coefficients
     """
 
-    ### Parameters
-    rho_aper = 0.25         # Size of the aperture relative to 1.0
-    N_pix = 128             # Number of pixels for the FFT computations
+    N_pix = N_PIX             # Number of pixels for the FFT computations
     minPix, maxPix = (N_pix + 1 - pix) // 2, (N_pix + 1 + pix) // 2
 
-    def __init__(self, N_zern):
+    def __init__(self, matrices):
 
-        ### Zernike Wavefront
-        x = np.linspace(-1, 1, self.N_pix, endpoint=True)
-        xx, yy = np.meshgrid(x, x)
-        rho, theta = np.sqrt(xx ** 2 + yy ** 2), np.arctan2(xx, yy)
-        self.pupil = rho <= self.rho_aper
-        rho, theta = rho[self.pupil], theta[self.pupil]
-        zernike = zern.ZernikeNaive(mask=self.pupil)
-        _phase = zernike(coef=np.zeros(N_zern + 3), rho=rho/self.rho_aper, theta=theta, normalize_noll=False,
-                         mode='Jacobi', print_option='Silent')
-        H_flat = zernike.model_matrix[:, 3:]  # remove the piston and tilts
-        self.H_matrix = zern.invert_model_matrix(H_flat, self.pupil)
-
-        # Save only the part of the model matrix that we need
-        self.H_matrix = self.H_matrix[:,:,:N_zern]
-        # FIXME: Watch out! The way we form H with the Zernike pyramid means that we can end up using the aberrations we
-        # don't want. FIX this is in the future
-        self.N_zern = self.H_matrix.shape[-1]
+        self.N_act = matrices[0].shape[-1]
+        self.RBF_mat = matrices[0].copy()
+        self.pupil_mask = matrices[1].copy()
+        self.RBF_flat = matrices[2].copy()
+        self.defocus = np.zeros_like(matrices[1])
 
         self.PEAK = self.peak_PSF()
 
@@ -69,17 +120,17 @@ class PointSpreadFunction(object):
         Compute the PEAK of the PSF without aberrations so that we can
         normalize everything by it
         """
-
-        im, strehl = self.compute_PSF(np.zeros(self.N_zern))
-
+        im, strehl = self.compute_PSF(np.zeros(self.N_act))
         return strehl
 
-    def compute_PSF(self, zern_coef, crop=True):
+    def compute_PSF(self, coef, crop=True):
         """
         Compute the PSF and the Strehl ratio
         """
-        phase = np.dot(self.H_matrix, zern_coef)
-        pupil_function = self.pupil * np.exp(1j * phase)
+
+        phase = np.dot(self.RBF_mat, coef) + self.defocus
+
+        pupil_function = self.pupil_mask * np.exp(1j * phase)
         image = (np.abs(fftshift(fft2(pupil_function))))**2
 
         try:
@@ -97,11 +148,11 @@ class PointSpreadFunction(object):
             pass
         return image, strehl
 
-    def plot_PSF(self, zern_coef):
+    def plot_PSF(self, coef):
         """
         Plot an image of the PSF
         """
-        PSF, strehl = self.compute_PSF(zern_coef)
+        PSF, strehl = self.compute_PSF(coef)
 
         plt.figure()
         plt.imshow(PSF)
@@ -109,18 +160,22 @@ class PointSpreadFunction(object):
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
 
+# ==================================================================================================================== #
+
 def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="simple", N_cases=2):
 
+    N_act = PSF.N_act
 
     # Generate extra coefficients for the Deformable Mirror corrections
     if sampling == "simple":        # Scales as 2 * N_zern
-        extra_coefs = simple_sampling(N_zern, dm_stroke)
+        extra_coefs = simple_sampling(N_act, dm_stroke)
 
     elif sampling == "complete":        # Scales as 2 ^ N_zern
-        extra_coefs = generate_sampling(2, N_zern, 2*dm_stroke, -dm_stroke)
+        extra_coefs = generate_sampling(2, N_act, 2*dm_stroke, -dm_stroke)
 
     elif sampling == "random":          # Random displacements for 2*N_cases
-        extra_coefs = random_sampling(N_zern, dm_stroke, N_cases)
+        stroke = 0.5*Z
+        extra_coefs = np.random.uniform(low=-stroke, high=stroke, size=(N_cases, N_act))
 
     else:
         raise Exception
@@ -128,17 +183,20 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
     N_channels = 1 + extra_coefs.shape[0]
 
     # Perfect PSF (128x128) - For the Loss function
-    im_perfect, _s = PSF_model.compute_PSF(np.zeros(N_zern), crop=False)
-    perfect = np.zeros((N_samples, 128, 128))           # Store the PSF N_sample times
+    im_perfect, _s = PSF_model.compute_PSF(np.zeros(N_act))
+    perfect = np.zeros((N_samples, pix, pix))           # Store the PSF N_sample times
 
     # Training set contains (25x25)-images of: Nominal PSF + PSFs with corrections
     training = np.zeros((N_samples, pix, pix, N_channels))
     # Store the Phi_0 coefficients for later
-    coefs = np.zeros((N_samples, N_zern))
+    coefs = np.zeros((N_samples, N_act))
 
     for i in range(N_samples):
 
-        rand_coef = np.random.uniform(low=-Z, high=Z, size=N_zern)
+        if i%100 == 0:
+            print(i)
+
+        rand_coef = np.random.uniform(low=-Z, high=Z, size=N_act)
         coefs[i] = rand_coef
         im0, _s = PSF_model.compute_PSF(rand_coef)
         # Store the images in a least and then turn it into array
@@ -148,8 +206,8 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
 
             ims, _s = PSF_model.compute_PSF(rand_coef + c)
             # Difference between NOMINAL and CORRECTED
-            nom_im.append(ims - im0)
-            # nom_im.append(ims)
+            # nom_im.append(ims - im0)
+            nom_im.append(ims)
 
         training[i] = np.moveaxis(np.array(nom_im), 0, -1)
         # NOTE: Tensorflow does not have FFTSHIFT operation. So we have to fftshift the Perfect PSF
@@ -196,43 +254,149 @@ def simple_sampling(N_zern, dm_stroke):
         coefs[2*i:2*i+2] = dummy
     return coefs
 
-def random_sampling(N_zern, dm_stroke, N_cases=3):
-    """
-    Extra coefficients using random displacements for a total of 2 * N_cases
-
-    Example:
-        [ -1, 0, 2, -3, ...]
-        [ 1, 0, -2,  3, ...]  # A pair of opposite sign, with size N_zern
-
-        ...
-        [ 3, 1, -2, -1, ...]
-        [-3, -1, 2,  1, ...]
-
-
-
-    """
-
-    coefs = np.empty((2 * N_cases, N_zern))
-    alpha = 3
-    for i in range(N_cases):
-        dummy = dm_stroke * np.random.randint(low=-alpha, high=alpha, size=N_zern)
-
-        coefs[2*i] = dummy
-        coefs[2*i+1] = -dummy
-    return coefs
-
-
 if __name__ == "__main__":
 
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
-    # Sanity check: plot a PSF
-    coef = np.random.uniform(low=-Z, high=Z, size=N_zern)
-    print(coef)
-    PSF = PointSpreadFunction(N_zern)
-    PSF.plot_PSF(coef)
+    N_actuators = 25
+    centers = actuator_centres(N_actuators)
+    # centers = radial_grid(N_radial=5)
+    N_act = len(centers[0])
+    plot_actuators(centers)
+
+    rbf_mat = rbf_matrix(centers)        # Actuator matrix
+
+    c_act = np.random.uniform(-1, 1, size=N_act)
+    phase0 = np.dot(rbf_mat[0], c_act)
+    p0 = min(phase0.min(), -phase0.max())
+
+    plt.figure()
+    plt.imshow(phase0, extent=(-1,1,-1,1), cmap='bwr')
+    plt.colorbar()
+    plt.clim(p0, -p0)
+    for c in centers[0]:
+        plt.scatter(c[0], c[1], color='black', s=4)
+    plt.xlim([-1, 1])
+    plt.ylim([-1, 1])
     plt.show()
+
+    PSF = PointSpreadFunction(rbf_mat)
+
+    N_cases = 3
+    N_classes = N_act
+    N_train, N_test = 500, 50
+    N_samples = N_train + N_test
+    sampling = "random"
+
+    _images, _coefs, _perfect, _extra = generate_training_set(PSF, N_samples, sampling=sampling, N_cases=N_cases)
+    train_images, train_coefs, perfect_psf = _images[:N_train], _coefs[:N_train], _perfect[:N_train]
+    test_images, test_coefs = _images[N_train:], _coefs[N_train:]
+    dummy = np.zeros_like(train_coefs)
+
+    k = 0
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
+    # ax1.set_title(r'$PSF(\Phi_0)$')
+    # plt.colorbar(im1, ax=ax1)
+
+    ax2 = plt.subplot(1, 3, 2)
+    im2 = ax2.imshow(train_images[k, :, :, 1], cmap='hot')
+    # ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
+    # plt.colorbar(im2, ax=ax2)
+
+    ax3 = plt.subplot(1, 3, 3)
+    im3 = ax3.imshow(train_images[k, :, :, 2], cmap='hot')
+    # ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
+    # plt.colorbar(im3, ax=ax3)
+
+    N_channels = train_images.shape[-1]
+    input_shape = (pix, pix, N_channels,)
+
+    plt.show()
+
+    model = models.Sequential()
+    model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
+                     activation='relu',
+                     input_shape=input_shape))
+    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+    model.add(Conv2D(32, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    # model.add(Conv2D(32, (3, 3), activation='relu'))
+    # model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Flatten())
+    model.add(Dense(N_classes))
+    model.summary()
+
+    # Some bits for the Loss function definition
+    H = PSF.RBF_mat.copy().T
+    # Roll it to match the Theano convention for dot product that TF uses
+    H = np.rollaxis(H, 1, 0)  # Model Matrix to compute the Phase with Zernikes
+    pup = PSF.pupil_mask.copy()  # Pupil Mask
+    peak = PSF.PEAK.copy()  # Peak to normalize the FFT calculations
+
+    # Transform them to TensorFlow
+    pupt = tf.constant(pup, dtype=tf.float32)
+    ht = tf.constant(H, dtype=tf.float32)
+    coef_t = tf.constant(train_coefs, dtype=tf.float32)
+    perfect_t = tf.constant(perfect_psf, dtype=tf.float32)
+
+
+    def loss(y_true, y_pred):
+        """
+        Custom Keras Loss function
+        :param y_true: unused because we want it to be unsupervised
+        :param y_pred: predicted corrections for the PSF
+        :return:
+
+        Notes: Keras doesn't like dealing with Complex numbers so we separate the pupil function
+        P = P_mask * exp( 1i * Phase)
+        into Real and Imaginary parts using Euler's formula and then join them back into a Complex64
+        because Tensorflow expects it that way for the Fourier Transform
+        """
+
+        # Phase includes the unknown Phi_0 (coef_t) and the Predictions
+        phase = K.dot(coef_t + y_pred, ht)
+
+        cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
+        complex_phase = tf.complex(cos_x, sin_x)
+        image = (K.abs(tf.fft2d(complex_phase))) ** 2 / peak
+        print(image.shape)
+
+        Q1 = image[:, :pix//2, :pix//2] - perfect_t[:, :pix//2, :pix//2]
+        Q2 = image[:, N_PIX-pix//2:, :pix//2] - perfect_t[:, pix//2:, :pix//2]
+        Q3 = image[:, :pix//2, N_PIX-pix//2:] - perfect_t[:, :pix//2, pix//2:]
+        Q4 = image[:, N_PIX-pix//2:, N_PIX-pix//2:] - perfect_t[:, pix//2:, pix//2:]
+        print(Q1.shape)
+
+        # Compute the Difference between the PSF after applying a correction and a Perfect PSF
+        res = K.mean(K.sum(Q1**2 + Q2**2 + Q3**2 + Q4**2))
+
+        # We can train it to maximize the Strehl ratio on
+        # strehl = K.max(image, axis=(1, 2)) / peak
+        # print(strehl.shape)
+        # res = -K.mean(strehl)
+
+        return res
+
+
+    model.compile(optimizer='adam', loss=loss)
+    train_history = model.fit(x=train_images, y=dummy, epochs=50, batch_size=N_train, shuffle=False, verbose=1)
+    # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
+    # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
+
+    loss_hist = train_history.history['loss']
+
+    guess_coef = model.predict(test_images)
+    residual = test_coefs + guess_coef
+
+
+
+
+
+
+
 
     loss_array, strehl_array = [], []
 
