@@ -29,10 +29,14 @@ from numpy.linalg import norm as norm
 
 # PARAMETERS
 Z = 1.25                    # Strength of the aberrations -> relates to the Strehl ratio
-pix = 30                    # Pixels to crop the PSF
+pix = 40                    # Pixels to crop the PSF
 N_PIX = 256                 # Pixels for the Fourier arrays
 RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
 RHO_OBSC = 0.15             # Central obscuration
+
+# ==================================================================================================================== #
+#                                   Deformable Mirror - ACTUATOR MODEL functions
+# ==================================================================================================================== #
 
 def radial_grid(N_radial=5, r_min=1.25*RHO_OBSC, r_max=0.9*RHO_APER):
     """
@@ -57,6 +61,8 @@ def radial_grid(N_radial=5, r_min=1.25*RHO_OBSC, r_max=0.9*RHO_APER):
         # print(r, N_arc)
         for t in theta:
             act.append([r*np.cos(t), r*np.sin(t)])
+    total_act = len(act)
+    print('Total Actuators: ', total_act)
     return act, r0
 
 def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
@@ -80,11 +86,25 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     for x_c, y_c in zip(x_f, y_f):
         r = np.sqrt(x_c ** 2 + y_c ** 2)
         if r < 0.95 * rho_aper and r > 1.1 * rho_obsc:
-            act.extend([x_c, y_c])
+            act.append([x_c, y_c])
     total_act = len(act)
     print('Total Actuators: ', total_act)
     return act, delta
 
+def plot_actuators(centers):
+    N_act = len(centers[0])
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    circ1 = Circle((0,0), RHO_APER, linestyle='--', fill=None)
+    circ2 = Circle((0,0), RHO_OBSC, linestyle='--', fill=None)
+    ax.add_patch(circ1)
+    ax.add_patch(circ2)
+    for c in centers[0]:
+        ax.scatter(c[0], c[1], color='red')
+    ax.set_aspect('equal')
+    plt.xlim([-1, 1])
+    plt.ylim([-1, 1])
+    plt.title('%d actuators' %N_act)
 
 def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
 
@@ -104,6 +124,10 @@ def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     mat_flat = matrix[pupil]
 
     return matrix, pupil, mat_flat
+
+# ==================================================================================================================== #
+#                                          Point Spread Function
+# ==================================================================================================================== #
 
 
 class PointSpreadFunction(object):
@@ -169,21 +193,6 @@ class PointSpreadFunction(object):
         plt.title('Strehl: %.3f' %strehl)
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
-
-def plot_actuators(centers):
-    N_act = len(centers[0])
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    circ1 = Circle((0,0), RHO_APER, linestyle='--', fill=None)
-    circ2 = Circle((0,0), RHO_OBSC, linestyle='--', fill=None)
-    ax.add_patch(circ1)
-    ax.add_patch(circ2)
-    for c in centers[0]:
-        ax.scatter(c[0], c[1], color='red')
-    ax.set_aspect('equal')
-    plt.xlim([-1, 1])
-    plt.ylim([-1, 1])
-    plt.title('%d actuators' %N_act)
 
 class LS_fit(object):
 
@@ -323,6 +332,47 @@ def adapt_training_set_coef(PSF_model_high, PSF_model_low, train_coef, test_coef
 
     return coef_low[:N_train], coef_low[N_train:]
 
+def crop_datacubes(datacube, crop_pix=25):
+    N_PSF, pix = datacube.shape[0], datacube.shape[1]
+    minPix, maxPix = (pix + 1 - crop_pix) // 2, (pix + 1 + crop_pix) // 2
+    new_data = np.empty((N_PSF, crop_pix, crop_pix, 2))
+    for k in range(N_PSF):
+        new_data[k, :, :, 0] =  datacube[k,:,:,0][minPix:maxPix, minPix:maxPix]
+        new_data[k, :, :, 1] =  datacube[k,:,:,1][minPix:maxPix, minPix:maxPix]
+    return new_data
+
+def data_augmentation_bad_pixel(training_set, train_coef, N_copies=5):
+    """
+    Data Augmentation method to improve robustness against bad pixels
+    :param training_set:
+    :param train_coef:
+    :param N_copies: number of times you repeat a PSF
+    :return:
+    """
+
+    mu0 = 0.10
+
+    N_train, pix = training_set.shape[0], training_set.shape[1]
+    N_act = train_coef.shape[-1]
+    augmented_PSF = np.empty((N_copies*N_train, pix, pix, 2))
+    augmented_coef = np.empty((N_copies*N_train, N_act))
+    for k in range(N_train):
+        coef = train_coef[k].copy()
+
+        for i in range(N_copies):
+            PSF = training_set[k].copy()
+
+            bad_pixels = np.random.choice(pix, size=2)
+            mu = np.random.uniform(0, mu0, size=1)
+            i_bad, j_bad = bad_pixels[0], bad_pixels[1]
+            PSF[i_bad, j_bad, 0] = mu
+            PSF[i_bad, j_bad, 1] = mu
+            print(N_copies*k + i)
+            augmented_PSF[N_copies*k + i] = PSF
+            augmented_coef[N_copies*k + i] = coef
+    return augmented_PSF, augmented_coef
+
+
 
 if __name__ == "__main__":
 
@@ -332,8 +382,8 @@ if __name__ == "__main__":
     """ (1) Define the ACTUATORS """
 
     N_actuators = 25
-    # centers = actuator_centres(N_actuators)
-    centers = radial_grid(N_radial=5)
+    centers = actuator_centres(N_actuators)
+    # centers = radial_grid(N_radial=5)
     N_act = len(centers[0])
     plot_actuators(centers)
 
@@ -353,10 +403,11 @@ if __name__ == "__main__":
     plt.ylim([-1, 1])
     plt.show()
 
+
     """ (2) Define a lower order actuator model """
 
-    # centers_low = actuator_centres(N_actuators=21)
-    centers_low = radial_grid(N_radial=3)
+    centers_low = actuator_centres(N_actuators=21)
+    # centers_low = radial_grid(N_radial=3)
     N_act_low = len(centers_low[0])
     plot_actuators(centers_low)
     rbf_mat_low = rbf_matrix(centers_low)
@@ -397,7 +448,7 @@ if __name__ == "__main__":
     PSF = PointSpreadFunction(rbf_mat)
     PSF_low = PointSpreadFunction(rbf_mat_low)
 
-    N_train, N_test = 1500, 300
+    N_train, N_test = 15000, 300
     train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = generate_training_set(PSF, PSF_low, N_train, N_test)
     # train_PSF2, test_PSF2, train_coef2, test_coef2, train_low2, test_low2 = generate_training_set(PSF, PSF_low, N_train, N_test)
     #
@@ -408,24 +459,11 @@ if __name__ == "__main__":
     # train_low = np.concatenate([train_low, train_low2], axis=0)
     # test_low = np.concatenate([test_low, test_low2], axis=0)
 
-    """ Crop to 20-pixels """
-    # def crop_datacubes(datacube, crop_pix=25):
-    #     N_PSF, pix = datacube.shape[0], datacube.shape[1]
-    #     minPix, maxPix = (pix + 1 - crop_pix) // 2, (pix + 1 + crop_pix) // 2
-    #     new_data = np.empty((N_PSF, crop_pix, crop_pix, 2))
-    #     for k in range(N_PSF):
-    #         new_data[k, :, :, 0] =  datacube[k,:,:,0][minPix:maxPix, minPix:maxPix]
-    #         new_data[k, :, :, 1] =  datacube[k,:,:,1][minPix:maxPix, minPix:maxPix]
-    #     return new_data
-    #
-    #
-    # train_PSF_crop = crop_datacubes(train_PSF)
-    # test_PSF_crop = crop_datacubes(test_PSF)
-
-
     N_channels = 2
     input_shape = (pix, pix, N_channels,)
-    # input_shape = (25, 25, N_channels,)
+
+    # train_PSF_crop = crop_datacubes(train_PSF)
+    # test_PSF_crop = crop_datacubes(test_PSF)
 
     from keras.regularizers import l2
 
@@ -444,6 +482,10 @@ if __name__ == "__main__":
     train_history = model.fit(x=train_PSF, y=train_low,
                               validation_data=(test_PSF, test_low),
                               epochs=200, batch_size=32, shuffle=True, verbose=1)
+
+    # Resilience BAD PIXELS
+    aug_train_PSF, aug_train_low = data_augmentation_bad_pixel(train_PSF, train_low)
+    aug_test_PSF, aug_test_low = data_augmentation_bad_pixel(test_PSF, test_low)
 
 
     guess_low = model.predict(test_PSF)
@@ -502,13 +544,6 @@ if __name__ == "__main__":
         plt.ylabel('Residual error gain')
         plt.xlabel('Background')
         plt.show()
-
-
-
-
-
-
-
 
     def roll_sensitivity(PSF_low, model, test_PSF, test_low, p=1):
         pupil_mask = PSF_low.pupil_mask
@@ -579,8 +614,9 @@ if __name__ == "__main__":
 
 
 
-    def pixel_sensitivity(PSF_low, model, test_PSF, test_low, alpha=0.01):
+    def pixel_sensitivity(PSF_low, model, test_PSF, test_low, alpha):
         P = pix//2+1
+        # P = pix
         pupil_mask = PSF_low.pupil_mask
         guess_nominal = model.predict(test_PSF)
         residual_nominal = test_low - guess_nominal
@@ -604,7 +640,7 @@ if __name__ == "__main__":
                 heat_mat[i,j] = error
 
                 RMS_nom, RMS = [], []
-                for k in range(test_PSF.shape[0]):
+                for k in range(100):
                     res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
                     res_phase = np.dot(PSF_low.RBF_mat, residual[k])
                     RMS_nom.append(np.std(res_phase_nom[pupil_mask]))
@@ -633,11 +669,18 @@ if __name__ == "__main__":
 
         return heat_mat, rms_map, radial
 
-    m1, m2, r1 = pixel_sensitivity(PSF_low, model, test_PSF, test_low)
+    m1, m2222, r1 = pixel_sensitivity(PSF_low, model, test_PSF, test_low, alpha=0.10)
 
     plt.figure()
-    plt.scatter(r1.flatten(), m1.flatten(), label=0.01)
-    plt.scatter(r11.flatten(), m11.flatten(), label=0.02)
+    plt.scatter(r1.flatten(), np.log10(m2.flatten()), s=10, label=0.01)
+    plt.scatter(r1.flatten(), np.log10(m22.flatten()), s=10, label=0.02)
+    plt.scatter(r1.flatten(), np.log10(m222.flatten()), s=10, label=0.05)
+    plt.scatter(r1.flatten(), np.log10(m2222.flatten()), s=10, label=0.10)
+    plt.legend(title=r'Bad Pixel $\mu$')
+    plt.xlabel('Radial distance [pixels]')
+    plt.ylabel(r'Error increase $\Delta$ [$\lambda$]')
+    plt.ylim([-5, 0])
+    plt.show()
 
     def draw_actuator_commands(commands, centers=centers_low):
         cent, delta = centers
@@ -786,11 +829,6 @@ if __name__ == "__main__":
     plt.legend()
     plt.show()
 
-
-
-
-
-
     def performance_check(PSF_high, PSF_low, model, test_PSF, test_coef, test_low):
 
         pupil_mask = PSF_high.pupil_mask
@@ -805,7 +843,7 @@ if __name__ == "__main__":
 
         RMS0, RMS_ideal, RMS_true = [], [], []
 
-        for k in range(300):
+        for k in range(10):
 
             phase_high = np.dot(PSF_high.RBF_mat, test_coef[k])
             phase_fit_low = np.dot(PSF_low.RBF_mat, test_low[k])
@@ -822,13 +860,13 @@ if __name__ == "__main__":
             RMS_ideal.append(rms[2])
             RMS_true.append((rms[-1]))
 
-        plt.figure()
-        plt.hist(RMS0, histtype='step', label='Initial Wavefront')
-        plt.hist(RMS_ideal, histtype='step', label='Ideal Residual')
-        plt.hist(RMS_true, histtype='step', label='Machine Learning Residual')
-        plt.xlabel(r'RMS wavefront $\lambda$')
-        plt.xlim([0, 1.25])
-        plt.legend()
+        # plt.figure()
+        # plt.hist(RMS0, histtype='step', label='Initial Wavefront')
+        # plt.hist(RMS_ideal, histtype='step', label='Ideal Residual')
+        # plt.hist(RMS_true, histtype='step', label='Machine Learning Residual')
+        # plt.xlabel(r'RMS wavefront $\lambda$')
+        # plt.xlim([0, 1.25])
+        # plt.legend()
 
         # return RMS_ideal, RMS_true
 
@@ -858,7 +896,7 @@ if __name__ == "__main__":
             # plt.show()
 
             ax4 = plt.subplot(2, 3, 4)
-            img4 = ax4.imshow(draw_actuator_commands(guess_low[k], centers_low2), cmap=mapp)
+            img4 = ax4.imshow(draw_actuator_commands(guess_low[k], centers_low), cmap=mapp)
             ax4.set_title('Actuators')
             m_act = min(guess_low[k].min(), -guess_low[k].max())
             img4.set_clim(m_act, -m_act)
@@ -876,7 +914,7 @@ if __name__ == "__main__":
             img6.set_clim(m, -m)
             # plt.colorbar(img6, ax=ax6, orientation='horizontal')
 
-    r_i, r_t = performance_check(PSF, PSF_low, model, test_PSF_crop, test_coef, test_low)
+    r_i, r_t = performance_check(PSF, PSF_low, model, test_PSF, test_coef, test_low)
     performance_check(PSF, PSF_low2, model2, test_PSF, test_coef, test_low2)
     plt.show()
 
