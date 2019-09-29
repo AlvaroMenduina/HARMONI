@@ -34,6 +34,15 @@ N_PIX = 256                 # Pixels for the Fourier arrays
 RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
 RHO_OBSC = 0.15             # Central obscuration
 
+# SPAXEL SCALE
+wave = 1.5                 # 1 micron
+ELT_DIAM = 39
+MILIARCSECS_IN_A_RAD = 206265000
+SPAXEL_RAD = RHO_APER * wave / ELT_DIAM * 1e-6
+SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
+print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wave))
+
+
 # ==================================================================================================================== #
 #                                   Deformable Mirror - ACTUATOR MODEL functions
 # ==================================================================================================================== #
@@ -78,6 +87,9 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
 
     x0 = np.linspace(-1., 1., N_actuators, endpoint=True)
     delta = x0[1] - x0[0]
+    N_in_D = 2*RHO_APER/delta
+    print('%.2f actuators in D' %N_in_D)
+    max_freq = N_in_D / 2                   # Max spatial frequency we can sense
     xx, yy = np.meshgrid(x0, x0)
     x_f = xx.flatten()
     y_f = yy.flatten()
@@ -89,7 +101,7 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
             act.append([x_c, y_c])
     total_act = len(act)
     print('Total Actuators: ', total_act)
-    return act, delta
+    return [act, delta], max_freq
 
 def plot_actuators(centers):
     N_act = len(centers[0])
@@ -337,9 +349,38 @@ def crop_datacubes(datacube, crop_pix=25):
     minPix, maxPix = (pix + 1 - crop_pix) // 2, (pix + 1 + crop_pix) // 2
     new_data = np.empty((N_PSF, crop_pix, crop_pix, 2))
     for k in range(N_PSF):
-        new_data[k, :, :, 0] =  datacube[k,:,:,0][minPix:maxPix, minPix:maxPix]
-        new_data[k, :, :, 1] =  datacube[k,:,:,1][minPix:maxPix, minPix:maxPix]
+        new_data[k, :, :, 0] = datacube[k,:,:,0][minPix:maxPix, minPix:maxPix]
+        new_data[k, :, :, 1] = datacube[k,:,:,1][minPix:maxPix, minPix:maxPix]
     return new_data
+
+def read_out_noise(training_set, train_coef, N_copies=3):
+    """
+    Add READ OUT NOISE to the clean PSF
+    :param training_set:
+    :param train_coef:
+    :param N_copies:
+    :return:
+    """
+    RMS_READ = 1. / 100
+
+    N_train, pix = training_set.shape[0], training_set.shape[1]
+    N_act = train_coef.shape[-1]
+    augmented_PSF = np.empty((N_copies*N_train, pix, pix, 2))
+    augmented_coef = np.empty((N_copies*N_train, N_act))
+    for k in range(N_train):
+        coef = train_coef[k].copy()
+        PSF = training_set[k].copy()
+        for i in range(N_copies):
+
+            read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, 2))
+            # plt.figure()
+            # plt.imshow(read_out[:,:,0])
+            # plt.colorbar()
+            # plt.show()
+            augmented_PSF[N_copies*k + i] = PSF + read_out
+            augmented_coef[N_copies*k + i] = coef
+    return augmented_PSF, augmented_coef
+
 
 def data_augmentation_bad_pixel(training_set, train_coef, N_copies=5):
     """
@@ -382,7 +423,7 @@ if __name__ == "__main__":
     """ (1) Define the ACTUATORS """
 
     N_actuators = 25
-    centers = actuator_centres(N_actuators)
+    centers, MAX_FREQ = actuator_centres(N_actuators)
     # centers = radial_grid(N_radial=5)
     N_act = len(centers[0])
     plot_actuators(centers)
@@ -406,7 +447,7 @@ if __name__ == "__main__":
 
     """ (2) Define a lower order actuator model """
 
-    centers_low = actuator_centres(N_actuators=21)
+    centers_low, low_freq = actuator_centres(N_actuators=21)
     # centers_low = radial_grid(N_radial=3)
     N_act_low = len(centers_low[0])
     plot_actuators(centers_low)
@@ -450,20 +491,20 @@ if __name__ == "__main__":
 
     N_train, N_test = 15000, 300
     train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = generate_training_set(PSF, PSF_low, N_train, N_test)
-    # train_PSF2, test_PSF2, train_coef2, test_coef2, train_low2, test_low2 = generate_training_set(PSF, PSF_low, N_train, N_test)
-    #
-    # train_PSF = np.concatenate([train_PSF, train_PSF2], axis=0)
-    # test_PSF = np.concatenate([test_PSF, test_PSF2], axis=0)
-    # train_coef = np.concatenate([train_coef, train_coef2], axis=0)
-    # test_coef = np.concatenate([test_coef, test_coef2], axis=0)
-    # train_low = np.concatenate([train_low, train_low2], axis=0)
-    # test_low = np.concatenate([test_low, test_low2], axis=0)
-
-    N_channels = 2
-    input_shape = (pix, pix, N_channels,)
 
     # train_PSF_crop = crop_datacubes(train_PSF)
     # test_PSF_crop = crop_datacubes(test_PSF)
+
+    train_PSF_read, train_low_read = read_out_noise(train_PSF, train_low, N_copies=3)
+    test_PSF_read, test_low_read = read_out_noise(test_PSF, test_low, N_copies=3)
+    RMS_READ = 1./100
+
+    crop_pix = 30
+    train_PSF_read = crop_datacubes(train_PSF_read, crop_pix)
+    test_PSF_read = crop_datacubes(test_PSF_read, crop_pix)
+
+    N_channels = 2
+    input_shape = (crop_pix, crop_pix, N_channels,)
 
     from keras.regularizers import l2
 
@@ -479,8 +520,9 @@ if __name__ == "__main__":
     model.summary()
 
     model.compile(optimizer='adam', loss='mean_squared_error')
-    train_history = model.fit(x=train_PSF, y=train_low,
-                              validation_data=(test_PSF, test_low),
+
+    train_history = model.fit(x=train_PSF_read, y=train_low_read,
+                              validation_data=(test_PSF_read, test_low_read),
                               epochs=200, batch_size=32, shuffle=True, verbose=1)
 
     # Resilience BAD PIXELS
@@ -488,8 +530,8 @@ if __name__ == "__main__":
     aug_test_PSF, aug_test_low = data_augmentation_bad_pixel(test_PSF, test_low)
 
 
-    guess_low = model.predict(test_PSF)
-    residual_low = test_low - guess_low
+    guess_low = model.predict(test_PSF_read)
+    residual_low = test_low_read - guess_low
 
     def background_sensitivity(PSF_low, model, test_PSF, test_low):
         pupil_mask = PSF_low.pupil_mask
@@ -613,10 +655,9 @@ if __name__ == "__main__":
     roll_sensitivity(PSF_low, model, test_PSF, test_low)
 
 
-
     def pixel_sensitivity(PSF_low, model, test_PSF, test_low, alpha):
-        P = pix//2+1
-        # P = pix
+        # P = pix//2+1
+        P = crop_pix
         pupil_mask = PSF_low.pupil_mask
         guess_nominal = model.predict(test_PSF)
         residual_nominal = test_low - guess_nominal
@@ -631,8 +672,8 @@ if __name__ == "__main__":
                 radial[i, j] = r
                 print(i, j, r)
                 PSF_copy = test_PSF.copy()
-                PSF_copy[:, i, j, 0] = alpha
-                PSF_copy[:, i, j, 1] = alpha
+                PSF_copy[:, i, j, 0] = alpha * RMS_READ
+                PSF_copy[:, i, j, 1] = alpha * RMS_READ
 
                 guess = model.predict(PSF_copy)
                 residual = test_low - guess
@@ -640,7 +681,7 @@ if __name__ == "__main__":
                 heat_mat[i,j] = error
 
                 RMS_nom, RMS = [], []
-                for k in range(100):
+                for k in range(900):
                     res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
                     res_phase = np.dot(PSF_low.RBF_mat, residual[k])
                     RMS_nom.append(np.std(res_phase_nom[pupil_mask]))
@@ -668,6 +709,28 @@ if __name__ == "__main__":
         plt.show()
 
         return heat_mat, rms_map, radial
+
+    error_norm, error_rms, radial = pixel_sensitivity(PSF_low, model, test_PSF_read, test_low_read, alpha=10)
+
+    plt.figure()
+    plt.scatter(radial.flatten(), error_rms.flatten(), s=6)
+    plt.xlabel('Distance to central pixel')
+    plt.ylabel('Norm increase')
+    plt.show()
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    circ1 = Circle((0.5,0.5), SPAXEL_MAS * low_freq /2, linestyle='--', fill=None)
+    ax.add_patch(circ1)
+    c = max(-error_norm.min(), error_norm.max())
+    im = ax.imshow(error_norm, cmap='Reds',extent=[-crop_pix//2, crop_pix//2, -crop_pix//2, crop_pix//2])
+    ax.set_aspect('equal')
+    plt.colorbar(im, ax=ax)
+
+    plt.title(r'Bad Pixel 50 $\sigma$')
+    plt.show()
+
+
 
     m1, m2222, r1 = pixel_sensitivity(PSF_low, model, test_PSF, test_low, alpha=0.10)
 
