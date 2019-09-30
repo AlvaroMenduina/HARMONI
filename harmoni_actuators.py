@@ -382,7 +382,7 @@ def read_out_noise(training_set, train_coef, N_copies=3):
     return augmented_PSF, augmented_coef
 
 
-def data_augmentation_bad_pixel(training_set, train_coef, N_copies=5):
+def data_augmentation_bad_pixel(training_set, train_coef, alpha=10, RMS_READ=1./100, N_copies=5):
     """
     Data Augmentation method to improve robustness against bad pixels
     :param training_set:
@@ -391,7 +391,7 @@ def data_augmentation_bad_pixel(training_set, train_coef, N_copies=5):
     :return:
     """
 
-    mu0 = 0.10
+    mu0 = alpha * RMS_READ
 
     N_train, pix = training_set.shape[0], training_set.shape[1]
     N_act = train_coef.shape[-1]
@@ -404,7 +404,8 @@ def data_augmentation_bad_pixel(training_set, train_coef, N_copies=5):
             PSF = training_set[k].copy()
 
             bad_pixels = np.random.choice(pix, size=2)
-            mu = np.random.uniform(0, mu0, size=1)
+            mu = mu0
+            # mu = np.random.uniform(0, mu0, size=1)
             i_bad, j_bad = bad_pixels[0], bad_pixels[1]
             PSF[i_bad, j_bad, 0] = mu
             PSF[i_bad, j_bad, 1] = mu
@@ -489,6 +490,24 @@ if __name__ == "__main__":
     PSF = PointSpreadFunction(rbf_mat)
     PSF_low = PointSpreadFunction(rbf_mat_low)
 
+    # Make sure the Spatial frequency is properly calculated.
+    fx = low_freq
+    x = np.linspace(-1, 1, N_PIX, endpoint=True)
+    xx, yy = np.meshgrid(x, x)
+    wavef = PSF_low.pupil_mask * np.cos(2 * np.pi * (fx * xx + 0 * yy))
+    pupil_function = PSF_low.pupil_mask * np.exp(1j * wavef)
+    image = (np.abs(fftshift(fft2(pupil_function)))) ** 2 / PSF_low.PEAK
+    image = image[PSF_low.minPix:PSF_low.maxPix, PSF_low.minPix:PSF_low.maxPix]
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    circ1 = Circle((0.5,-0.5), SPAXEL_MAS * low_freq /2, linestyle='--', fill=None, color='white')
+    ax.add_patch(circ1)
+    # c = max(-error_rms.min(), error_rms.max())
+    im = ax.imshow(image, cmap='viridis', extent=[-pix//2, pix//2, -pix//2, pix//2])
+    plt.show()
+
+    # '''''''''''''''''''
+
     N_train, N_test = 15000, 300
     train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = generate_training_set(PSF, PSF_low, N_train, N_test)
 
@@ -498,6 +517,17 @@ if __name__ == "__main__":
     train_PSF_read, train_low_read = read_out_noise(train_PSF, train_low, N_copies=3)
     test_PSF_read, test_low_read = read_out_noise(test_PSF, test_low, N_copies=3)
     RMS_READ = 1./100
+
+    k = 3*3
+    cm = 'hot'
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    im1 = ax1.imshow(train_PSF_read[k, :, :, 0], cmap=cm)
+    ax2 = plt.subplot(1, 3, 2)
+    im2 = ax2.imshow(train_PSF_read[k+1, :, :, 0], cmap=cm)
+    ax3 = plt.subplot(1, 3, 3)
+    im3 = ax3.imshow(train_PSF_read[k+2, :, :, 0], cmap=cm)
+    plt.show()
 
     crop_pix = 30
     train_PSF_read = crop_datacubes(train_PSF_read, crop_pix)
@@ -521,13 +551,27 @@ if __name__ == "__main__":
 
     model.compile(optimizer='adam', loss='mean_squared_error')
 
-    train_history = model.fit(x=train_PSF_read, y=train_low_read,
-                              validation_data=(test_PSF_read, test_low_read),
+    # train_history = model.fit(x=train_PSF_read, y=train_low_read,
+    #                           validation_data=(test_PSF_read, test_low_read),
+    #                           epochs=200, batch_size=32, shuffle=True, verbose=1)
+    train_history = model.fit(x=crop_datacubes(aug_train_PSF, crop_pix), y=aug_train_low,
+                              validation_data=(crop_datacubes(aug_test_PSF, crop_pix), aug_test_low),
                               epochs=200, batch_size=32, shuffle=True, verbose=1)
 
     # Resilience BAD PIXELS
-    aug_train_PSF, aug_train_low = data_augmentation_bad_pixel(train_PSF, train_low)
-    aug_test_PSF, aug_test_low = data_augmentation_bad_pixel(test_PSF, test_low)
+    aug_train_PSF, aug_train_low = data_augmentation_bad_pixel(train_PSF_read, train_low_read, N_copies=3)
+    aug_test_PSF, aug_test_low = data_augmentation_bad_pixel(test_PSF_read, test_low_read, N_copies=2)
+
+    k = 0
+    cm = 'hot'
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    im1 = ax1.imshow(test_PSF_read[k, :, :, 0], cmap=cm)
+    ax2 = plt.subplot(1, 3, 2)
+    im2 = ax2.imshow(aug_test_PSF[k+4, :, :, 0], cmap=cm)
+    ax3 = plt.subplot(1, 3, 3)
+    im3 = ax3.imshow(aug_test_PSF[k+4, :, :, 0] - test_PSF_read[k, :, :, 0], cmap=cm)
+    plt.show()
 
 
     guess_low = model.predict(test_PSF_read)
@@ -722,12 +766,12 @@ if __name__ == "__main__":
     ax = fig.add_subplot(111)
     circ1 = Circle((0.5,0.5), SPAXEL_MAS * low_freq /2, linestyle='--', fill=None)
     ax.add_patch(circ1)
-    c = max(-error_norm.min(), error_norm.max())
-    im = ax.imshow(error_norm, cmap='Reds',extent=[-crop_pix//2, crop_pix//2, -crop_pix//2, crop_pix//2])
+    c = max(-error_rms.min(), error_rms.max())
+    im = ax.imshow(error_rms, cmap='Reds',extent=[-crop_pix//2, crop_pix//2, -crop_pix//2, crop_pix//2])
     ax.set_aspect('equal')
     plt.colorbar(im, ax=ax)
 
-    plt.title(r'Bad Pixel 50 $\sigma$')
+    plt.title(r'Bad Pixel 10 $\sigma$')
     plt.show()
 
 

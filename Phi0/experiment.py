@@ -29,7 +29,7 @@ from numpy.linalg import norm as norm
 
 # PARAMETERS
 Z = 1.25                    # Strength of the aberrations -> relates to the Strehl ratio
-pix = 30                    # Pixels to crop the PSF
+pix = 25                    # Pixels to crop the PSF
 N_PIX = 256                 # Pixels for the Fourier arrays
 RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
 RHO_OBSC = 0.15             # Central obscuration
@@ -49,6 +49,8 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
 
     x0 = np.linspace(-1., 1., N_actuators, endpoint=True)
     delta = x0[1] - x0[0]
+    N_in_D = 2*RHO_APER/delta
+    print('%.2f actuators in D' %N_in_D)
     xx, yy = np.meshgrid(x0, x0)
     x_f = xx.flatten()
     y_f = yy.flatten()
@@ -174,8 +176,13 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
         extra_coefs = generate_sampling(2, N_act, 2*dm_stroke, -dm_stroke)
 
     elif sampling == "random":          # Random displacements for 2*N_cases
-        stroke = 0.5*Z
-        extra_coefs = np.random.uniform(low=-stroke, high=stroke, size=(N_cases, N_act))
+        stroke = 0.75*Z
+        # extra_coefs = np.random.uniform(low=-stroke, high=stroke, size=(N_cases, N_act))
+        extra_coefs = np.empty((2*N_cases, N_act))
+        for k in range(N_cases):
+            dummy = np.random.uniform(low=-stroke, high=stroke, size=N_act)
+            extra_coefs[2*k] = dummy
+            extra_coefs[2*k + 1] = -dummy
 
     else:
         raise Exception
@@ -183,8 +190,8 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
     N_channels = 1 + extra_coefs.shape[0]
 
     # Perfect PSF (128x128) - For the Loss function
-    im_perfect, _s = PSF_model.compute_PSF(np.zeros(N_act))
-    perfect = np.zeros((N_samples, pix, pix))           # Store the PSF N_sample times
+    im_perfect, _s = PSF_model.compute_PSF(np.zeros(N_act), crop=False)
+    perfect = np.zeros((N_samples, N_PIX, N_PIX))           # Store the PSF N_sample times
 
     # Training set contains (25x25)-images of: Nominal PSF + PSFs with corrections
     training = np.zeros((N_samples, pix, pix, N_channels))
@@ -259,7 +266,7 @@ if __name__ == "__main__":
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
-    N_actuators = 25
+    N_actuators = 15
     centers = actuator_centres(N_actuators)
     # centers = radial_grid(N_radial=5)
     N_act = len(centers[0])
@@ -283,9 +290,9 @@ if __name__ == "__main__":
 
     PSF = PointSpreadFunction(rbf_mat)
 
-    N_cases = 3
+    N_cases = 2
     N_classes = N_act
-    N_train, N_test = 500, 50
+    N_train, N_test = 1500, 250
     N_samples = N_train + N_test
     sampling = "random"
 
@@ -294,27 +301,25 @@ if __name__ == "__main__":
     test_images, test_coefs = _images[N_train:], _coefs[N_train:]
     dummy = np.zeros_like(train_coefs)
 
-    k = 0
-    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
-    ax1 = plt.subplot(1, 3, 1)
-    im1 = ax1.imshow(train_images[k, :, :, 0], cmap='hot')
-    # ax1.set_title(r'$PSF(\Phi_0)$')
-    # plt.colorbar(im1, ax=ax1)
+    k = 2
+    cm = 'viridis'
+    f, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4)
+    ax1 = plt.subplot(1, 4, 1)
+    im1 = ax1.imshow(train_images[k, :, :, 0], cmap=cm)
 
-    ax2 = plt.subplot(1, 3, 2)
-    im2 = ax2.imshow(train_images[k, :, :, 1], cmap='hot')
-    # ax2.set_title(r'$PSF(\Phi_0 + \Delta_1) - PSF(\Phi_0)$')
-    # plt.colorbar(im2, ax=ax2)
+    ax2 = plt.subplot(1, 4, 2)
+    im2 = ax2.imshow(train_images[k, :, :, 1], cmap=cm)
 
-    ax3 = plt.subplot(1, 3, 3)
-    im3 = ax3.imshow(train_images[k, :, :, 2], cmap='hot')
-    # ax3.set_title(r'$PSF(\Phi_0 - \Delta_1) - PSF(\Phi_0)$')
-    # plt.colorbar(im3, ax=ax3)
+    ax3 = plt.subplot(1, 4, 3)
+    im3 = ax3.imshow(train_images[k, :, :, 2], cmap=cm)
+
+    ax4 = plt.subplot(1, 4, 4)
+    im4 = ax4.imshow(train_images[k, :, :, 3], cmap=cm)
+
+    plt.show()
 
     N_channels = train_images.shape[-1]
     input_shape = (pix, pix, N_channels,)
-
-    plt.show()
 
     model = models.Sequential()
     model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
@@ -342,6 +347,18 @@ if __name__ == "__main__":
     coef_t = tf.constant(train_coefs, dtype=tf.float32)
     perfect_t = tf.constant(perfect_psf, dtype=tf.float32)
 
+    N_shuffle = 64
+    perfect_shuffle = tf.constant(perfect_psf[:N_shuffle], dtype=tf.float32)
+
+
+    def loss_shuffle(y_true, y_pred):
+        phase = K.dot(y_true + y_pred, ht)
+        cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
+        complex_phase = tf.complex(cos_x, sin_x)
+        image = (K.abs(tf.fft2d(complex_phase))) ** 2 / peak
+        print(image.shape)
+        res = K.mean(K.sum((image - perfect_shuffle) ** 2))
+        return res
 
     def loss(y_true, y_pred):
         """
@@ -357,21 +374,23 @@ if __name__ == "__main__":
         """
 
         # Phase includes the unknown Phi_0 (coef_t) and the Predictions
-        phase = K.dot(coef_t + y_pred, ht)
+        phase = K.dot(y_true + y_pred, ht)
+        print(phase.shape)
 
         cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
         complex_phase = tf.complex(cos_x, sin_x)
         image = (K.abs(tf.fft2d(complex_phase))) ** 2 / peak
-        print(image.shape)
 
-        Q1 = image[:, :pix//2, :pix//2] - perfect_t[:, :pix//2, :pix//2]
-        Q2 = image[:, N_PIX-pix//2:, :pix//2] - perfect_t[:, pix//2:, :pix//2]
-        Q3 = image[:, :pix//2, N_PIX-pix//2:] - perfect_t[:, :pix//2, pix//2:]
-        Q4 = image[:, N_PIX-pix//2:, N_PIX-pix//2:] - perfect_t[:, pix//2:, pix//2:]
-        print(Q1.shape)
+        #
+        # Q1 = image[:, :pix//2, :pix//2] - perfect_t[:, :pix//2, :pix//2]
+        # Q2 = image[:, N_PIX-pix//2:, :pix//2] - perfect_t[:, pix//2:, :pix//2]
+        # Q3 = image[:, :pix//2, N_PIX-pix//2:] - perfect_t[:, :pix//2, pix//2:]
+        # Q4 = image[:, N_PIX-pix//2:, N_PIX-pix//2:] - perfect_t[:, pix//2:, pix//2:]
+        # print(Q1.shape)
 
         # Compute the Difference between the PSF after applying a correction and a Perfect PSF
-        res = K.mean(K.sum(Q1**2 + Q2**2 + Q3**2 + Q4**2))
+        res = K.mean(K.sum((image - perfect_psf)**2))
+        # res = K.mean(K.sum(Q1**2 + Q2**2 + Q3**2 + Q4**2))
 
         # We can train it to maximize the Strehl ratio on
         # strehl = K.max(image, axis=(1, 2)) / peak
@@ -382,7 +401,7 @@ if __name__ == "__main__":
 
 
     model.compile(optimizer='adam', loss=loss)
-    train_history = model.fit(x=train_images, y=dummy, epochs=50, batch_size=N_train, shuffle=False, verbose=1)
+    train_history = model.fit(x=train_images, y=train_coefs, epochs=50, batch_size=N_train, shuffle=False, verbose=1)
     # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
     # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
 
@@ -390,6 +409,228 @@ if __name__ == "__main__":
 
     guess_coef = model.predict(test_images)
     residual = test_coefs + guess_coef
+
+    print(norm(test_coefs))
+    print(norm(residual))
+
+    def RMS_Strehl_check(PSF, model, test_PSF, test_coef):
+
+        pupil_mask = PSF.pupil_mask
+        guess_coef = model.predict(test_PSF)
+        RMS0, RMS_true = [], []
+        s0 = np.max(test_PSF[:, :, :, 0], axis=(1, 2))
+        s = []
+        for k in range(N_test):
+
+            phase0 = np.dot(PSF.RBF_mat, test_coef[k])
+            phase_guess = np.dot(PSF.RBF_mat, -guess_coef[k])
+            true_residual = phase0 - phase_guess
+            RMS0.append(np.std(phase0[pupil_mask]))
+            RMS_true.append(np.std(true_residual[pupil_mask]))
+
+            _im, strehl = PSF.compute_PSF(test_coef[k] + guess_coef[k])
+            s.append(strehl)
+
+        plt.figure()
+        plt.hist(RMS0, histtype='step', label='before')
+        plt.hist(RMS_true, histtype='step', label='after')
+        plt.xlim([0, 1.25])
+        plt.xlabel(r'RMS wavefront')
+        plt.legend()
+
+        plt.figure()
+        plt.hist(s0, histtype='step', label='before')
+        plt.hist(s, histtype='step', label='after')
+        plt.xlim([0, 1.0])
+        plt.xlabel(r'Strehl ratio')
+        plt.legend()
+        plt.show()
+
+    RMS_Strehl_check(PSF, model, test_images, test_coefs)
+
+    def residual_wavefront(PSF, model, test_PSF, test_coef):
+
+        pupil_mask = PSF.pupil_mask
+        guess_coef = model.predict(test_PSF)
+        for k in range(15):
+            phase0 = np.dot(PSF.RBF_mat, test_coef[k])
+            phase_guess = np.dot(PSF.RBF_mat, guess_coef[k])
+            true_residual = np.dot(PSF.RBF_mat, test_coef[k] + guess_coef[k])
+            RMS0 = np.std(phase0[pupil_mask])
+            RMS = np.std(true_residual[pupil_mask])
+
+
+            m = min(phase0.min(), -phase0.max())
+            mapp = 'bwr'
+            f, ((ax1, ax2, ax3),(ax4, ax5, ax6)) = plt.subplots(2, 3)
+            ax1 = plt.subplot(2, 3, 1)
+            img1 = ax1.imshow(phase0, cmap=mapp)
+            ax1.set_title('True Wavefront $\sigma=%.2f \lambda$' %RMS0)
+            img1.set_clim(m, -m)
+
+            ax2 = plt.subplot(2, 3, 2)
+            img2 = ax2.imshow(phase_guess, cmap=mapp)
+            ax2.set_title('ML Guessed Correction')
+            img2.set_clim(m, -m)
+
+            ax3 = plt.subplot(2, 3, 3)
+            img3 = ax3.imshow(true_residual, cmap=mapp)
+            ax3.set_title('Residual Error $\sigma=%.2f \lambda$' %RMS)
+            img3.set_clim(m, -m)
+
+            PSF0 = test_PSF[k, :, :, 0]
+            ax4 = plt.subplot(2, 3, 4)
+            img4 = ax4.imshow(PSF0, cmap='hot')
+            ax4.set_title(r'Nominal PSF ($s = %.2f$)' %np.max(PSF0))
+            img4.set_clim(0, 1)
+
+            ax5 = plt.subplot(2, 3, 5)
+            img5 = ax5.imshow(draw_actuator_commands(guess_coef[k], centers), cmap=mapp)
+            ax5.set_title('Actuators')
+            m_act = min(guess_coef[k].min(), -guess_coef[k].max())
+            img5.set_clim(m_act, -m_act)
+
+            p, s = PSF.compute_PSF(test_coef[k] + guess_coef[k], crop=True)
+            ax6 = plt.subplot(2, 3, 6)
+            img6 = ax6.imshow(p, cmap='hot')
+            ax6.set_title(r'Final PSF ($s = %.2f$)' %s)
+            img6.set_clim(0, 1)
+
+        plt.show()
+    residual_wavefront(PSF, model, test_images, test_coefs)
+
+
+
+
+
+
+
+    # # # ======================================================================================================== # # #
+
+    def draw_actuator_commands(commands, centers):
+        cent, delta = centers
+        x = np.linspace(-1, 1, N_PIX, endpoint=True)
+        xx, yy = np.meshgrid(x, x)
+        image = np.zeros((N_PIX, N_PIX))
+        for i, (xc, yc) in enumerate(cent):
+            act_mask = (xx - xc)**2 + (yy - yc)**2 <= (delta/2)**2
+            image += commands[i] * act_mask
+        return image
+
+    def command_check(model, test_PSF, test_low):
+        N_test = test_low.shape[0]
+        guess_low = model.predict(test_PSF)
+        residual_low = test_low - guess_low
+        error = []
+        for k in range(N_test):
+            c = residual_low[k]
+            im = np.abs(draw_actuator_commands(c))
+            error.append(im)
+            # m_act = min(im.min(), -im.max())
+            # plt.figure()
+            # plt.imshow(im, cmap='bwr')
+            # plt.clim(m_act, -m_act)
+            # plt.colorbar()
+        err = np.array(error)
+        mean_err = np.mean(err, axis=0)
+        plt.figure()
+        plt.imshow(mean_err, cmap='Reds')
+        plt.colorbar()
+        plt.clim(np.min(mean_err[np.nonzero(mean_err)]), mean_err.max())
+        plt.title(r'Average Actuator Error (Absolute Value)')
+        plt.show()
+
+    def performance_check(PSF_high, PSF_low, model, test_PSF, test_coef, test_low):
+
+        pupil_mask = PSF_high.pupil_mask
+        s0 = np.max(test_PSF[:,:,:,0], axis=(1,2))      # Initial Strehl ratios
+
+        guess_low = model.predict(test_PSF)
+        residual_low = test_low - guess_low
+        n_test = norm(test_low, axis=1)
+        n_residual = norm(residual_low, axis=1)
+        improve = 100 * np.mean((n_test - n_residual) / n_test)
+        print('Average improvement [Norm LOW coefficients] : %.2f per cent' %improve)
+
+        RMS0, RMS_ideal, RMS_true = [], [], []
+
+        for k in range(10):
+
+            phase_high = np.dot(PSF_high.RBF_mat, test_coef[k])
+            phase_fit_low = np.dot(PSF_low.RBF_mat, test_low[k])
+            ideal_residual = phase_high - phase_fit_low
+            phase_guess_low = np.dot(PSF_low.RBF_mat, guess_low[k])
+            true_residual = phase_high - phase_guess_low
+
+            rms = []
+            for p in [phase_high, phase_fit_low, ideal_residual, phase_guess_low, true_residual]:
+                _flat = p[pupil_mask]
+                rms.append(np.std(_flat))
+
+            RMS0.append(rms[0])
+            RMS_ideal.append(rms[2])
+            RMS_true.append((rms[-1]))
+
+        # plt.figure()
+        # plt.hist(RMS0, histtype='step', label='Initial Wavefront')
+        # plt.hist(RMS_ideal, histtype='step', label='Ideal Residual')
+        # plt.hist(RMS_true, histtype='step', label='Machine Learning Residual')
+        # plt.xlabel(r'RMS wavefront $\lambda$')
+        # plt.xlim([0, 1.25])
+        # plt.legend()
+
+        # return RMS_ideal, RMS_true
+
+            mins = min(phase_high.min(), phase_fit_low.min())
+            maxs = max(phase_high.max(), phase_fit_low.max())
+
+            m = min(mins, -maxs)
+            mapp = 'bwr'
+            f, ((ax1, ax2, ax3),(ax4, ax5, ax6)) = plt.subplots(2, 3)
+            ax1 = plt.subplot(2, 3, 1)
+            img1 = ax1.imshow(phase_high, cmap=mapp)
+            ax1.set_title('True Wavefront [High Freq.]  $\sigma=%.2f \lambda$' %rms[0])
+            img1.set_clim(m, -m)
+            # plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+            ax2 = plt.subplot(2, 3, 2)
+            img2 = ax2.imshow(phase_fit_low, cmap=mapp)
+            ax2.set_title('Low Order Actuator Fit')
+            img2.set_clim(m, -m)
+            # plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+            ax3 = plt.subplot(2, 3, 3)
+            img3 = ax3.imshow(ideal_residual, cmap=mapp)
+            ax3.set_title(r'Ideal Residual [True - Fit]  $\sigma=%.2f \lambda$' %rms[2])
+            img3.set_clim(m, -m)
+            # plt.colorbar(img3, ax=ax3, orientation='horizontal')
+            # plt.show()
+
+            ax4 = plt.subplot(2, 3, 4)
+            img4 = ax4.imshow(draw_actuator_commands(guess_low[k], centers_low), cmap=mapp)
+            ax4.set_title('Actuators')
+            m_act = min(guess_low[k].min(), -guess_low[k].max())
+            img4.set_clim(m_act, -m_act)
+            # plt.colorbar(img4, ax=ax4, orientation='horizontal')
+
+            ax5 = plt.subplot(2, 3, 5)
+            img5 = ax5.imshow(phase_guess_low, cmap=mapp)
+            ax5.set_title('Machine Learning Guess')
+            img5.set_clim(m, -m)
+            # plt.colorbar(img5, ax=ax5, orientation='horizontal')
+
+            ax6 = plt.subplot(2, 3, 6)
+            img6 = ax6.imshow(true_residual, cmap=mapp)
+            ax6.set_title('True Residual [True - Guess]  $\sigma=%.2f \lambda$' %rms[-1])
+            img6.set_clim(m, -m)
+            # plt.colorbar(img6, ax=ax6, orientation='horizontal')
+
+
+
+
+
+
+
 
 
 
