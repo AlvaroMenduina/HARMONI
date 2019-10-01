@@ -391,7 +391,7 @@ def data_augmentation_bad_pixel(training_set, train_coef, alpha=10, RMS_READ=1./
     :return:
     """
 
-    mu0 = alpha * RMS_READ
+    # mu0 = alpha * RMS_READ
 
     N_train, pix = training_set.shape[0], training_set.shape[1]
     N_act = train_coef.shape[-1]
@@ -404,7 +404,7 @@ def data_augmentation_bad_pixel(training_set, train_coef, alpha=10, RMS_READ=1./
             PSF = training_set[k].copy()
 
             bad_pixels = np.random.choice(pix, size=2)
-            mu = mu0
+            mu = RMS_READ * np.random.uniform(0.9*alpha, 6*alpha, size=1)
             # mu = np.random.uniform(0, mu0, size=1)
             i_bad, j_bad = bad_pixels[0], bad_pixels[1]
             PSF[i_bad, j_bad, 0] = mu
@@ -494,10 +494,20 @@ if __name__ == "__main__":
     fx = low_freq
     x = np.linspace(-1, 1, N_PIX, endpoint=True)
     xx, yy = np.meshgrid(x, x)
-    wavef = PSF_low.pupil_mask * np.cos(2 * np.pi * (fx * xx + 0 * yy))
+    wavef = PSF_low.pupil_mask * np.sin(2 * np.pi * (fx * xx + 0 * yy))
+
+    plt.figure()
+    plt.imshow(wavef, cmap='coolwarm', extent=[-1, 1, -1, 1])
+    for c in centers_low[0]:
+        plt.scatter(c[0], c[1], color='black', s=10)
+    plt.xlim([-RHO_APER, RHO_APER])
+    plt.ylim([-RHO_APER, RHO_APER])
+    plt.show()
+
     pupil_function = PSF_low.pupil_mask * np.exp(1j * wavef)
     image = (np.abs(fftshift(fft2(pupil_function)))) ** 2 / PSF_low.PEAK
     image = image[PSF_low.minPix:PSF_low.maxPix, PSF_low.minPix:PSF_low.maxPix]
+
     fig = plt.figure()
     ax = fig.add_subplot(111)
     circ1 = Circle((0.5,-0.5), SPAXEL_MAS * low_freq /2, linestyle='--', fill=None, color='white')
@@ -723,15 +733,15 @@ if __name__ == "__main__":
                 residual = test_low - guess
                 error = (norm(residual) - norm(residual_nominal)) / norm(residual_nominal)
                 heat_mat[i,j] = error
-
-                RMS_nom, RMS = [], []
-                for k in range(900):
-                    res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
-                    res_phase = np.dot(PSF_low.RBF_mat, residual[k])
-                    RMS_nom.append(np.std(res_phase_nom[pupil_mask]))
-                    RMS.append(np.std(res_phase[pupil_mask]))
-
-                rms_map[i,j] = np.mean(RMS) - np.mean(RMS_nom)
+                #
+                # RMS_nom, RMS = [], []
+                # for k in range(900):
+                #     res_phase_nom = np.dot(PSF_low.RBF_mat, residual_nominal[k])
+                #     res_phase = np.dot(PSF_low.RBF_mat, residual[k])
+                #     RMS_nom.append(np.std(res_phase_nom[pupil_mask]))
+                #     RMS.append(np.std(res_phase[pupil_mask]))
+                #
+                # rms_map[i,j] = np.mean(RMS) - np.mean(RMS_nom)
 
         c = max(-heat_mat.min(), heat_mat.max())
         plt.figure()
@@ -764,10 +774,11 @@ if __name__ == "__main__":
 
     fig = plt.figure()
     ax = fig.add_subplot(111)
-    circ1 = Circle((0.5,0.5), SPAXEL_MAS * low_freq /2, linestyle='--', fill=None)
+    circ1 = Circle((0.5,-0.5), SPAXEL_MAS * low_freq /2, linestyle='--', fill=None)
     ax.add_patch(circ1)
-    c = max(-error_rms.min(), error_rms.max())
-    im = ax.imshow(error_rms, cmap='Reds',extent=[-crop_pix//2, crop_pix//2, -crop_pix//2, crop_pix//2])
+    c = max(-error_norm.min(), error_norm.max())
+    im = ax.imshow(error_norm, cmap='Reds',extent=[-crop_pix//2, crop_pix//2, -crop_pix//2, crop_pix//2])
+    im.set_clim(0, 0.075)
     ax.set_aspect('equal')
     plt.colorbar(im, ax=ax)
 
