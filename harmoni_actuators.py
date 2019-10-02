@@ -29,7 +29,7 @@ from numpy.linalg import norm as norm
 
 # PARAMETERS
 Z = 1.25                    # Strength of the aberrations -> relates to the Strehl ratio
-pix = 40                    # Pixels to crop the PSF
+pix = 30                    # Pixels to crop the PSF
 N_PIX = 256                 # Pixels for the Fourier arrays
 RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
 RHO_OBSC = 0.15             # Central obscuration
@@ -74,7 +74,7 @@ def radial_grid(N_radial=5, r_min=1.25*RHO_OBSC, r_max=0.9*RHO_APER):
     print('Total Actuators: ', total_act)
     return act, r0
 
-def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
+def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=True):
     """
     Computes the (Xc, Yc) coordinates of actuator centres
     inside a circle of rho_aper, assuming there are N_actuators
@@ -97,8 +97,17 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     act = []
     for x_c, y_c in zip(x_f, y_f):
         r = np.sqrt(x_c ** 2 + y_c ** 2)
-        if r < 0.95 * rho_aper and r > 1.1 * rho_obsc:
+        if r < rho_aper - delta/2 and r > rho_obsc + delta/2:
             act.append([x_c, y_c])
+
+    if radial:
+        for r in [rho_aper, rho_obsc]:
+            N_radial = int(np.floor(2*np.pi*r/delta))
+            theta = np.linspace(0, 2*np.pi, N_radial)
+            for t in theta:
+                act.append([r*np.cos(t), r*np.sin(t)])
+
+
     total_act = len(act)
     print('Total Actuators: ', total_act)
     return [act, delta], max_freq
@@ -448,7 +457,7 @@ if __name__ == "__main__":
 
     """ (2) Define a lower order actuator model """
 
-    centers_low, low_freq = actuator_centres(N_actuators=21)
+    centers_low, low_freq = actuator_centres(N_actuators=17)
     # centers_low = radial_grid(N_radial=3)
     N_act_low = len(centers_low[0])
     plot_actuators(centers_low)
@@ -518,7 +527,7 @@ if __name__ == "__main__":
 
     # '''''''''''''''''''
 
-    N_train, N_test = 15000, 300
+    N_train, N_test = 5000, 300
     train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = generate_training_set(PSF, PSF_low, N_train, N_test)
 
     # train_PSF_crop = crop_datacubes(train_PSF)
