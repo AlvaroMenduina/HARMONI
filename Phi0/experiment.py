@@ -17,6 +17,7 @@ import numpy as np
 from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
+from scipy.optimize import least_squares
 import zern_core as zern
 
 import keras
@@ -28,15 +29,15 @@ from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
-Z = 1.25                    # Strength of the aberrations -> relates to the Strehl ratio
+Z = 1.0                    # Strength of the aberrations -> relates to the Strehl ratio
 pix = 25                    # Pixels to crop the PSF
-N_PIX = 256                 # Pixels for the Fourier arrays
+N_PIX = 128                 # Pixels for the Fourier arrays
 RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
 RHO_OBSC = 0.15             # Central obscuration
 
 
 
-def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
+def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=True):
     """
     Computes the (Xc, Yc) coordinates of actuator centres
     inside a circle of rho_aper, assuming there are N_actuators
@@ -49,7 +50,7 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
 
     x0 = np.linspace(-1., 1., N_actuators, endpoint=True)
     delta = x0[1] - x0[0]
-    N_in_D = 2*RHO_APER/delta
+    N_in_D = 2*rho_aper/delta
     print('%.2f actuators in D' %N_in_D)
     xx, yy = np.meshgrid(x0, x0)
     x_f = xx.flatten()
@@ -58,8 +59,16 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     act = []
     for x_c, y_c in zip(x_f, y_f):
         r = np.sqrt(x_c ** 2 + y_c ** 2)
-        if r < 0.95 * rho_aper and r > 1.1 * rho_obsc:
+        if r < rho_aper - delta/2 and r > rho_obsc + delta/2:
             act.append([x_c, y_c])
+
+    if radial:
+        for r in [rho_aper, rho_obsc]:
+            N_radial = int(np.floor(2*np.pi*r/delta))
+            theta = np.linspace(0, 2*np.pi, N_radial)
+            for t in theta:
+                act.append([r*np.cos(t), r*np.sin(t)])
+
     total_act = len(act)
     print('Total Actuators: ', total_act)
     return act, delta
@@ -162,6 +171,81 @@ class PointSpreadFunction(object):
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
 
+
+class Zernike_fit(object):
+
+    def __init__(self, PSF_mat, N_zern=10):
+
+        self.PSF_mat = PSF_mat
+        self.N_act = PSF_mat.shape[-1]
+
+        x = np.linspace(-1, 1, N_PIX, endpoint=True)
+        xx, yy = np.meshgrid(x, x)
+        rho, theta = np.sqrt(xx ** 2 + yy ** 2), np.arctan2(xx, yy)
+        self.pupil = (rho <= RHO_APER) & (rho > RHO_OBSC)
+
+        rho, theta = rho[self.pupil], theta[self.pupil]
+        zernike = zern.ZernikeNaive(mask=self.pupil)
+        _phase = zernike(coef=np.zeros(N_zern), rho=rho / RHO_APER, theta=theta, normalize_noll=False,
+                         mode='Jacobi', print_option='Silent')
+        H_flat = zernike.model_matrix
+        self.H_matrix = zern.invert_model_matrix(H_flat, self.pupil)
+        self.N_zern = self.H_matrix.shape[-1]
+
+    def residuals(self, x, zern_idx, zern_coef):
+        zernike_phase = zern_coef * self.H_matrix[:,:,zern_idx]
+        wavefront = np.dot(self.PSF_mat, x)
+        return (wavefront - zernike_phase)[self.pupil]
+
+    def fit_zernike(self, zern_idx, zern_coef=1):
+
+        x0 = np.zeros(self.N_act)
+        result = least_squares(self.residuals, x0, args=(zern_idx, zern_coef,))
+
+        x = result.x
+        # zernike_phase = zern_coef * self.H_matrix[:,:,zern_idx]
+        # wavefront = np.dot(self.PSF_mat, x)
+        #
+        # wf = wavefront[self.pupil]
+        # zf = zernike_phase[self.pupil]
+        # residual = wf - zf
+        # rms0 = np.std(wf)
+        # rmsz = np.std(zf)
+        # rmsr = np.std(residual)
+        #
+        # print("\nFit Wavefront to Zernike Polynomials: ")
+        # print("Initial RMS: %.3f" %rms0)
+        # print("Residual RMS after correction: %.3f" %rmsr)
+        #
+        # mins = min(wavefront.min(), zernike_phase.min())
+        # maxs = max(wavefront.max(), zernike_phase.max())
+        #
+        # m = min(mins, -maxs)
+        # mapp = 'bwr'
+        # f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        # ax1 = plt.subplot(1, 3, 1)
+        # img1 = ax1.imshow(wavefront, cmap=mapp)
+        # ax1.set_title('True Wavefront')
+        # img1.set_clim(m, -m)
+        # plt.colorbar(img1, ax=ax1, orientation='horizontal')
+        #
+        # ax2 = plt.subplot(1, 3, 2)
+        # img2 = ax2.imshow(zernike_phase, cmap=mapp)
+        # ax2.set_title('Zernike Fit Wavefront')
+        # img2.set_clim(m, -m)
+        # plt.colorbar(img2, ax=ax2, orientation='horizontal')
+        #
+        # ax3 = plt.subplot(1, 3, 3)
+        # img3 = ax3.imshow(wavefront - zernike_phase, cmap=mapp)
+        # ax3.set_title('Residual')
+        # img3.set_clim(m, -m)
+        # plt.colorbar(img3, ax=ax3, orientation='horizontal')
+        # plt.show()
+
+        return result.x
+
+
+
 # ==================================================================================================================== #
 
 def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="simple", N_cases=2):
@@ -183,6 +267,14 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
             dummy = np.random.uniform(low=-stroke, high=stroke, size=N_act)
             extra_coefs[2*k] = dummy
             extra_coefs[2*k + 1] = -dummy
+
+    elif sampling == "zernike":
+        z_fit = Zernike_fit(PSF_model.RBF_mat)
+        extra_coefs = np.empty((2 * N_cases, N_act))
+        for k in range(N_cases):
+            x_fit = z_fit.fit_zernike(zern_idx=4, zern_coef=1*(k+1))
+            extra_coefs[2*k] = x_fit
+            extra_coefs[2*k + 1] = -x_fit
 
     else:
         raise Exception
@@ -261,13 +353,23 @@ def simple_sampling(N_zern, dm_stroke):
         coefs[2*i:2*i+2] = dummy
     return coefs
 
+def draw_actuator_commands(commands, centers):
+    cent, delta = centers
+    x = np.linspace(-1, 1, N_PIX, endpoint=True)
+    xx, yy = np.meshgrid(x, x)
+    image = np.zeros((N_PIX, N_PIX))
+    for i, (xc, yc) in enumerate(cent):
+        act_mask = (xx - xc)**2 + (yy - yc)**2 <= (delta/2)**2
+        image += commands[i] * act_mask
+    return image
+
 if __name__ == "__main__":
 
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
-    N_actuators = 15
-    centers = actuator_centres(N_actuators)
+    N_actuators = 25
+    centers = actuator_centres(N_actuators, radial=True)
     # centers = radial_grid(N_radial=5)
     N_act = len(centers[0])
     plot_actuators(centers)
@@ -290,43 +392,49 @@ if __name__ == "__main__":
 
     PSF = PointSpreadFunction(rbf_mat)
 
-    N_cases = 2
+    z_fit = Zernike_fit(PSF.RBF_mat)
+    x_fit = z_fit.fit_zernike(zern_idx=4, zern_coef=1.0)
+    plt.show()
+
+
+    # ------------------------------------------------
+
+    N_cases = 1
     N_classes = N_act
-    N_train, N_test = 1500, 250
-    N_samples = N_train + N_test
+    N_batches = 40
+    N_train, N_test = 500, 250
+    N_samples = N_batches*N_train + N_test
     sampling = "random"
 
     _images, _coefs, _perfect, _extra = generate_training_set(PSF, N_samples, sampling=sampling, N_cases=N_cases)
-    train_images, train_coefs, perfect_psf = _images[:N_train], _coefs[:N_train], _perfect[:N_train]
-    test_images, test_coefs = _images[N_train:], _coefs[N_train:]
-    dummy = np.zeros_like(train_coefs)
+    # Split it in batches bc of the GPU memory limitation
+    img_batch = [_images[i*N_train:(i+1)*N_train] for i in range(N_batches)]
+    coef_batch = [_coefs[i*N_train:(i+1)*N_train] for i in range(N_batches)]
+    # train_images, train_coefs, perfect_psf = _images[:N_train], _coefs[:N_train], _perfect[:N_train]
+    perfect_psf = _perfect[:N_train]
+    test_images, test_coefs = _images[N_batches*N_train:], _coefs[N_batches*N_train:]
+    # dummy = np.zeros_like(train_coefs)
 
-    k = 2
+    k = 0
     cm = 'viridis'
-    f, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4)
-    ax1 = plt.subplot(1, 4, 1)
-    im1 = ax1.imshow(train_images[k, :, :, 0], cmap=cm)
+    f, (ax1, ax2) = plt.subplots(1, 2)
+    ax1 = plt.subplot(1, 2, 1)
+    im1 = ax1.imshow(img_batch[0][k, :, :, 0], cmap=cm)
 
-    ax2 = plt.subplot(1, 4, 2)
-    im2 = ax2.imshow(train_images[k, :, :, 1], cmap=cm)
-
-    ax3 = plt.subplot(1, 4, 3)
-    im3 = ax3.imshow(train_images[k, :, :, 2], cmap=cm)
-
-    ax4 = plt.subplot(1, 4, 4)
-    im4 = ax4.imshow(train_images[k, :, :, 3], cmap=cm)
-
+    ax2 = plt.subplot(1, 2, 2)
+    im2 = ax2.imshow(img_batch[0][k, :, :, 1], cmap=cm)
     plt.show()
 
-    N_channels = train_images.shape[-1]
+    # N_channels = train_images.shape[-1]
+    N_channels = 3
     input_shape = (pix, pix, N_channels,)
 
     model = models.Sequential()
-    model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
+    model.add(Conv2D(128, kernel_size=(3, 3), strides=(1, 1),
                      activation='relu',
                      input_shape=input_shape))
     model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(32, (3, 3), activation='relu'))
+    model.add(Conv2D(64, (3, 3), activation='relu'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     # model.add(Conv2D(32, (3, 3), activation='relu'))
     # model.add(MaxPooling2D(pool_size=(2, 2)))
@@ -344,10 +452,10 @@ if __name__ == "__main__":
     # Transform them to TensorFlow
     pupt = tf.constant(pup, dtype=tf.float32)
     ht = tf.constant(H, dtype=tf.float32)
-    coef_t = tf.constant(train_coefs, dtype=tf.float32)
+    # coef_t = tf.constant(train_coefs[:1500], dtype=tf.float32)
     perfect_t = tf.constant(perfect_psf, dtype=tf.float32)
 
-    N_shuffle = 64
+    N_shuffle = 32
     perfect_shuffle = tf.constant(perfect_psf[:N_shuffle], dtype=tf.float32)
 
 
@@ -361,49 +469,88 @@ if __name__ == "__main__":
         return res
 
     def loss(y_true, y_pred):
-        """
-        Custom Keras Loss function
-        :param y_true: unused because we want it to be unsupervised
-        :param y_pred: predicted corrections for the PSF
-        :return:
 
-        Notes: Keras doesn't like dealing with Complex numbers so we separate the pupil function
-        P = P_mask * exp( 1i * Phase)
-        into Real and Imaginary parts using Euler's formula and then join them back into a Complex64
-        because Tensorflow expects it that way for the Fourier Transform
-        """
-
-        # Phase includes the unknown Phi_0 (coef_t) and the Predictions
         phase = K.dot(y_true + y_pred, ht)
-        print(phase.shape)
-
         cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
         complex_phase = tf.complex(cos_x, sin_x)
         image = (K.abs(tf.fft2d(complex_phase))) ** 2 / peak
 
-        #
-        # Q1 = image[:, :pix//2, :pix//2] - perfect_t[:, :pix//2, :pix//2]
-        # Q2 = image[:, N_PIX-pix//2:, :pix//2] - perfect_t[:, pix//2:, :pix//2]
-        # Q3 = image[:, :pix//2, N_PIX-pix//2:] - perfect_t[:, :pix//2, pix//2:]
-        # Q4 = image[:, N_PIX-pix//2:, N_PIX-pix//2:] - perfect_t[:, pix//2:, pix//2:]
-        # print(Q1.shape)
-
-        # Compute the Difference between the PSF after applying a correction and a Perfect PSF
-        res = K.mean(K.sum((image - perfect_psf)**2))
-        # res = K.mean(K.sum(Q1**2 + Q2**2 + Q3**2 + Q4**2))
-
-        # We can train it to maximize the Strehl ratio on
-        # strehl = K.max(image, axis=(1, 2)) / peak
-        # print(strehl.shape)
-        # res = -K.mean(strehl)
+        res = K.mean(K.sum((image - perfect_psf)**2)) - K.mean(K.max(image, axis=(1, 2)))
 
         return res
 
+    # def loss(y_true, y_pred):
+    #     """
+    #     Custom Keras Loss function
+    #     :param y_true: unused because we want it to be unsupervised
+    #     :param y_pred: predicted corrections for the PSF
+    #     :return:
+    #
+    #     Notes: Keras doesn't like dealing with Complex numbers so we separate the pupil function
+    #     P = P_mask * exp( 1i * Phase)
+    #     into Real and Imaginary parts using Euler's formula and then join them back into a Complex64
+    #     because Tensorflow expects it that way for the Fourier Transform
+    #     """
+    #     # Phase includes the unknown Phi_0 (coef_t) and the Predictions
+    #     phase = K.dot(coef_t + y_pred, ht)
+    #     cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
+    #     complex_phase = tf.complex(cos_x, sin_x)
+    #     image = (K.abs(tf.fft2d(complex_phase))) ** 2 / peak
+    #     # Q1 = image[:, :pix//2, :pix//2] - perfect_t[:, :pix//2, :pix//2]
+    #     # Q2 = image[:, N_PIX-pix//2:, :pix//2] - perfect_t[:, pix//2:, :pix//2]
+    #     # Q3 = image[:, :pix//2, N_PIX-pix//2:] - perfect_t[:, :pix//2, pix//2:]
+    #     # Q4 = image[:, N_PIX-pix//2:, N_PIX-pix//2:] - perfect_t[:, pix//2:, pix//2:]
+    #
+    #     # Compute the Difference between the PSF after applying a correction and a Perfect PSF
+    #     res = K.mean(K.sum((image - perfect_psf)**2))
+    #     # res = K.mean(K.sum(Q1**2 + Q2**2 + Q3**2 + Q4**2))
+    #     # We can train it to maximize the Strehl ratio on
+    #     # strehl = K.max(image, axis=(1, 2))
+    #     # print(strehl.shape)
+    #     # res = -K.mean(strehl)
+    #     return res
 
+    def validate(test_images, test_coefs):
+        guess_coef = model.predict(test_images)
+        residual = test_coefs + guess_coef
+        n0 = norm(test_coefs)
+        nf = norm(residual)
+        # print("\nValidation: Relative improvement: %.2f " %(nf/n0)*100)
+        return nf/n0
+
+
+
+    val_1, val_2 = [], []
+    val_3 = []
+    val_5 = []
+    val_10 = []
+    val_20 = []
+    val_40 = []
     model.compile(optimizer='adam', loss=loss)
-    train_history = model.fit(x=train_images, y=train_coefs, epochs=50, batch_size=N_train, shuffle=False, verbose=1)
+    for i_times in range(10):
+        for k_batch in range(N_batches):
+            print("\nIteration %d || Batch #%d (%d samples)" %(i_times, k_batch+1, N_train))
+            train_history = model.fit(x=img_batch[k_batch], y=coef_batch[k_batch], epochs=100, batch_size=N_train, shuffle=False, verbose=0)
+            val_40.append(validate(test_images, test_coefs))
+
+    plt.figure()
+    plt.plot(val_1, label='1')
+    plt.plot(val_2, label='2')
+    plt.plot(val_3, label='3')
+    plt.plot(val_5, label='5')
+    plt.plot(val_10, label='10')
+    plt.plot(val_20, label='20')
+    # plt.plot(val_40, label='40')
+    plt.legend(title=r'Batches (500 samples)')
+    plt.xlabel('Batch Iterations x100')
+    plt.ylabel('Relative norm residuals')
+    plt.show()
+
     # NOTE: we force the batch_size to be the whole Training set because otherwise we would need to match
     # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
+
+
+
 
     loss_hist = train_history.history['loss']
 
@@ -416,7 +563,7 @@ if __name__ == "__main__":
     def RMS_Strehl_check(PSF, model, test_PSF, test_coef):
 
         pupil_mask = PSF.pupil_mask
-        guess_coef = model.predict(test_PSF)
+        guess_coef = model.predict(test_PSF[:,:,:,:N_channels])
         RMS0, RMS_true = [], []
         s0 = np.max(test_PSF[:, :, :, 0], axis=(1, 2))
         s = []
@@ -431,28 +578,56 @@ if __name__ == "__main__":
             _im, strehl = PSF.compute_PSF(test_coef[k] + guess_coef[k])
             s.append(strehl)
 
-        plt.figure()
-        plt.hist(RMS0, histtype='step', label='before')
-        plt.hist(RMS_true, histtype='step', label='after')
-        plt.xlim([0, 1.25])
-        plt.xlabel(r'RMS wavefront')
-        plt.legend()
+        # plt.figure()
+        # plt.hist(RMS0, histtype='step', label='before')
+        # plt.hist(RMS_true, histtype='step', label='after')
+        # plt.xlim([0, 1.5])
+        # plt.xlabel(r'RMS wavefront')
+        # plt.legend()
+        #
+        # plt.figure()
+        # plt.hist(s0, histtype='step', label='before')
+        # plt.hist(s, histtype='step', label='after')
+        # plt.axvline(np.mean(s))
+        # plt.xlim([0, 1.0])
+        # plt.xlabel(r'Strehl ratio')
+        # plt.legend()
+        # plt.show()
+        return RMS0, RMS_true, s0, s
 
-        plt.figure()
-        plt.hist(s0, histtype='step', label='before')
-        plt.hist(s, histtype='step', label='after')
-        plt.xlim([0, 1.0])
-        plt.xlabel(r'Strehl ratio')
-        plt.legend()
-        plt.show()
+    r0, rms1, s0, strehl1 = RMS_Strehl_check(PSF, model, test_images, test_coefs)
 
-    RMS_Strehl_check(PSF, model, test_images, test_coefs)
+    plt.figure()
+    plt.hist(r0, histtype='step', label='Before Calibration')
+    plt.hist(rms1, histtype='step', label='1 Channel', color='black')
+    plt.axvline(np.mean(rms1), linestyle='--', color='black')
+    # plt.hist(rms2, histtype='step', label='2 Channels', color='red')
+    # plt.axvline(np.mean(rms2), linestyle='--', color='red')
+    # plt.hist(rms4, histtype='step', label='4 Channels', color='green')
+    # plt.axvline(np.mean(rms4), linestyle='--', color='green')
+    plt.legend()
+    plt.xlabel(r'RMS wavefront')
+    plt.xlim([0, 1.5])
+
+
+    plt.figure()
+    plt.hist(s0, histtype='step', label='Before Calibration')
+    plt.hist(strehl1, histtype='step', label='1 Channel', color='black')
+    plt.axvline(np.mean(strehl1), linestyle='--', color='black')
+    # plt.hist(strehl2, histtype='step', label='2 Channels', color='red')
+    # plt.axvline(np.mean(strehl2), linestyle='--', color='red')
+    # plt.hist(strehl4, histtype='step', label='4 Channels', color='green')
+    # plt.axvline(np.mean(strehl4), linestyle='--', color='green')
+    # plt.legend()
+    plt.xlim([0, 1.0])
+    plt.xlabel(r'Strehl ratio')
+    plt.show()
 
     def residual_wavefront(PSF, model, test_PSF, test_coef):
 
         pupil_mask = PSF.pupil_mask
-        guess_coef = model.predict(test_PSF)
-        for k in range(15):
+        guess_coef = model.predict(test_PSF[:,:,:,:N_channels])
+        for k in np.arange(5, 10):
             phase0 = np.dot(PSF.RBF_mat, test_coef[k])
             phase_guess = np.dot(PSF.RBF_mat, guess_coef[k])
             true_residual = np.dot(PSF.RBF_mat, test_coef[k] + guess_coef[k])
@@ -498,6 +673,196 @@ if __name__ == "__main__":
 
         plt.show()
     residual_wavefront(PSF, model, test_images, test_coefs)
+
+    # # # ======================================================================================================== # # #
+
+    """ Visualizing the Layers """
+
+
+    layer_outputs = [layer.output for layer in model.layers]  # Extracts the outputs of the top 12 layers
+    activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
+
+    j = 1
+    img_tensor = test_images[j:j+1, :, :, :N_channels]
+    M = img_tensor.shape[-1]
+    # for k in range(M):
+    #     plt.figure()
+    #     plt.imshow(img_tensor[0,:,:,k], cmap='hot')
+    #     plt.colorbar()
+    #     plt.title('Channel %d' %k)
+
+    cm = 'hot'
+    f, (ax1, ax2) = plt.subplots(1, 2)
+    ax1 = plt.subplot(1, 2, 1)
+    im1 = ax1.imshow(img_tensor[0, :, :, 0], cmap=cm)
+    ax1.set_title('Nominal Channel')
+    # im1.set_clim(0, 1)
+
+    ax2 = plt.subplot(1, 2, 2)
+    im2 = ax2.imshow(img_tensor[0, :, :, 1], cmap=cm)
+    ax2.set_title('Extra Channel')
+    # im2.set_clim(0, 1)
+    plt.show()
+
+
+    activations = activation_model.predict(img_tensor)
+    first_layer_activation = activations[0]
+    print(first_layer_activation.shape)
+
+    layer_names = []
+    for layer in model.layers[:3]:
+        layer_names.append(layer.name)  # Names of the layers, so you can have them as part of your plot
+
+    images_per_row = 8
+    for layer_name, layer_activation in zip(layer_names, activations):  # Displays the feature maps
+        n_features = layer_activation.shape[-1]  # Number of features in the feature map
+        size = layer_activation.shape[1]  # The feature map has shape (1, size, size, n_features).
+        print(size)
+        n_cols = n_features // images_per_row  # Tiles the activation channels in this matrix
+        display_grid = np.zeros((size * n_cols, images_per_row * size))
+        for col in range(n_cols):  # Tiles each filter into a big horizontal grid
+            for row in range(images_per_row):
+                channel_image = layer_activation[0,:, :,col * images_per_row + row]
+                display_grid[col * size: (col + 1) * size,  # Displays the grid
+                row * size: (row + 1) * size] = channel_image
+        scale = 1. / size
+        plt.figure(figsize=(scale * display_grid.shape[1],
+                            scale * display_grid.shape[0]))
+        plt.title(layer_name)
+        plt.grid(False)
+        plt.imshow(display_grid, aspect='auto', cmap='hot')
+        # plt.clim(0, 1)
+    plt.show()
+
+
+    # Trying to see what the CNN does.
+    # Let's
+    extra_coefs = _extra
+    coef0 = test_coefs[2]
+    im0, _s = PSF.compute_PSF(coef0)
+    nom_im = [im0]
+    for c in extra_coefs:
+        ims, _s = PSF.compute_PSF(coef0 + c)
+        nom_im.append(ims)
+    im0 = np.moveaxis(np.array(nom_im), 0, -1)
+    im0 = im0[np.newaxis, :, :, :]
+
+    k_act = 15
+    delta = 0.5
+    coef1 = coef0.copy()
+    coef1[k_act] -= delta         # Poke one of the Zernikes
+    im1, _s = PSF.compute_PSF(coef1)
+    nom_im = [im1]
+    for c in extra_coefs:
+        ims, _s = PSF.compute_PSF(coef1 + c)
+        nom_im.append(ims)
+    im1 = np.moveaxis(np.array(nom_im), 0, -1)
+    im1 = im1[np.newaxis, :, :, :]
+
+    j_channel = 0
+    i1, i2 = im0[0, :, :, j_channel], im1[0, :, :, j_channel]
+    i3 = i2 - i1
+    mins = min(i3.min(), -i3.max())
+    maxs = max(i1.max(), i2.max())
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(i1, cmap='hot')
+    ax1.set_title('Nominal Image')
+    img1.set_clim(0, maxs)
+    # img1.set_clim(-maxs, maxs)
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(i2, cmap='hot')
+    ax2.set_title('Poked Image')
+    img2.set_clim(0, maxs)
+    # img2.set_clim(-maxs, maxs)
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(i3, cmap='bwr')
+    ax3.set_title('Residual')
+    img3.set_clim(mins, -mins)
+    c3 = plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+    layer_outputs = [layer.output for layer in model.layers]  # Extracts the outputs of the top 12 layers
+    activation_model = models.Model(inputs=model.input, outputs=layer_outputs)
+
+    activations0 = activation_model.predict(im0[:,:,:,:N_channels])
+    activations1 = activation_model.predict(im1[:,:,:,:N_channels])
+    diff_activ = [a - b for (a,b) in zip(activations0, activations1)]
+
+    k = 1
+    ran = activations0[-k].shape[-1]
+    plt.figure()
+    plt.scatter(range(ran), -coef0, color='black', s=6)
+    plt.scatter(range(ran), activations0[-k][0], label='Nominal')
+    # plt.scatter(range(ran), coef0 + activations0[-k][0], color='black')
+    plt.scatter(range(ran), activations1[-k][0], label=r'Poked$')
+    # plt.scatter(0.2, -coef0[0], color='black')
+    # plt.scatter(0.2, -coef1[0], color='red')
+    plt.xlabel('Actuator coefficient')
+    plt.ylabel(r'Value [$\lambda$]')
+    plt.legend(title='Network predictions')
+    # plt.savefig(os.path.join('Experiment', 'Poked_predicitons'))
+    plt.show()
+
+    act_nominal = draw_actuator_commands(-coef0, centers)
+    act_0 = draw_actuator_commands(activations0[-k][0], centers)
+    act_1 = draw_actuator_commands(activations1[-k][0], centers)
+
+    extends = [-1, 1, -1, 1]
+    m_nom = min(act_nominal.min(), -act_nominal.max())
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(act_nominal, extent=extends, origin='lower', cmap='bwr')
+    ax1.scatter(centers[0][k_act][0], centers[0][k_act][1], edgecolors='white', color='black')
+    ax1.set_title('Nominal Correction')
+    # img1.set_clim(0, maxs)
+    img1.set_clim(-m_nom, m_nom)
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(act_0, extent=extends, origin='lower', cmap='bwr')
+    ax2.set_title('Guessed Correction')
+    ax2.scatter(centers[0][k_act][0], centers[0][k_act][1], edgecolors='white', color='black')
+    # img2.set_clim(0, maxs)
+    img2.set_clim(-m_nom, m_nom)
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    diff = act_1 - act_0
+    m_d = min(diff.min(), -diff.max())
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(act_1 - act_0, extent=extends, origin='lower', cmap='bwr')
+    ax3.scatter(centers[0][k_act][0], centers[0][k_act][1], edgecolors='white', color='black')
+    ax3.set_title('Poked')
+    img3.set_clim(-delta, delta)
+    c3 = plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+
+
+
+    images_per_row = 16
+    for layer_name, layer_activation in zip(layer_names, activations0):  # Displays the feature maps
+        n_features = layer_activation.shape[-1]  # Number of features in the feature map
+        size = layer_activation.shape[1]  # The feature map has shape (1, size, size, n_features).
+        n_cols = n_features // images_per_row  # Tiles the activation channels in this matrix
+        display_grid = np.zeros((size * n_cols, images_per_row * size))
+        for col in range(n_cols):  # Tiles each filter into a big horizontal grid
+            for row in range(images_per_row):
+                channel_image = layer_activation[0,:, :,col * images_per_row + row]
+                display_grid[col * size: (col + 1) * size,  # Displays the grid
+                row * size: (row + 1) * size] = channel_image
+        scale = 1. / size
+        plt.figure(figsize=(scale * display_grid.shape[1],
+                            scale * display_grid.shape[0]))
+        plt.title(layer_name)
+        plt.grid(False)
+        plt.imshow(np.log10(display_grid), aspect='auto', cmap='binary')
+    plt.show()
 
 
 
