@@ -103,7 +103,9 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=T
     if radial:
         for r in [rho_aper, rho_obsc]:
             N_radial = int(np.floor(2*np.pi*r/delta))
-            theta = np.linspace(0, 2*np.pi, N_radial)
+            d_theta = 2*np.pi / N_radial
+            theta = np.linspace(0, 2*np.pi - d_theta, N_radial)
+            # Super important to do 2Pi - d_theta to avoid placing 2 actuators in the same spot... Degeneracy
             for t in theta:
                 act.append([r*np.cos(t), r*np.sin(t)])
 

@@ -29,7 +29,7 @@ from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
-Z = 1.0                    # Strength of the aberrations -> relates to the Strehl ratio
+Z = 1.25                    # Strength of the aberrations -> relates to the Strehl ratio
 pix = 25                    # Pixels to crop the PSF
 N_PIX = 128                 # Pixels for the Fourier arrays
 RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
@@ -65,7 +65,9 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=T
     if radial:
         for r in [rho_aper, rho_obsc]:
             N_radial = int(np.floor(2*np.pi*r/delta))
-            theta = np.linspace(0, 2*np.pi, N_radial)
+            d_theta = 2*np.pi / N_radial
+            theta = np.linspace(0, 2*np.pi - d_theta, N_radial)
+            # print(theta)
             for t in theta:
                 act.append([r*np.cos(t), r*np.sin(t)])
 
@@ -290,12 +292,16 @@ def generate_training_set(PSF_model, N_samples=1500, dm_stroke=0.10, sampling="s
     # Store the Phi_0 coefficients for later
     coefs = np.zeros((N_samples, N_act))
 
+    Z_max, Z_min = 1.5, 0.75
+    dZ = Z_max - Z_min
+
     for i in range(N_samples):
-
+        # Z_scaled = Z_max - dZ / N_samples * (i)
+        Z_scaled = (Z_max + Z_min)/2 + dZ/2*np.cos(2*np.pi * 60*i/N_samples)
         if i%100 == 0:
-            print(i)
+            print(i, Z_scaled)
 
-        rand_coef = np.random.uniform(low=-Z, high=Z, size=N_act)
+        rand_coef = np.random.uniform(low=-Z_scaled, high=Z_scaled, size=N_act)
         coefs[i] = rand_coef
         im0, _s = PSF_model.compute_PSF(rand_coef)
         # Store the images in a least and then turn it into array
@@ -353,15 +359,43 @@ def simple_sampling(N_zern, dm_stroke):
         coefs[2*i:2*i+2] = dummy
     return coefs
 
-def draw_actuator_commands(commands, centers):
+def draw_actuator_commands(commands, centers, PIX=1024):
     cent, delta = centers
-    x = np.linspace(-1, 1, N_PIX, endpoint=True)
+    x = np.linspace(-1.25*RHO_APER, 1.25*RHO_APER, PIX, endpoint=True)
     xx, yy = np.meshgrid(x, x)
-    image = np.zeros((N_PIX, N_PIX))
+    image = np.zeros((PIX, PIX))
     for i, (xc, yc) in enumerate(cent):
-        act_mask = (xx - xc)**2 + (yy - yc)**2 <= (delta/2)**2
+        act_mask = (xx - xc)**2 + (yy - yc)**2 <= (delta/4)**2
         image += commands[i] * act_mask
     return image
+
+def read_out_noise(training_set, train_coef, N_copies=3):
+    """
+    Add READ OUT NOISE to the clean PSF
+    :param training_set:
+    :param train_coef:
+    :param N_copies:
+    :return:
+    """
+    RMS_READ = 1. / 100
+
+    N_train, pix, N_chan = training_set.shape[0], training_set.shape[1], training_set.shape[-1]
+    N_act = train_coef.shape[-1]
+    augmented_PSF = np.empty((N_copies*N_train, pix, pix, N_chan))
+    augmented_coef = np.empty((N_copies*N_train, N_act))
+    for k in range(N_train):
+        coef = train_coef[k].copy()
+        PSF = training_set[k].copy()
+        for i in range(N_copies):
+
+            read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
+            # plt.figure()
+            # plt.imshow(read_out[:,:,0])
+            # plt.colorbar()
+            # plt.show()
+            augmented_PSF[N_copies*k + i] = PSF + read_out
+            augmented_coef[N_copies*k + i] = coef
+    return augmented_PSF, augmented_coef
 
 if __name__ == "__main__":
 
@@ -401,8 +435,8 @@ if __name__ == "__main__":
 
     N_cases = 1
     N_classes = N_act
-    N_batches = 40
-    N_train, N_test = 500, 250
+    N_batches = 50
+    N_train, N_test = 500, 500
     N_samples = N_batches*N_train + N_test
     sampling = "random"
 
@@ -458,7 +492,6 @@ if __name__ == "__main__":
     N_shuffle = 32
     perfect_shuffle = tf.constant(perfect_psf[:N_shuffle], dtype=tf.float32)
 
-
     def loss_shuffle(y_true, y_pred):
         phase = K.dot(y_true + y_pred, ht)
         cos_x, sin_x = pupt * K.cos(phase), pupt * K.sin(phase)
@@ -476,6 +509,7 @@ if __name__ == "__main__":
         image = (K.abs(tf.fft2d(complex_phase))) ** 2 / peak
 
         res = K.mean(K.sum((image - perfect_psf)**2)) - K.mean(K.max(image, axis=(1, 2)))
+        # res = K.mean(K.sum((image - perfect_psf)**2)) / 500- K.mean(K.max(image, axis=(1, 2)))
 
         return res
 
@@ -518,29 +552,25 @@ if __name__ == "__main__":
         # print("\nValidation: Relative improvement: %.2f " %(nf/n0)*100)
         return nf/n0
 
-
-
-    val_1, val_2 = [], []
-    val_3 = []
-    val_5 = []
-    val_10 = []
-    val_20 = []
-    val_40 = []
+    val_f = []    # 3 channels
     model.compile(optimizer='adam', loss=loss)
     for i_times in range(10):
         for k_batch in range(N_batches):
-            print("\nIteration %d || Batch #%d (%d samples)" %(i_times, k_batch+1, N_train))
-            train_history = model.fit(x=img_batch[k_batch], y=coef_batch[k_batch], epochs=100, batch_size=N_train, shuffle=False, verbose=0)
-            val_40.append(validate(test_images, test_coefs))
+            print("\nIteration %d || Batch #%d (%d samples)" %(i_times+1, k_batch+1, N_train))
+            train_read, coef_read = read_out_noise(img_batch[k_batch], coef_batch[k_batch], N_copies=1)
+            # print(train_read.shape)
+            train_history = model.fit(x=train_read, y=coef_batch[k_batch], epochs=100, batch_size=N_train, shuffle=False, verbose=0)
+            val_f.append(validate(test_images[:,:,:,:N_channels], test_coefs))
+    # Remove the Strehl term in the loss
+
+    # Frecuencia con la que actualizamos el readout noise
+    # Next -> Priorizar Strehl ratio en la Loss
+
+    val_3chan = val.copy()
+
 
     plt.figure()
-    plt.plot(val_1, label='1')
-    plt.plot(val_2, label='2')
-    plt.plot(val_3, label='3')
-    plt.plot(val_5, label='5')
-    plt.plot(val_10, label='10')
-    plt.plot(val_20, label='20')
-    # plt.plot(val_40, label='40')
+    plt.plot(val, label='1')
     plt.legend(title=r'Batches (500 samples)')
     plt.xlabel('Batch Iterations x100')
     plt.ylabel('Relative norm residuals')
@@ -550,12 +580,18 @@ if __name__ == "__main__":
     # the chosen coefficients from the batch to those of the coef_t tensor. Can't be bothered...
 
 
-
-
     loss_hist = train_history.history['loss']
 
-    guess_coef = model.predict(test_images)
+    guess_coef = model.predict(test_images[:,:,:,:N_channels])
     residual = test_coefs + guess_coef
+
+    mean_command = np.mean(np.abs(residual), axis=0)
+    err_cmd = draw_actuator_commands(mean_command, centers)
+    plt.imshow(err_cmd, cmap='Reds')
+    plt.colorbar()
+    plt.clim(0.9*err_cmd[np.nonzero(err_cmd)].min(), err_cmd.max())
+    plt.title(r'Average Residual Error Command [abs value]')
+    plt.show()
 
     print(norm(test_coefs))
     print(norm(residual))
@@ -567,7 +603,7 @@ if __name__ == "__main__":
         RMS0, RMS_true = [], []
         s0 = np.max(test_PSF[:, :, :, 0], axis=(1, 2))
         s = []
-        for k in range(N_test):
+        for k in range(test_PSF.shape[0]):
 
             phase0 = np.dot(PSF.RBF_mat, test_coef[k])
             phase_guess = np.dot(PSF.RBF_mat, -guess_coef[k])
@@ -595,7 +631,10 @@ if __name__ == "__main__":
         # plt.show()
         return RMS0, RMS_true, s0, s
 
-    r0, rms1, s0, strehl1 = RMS_Strehl_check(PSF, model, test_images, test_coefs)
+
+    test_images_read, test_coefs_read = read_out_noise(test_images, test_coefs, N_copies=3)
+
+    r0, rms1, s0, strehl1 = RMS_Strehl_check(PSF, model, test_images_read, test_coefs_read)
 
     plt.figure()
     plt.hist(r0, histtype='step', label='Before Calibration')
@@ -605,7 +644,7 @@ if __name__ == "__main__":
     # plt.axvline(np.mean(rms2), linestyle='--', color='red')
     # plt.hist(rms4, histtype='step', label='4 Channels', color='green')
     # plt.axvline(np.mean(rms4), linestyle='--', color='green')
-    plt.legend()
+    # plt.legend()
     plt.xlabel(r'RMS wavefront')
     plt.xlim([0, 1.5])
 
@@ -621,6 +660,30 @@ if __name__ == "__main__":
     # plt.legend()
     plt.xlim([0, 1.0])
     plt.xlabel(r'Strehl ratio')
+    plt.show()
+
+    ds = strehl1 / s0 - 1
+    x_dummy = np.linspace(0.1, 1, 50)
+    perfect_ds = 1 / x_dummy - 1
+
+    plt.figure()
+    plt.scatter(s0, strehl1, s=10)
+    plt.plot(x_dummy, x_dummy, label='No Correction', linestyle='--', color='black')
+    plt.xlabel('Initial Strehl')
+    plt.ylabel('Final Strehl')
+    plt.legend()
+    plt.xlim([0.1, 1])
+    plt.ylim([0.1, 1])
+    plt.grid(True)
+    plt.show()
+
+    plt.figure()
+    plt.scatter(s0, ds, s=10)
+    plt.plot(x_dummy, perfect_ds, label='Perfect Correction', linestyle='--', color='black')
+    plt.xlabel('Initial Strehl')
+    plt.legend()
+    # plt.xlim([0.2, 1])
+    # plt.ylim([0.2, 1])
     plt.show()
 
     def residual_wavefront(PSF, model, test_PSF, test_coef):
@@ -674,6 +737,8 @@ if __name__ == "__main__":
         plt.show()
     residual_wavefront(PSF, model, test_images, test_coefs)
 
+
+
     # # # ======================================================================================================== # # #
 
     """ Visualizing the Layers """
@@ -713,7 +778,7 @@ if __name__ == "__main__":
     for layer in model.layers[:3]:
         layer_names.append(layer.name)  # Names of the layers, so you can have them as part of your plot
 
-    images_per_row = 8
+    images_per_row = 16
     for layer_name, layer_activation in zip(layer_names, activations):  # Displays the feature maps
         n_features = layer_activation.shape[-1]  # Number of features in the feature map
         size = layer_activation.shape[1]  # The feature map has shape (1, size, size, n_features).
