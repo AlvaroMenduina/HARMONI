@@ -599,9 +599,11 @@ if __name__ == "__main__":
     def RMS_Strehl_check(PSF, model, test_PSF, test_coef):
 
         pupil_mask = PSF.pupil_mask
-        guess_coef = model.predict(test_PSF[:,:,:,:N_channels])
-        RMS0, RMS_true = [], []
         s0 = np.max(test_PSF[:, :, :, 0], axis=(1, 2))
+        test_images_read, test_coefs_read = read_out_noise(test_PSF, test_coef, N_copies=1)
+        guess_coef = model.predict(test_images_read)
+        RMS0, RMS_true = [], []
+
         s = []
         for k in range(test_PSF.shape[0]):
 
@@ -614,37 +616,37 @@ if __name__ == "__main__":
             _im, strehl = PSF.compute_PSF(test_coef[k] + guess_coef[k])
             s.append(strehl)
 
-        # plt.figure()
-        # plt.hist(RMS0, histtype='step', label='before')
-        # plt.hist(RMS_true, histtype='step', label='after')
-        # plt.xlim([0, 1.5])
-        # plt.xlabel(r'RMS wavefront')
-        # plt.legend()
-        #
-        # plt.figure()
-        # plt.hist(s0, histtype='step', label='before')
-        # plt.hist(s, histtype='step', label='after')
-        # plt.axvline(np.mean(s))
-        # plt.xlim([0, 1.0])
-        # plt.xlabel(r'Strehl ratio')
-        # plt.legend()
-        # plt.show()
-        return RMS0, RMS_true, s0, s
+        return RMS0, RMS_true, s0, s, residual
 
+    # First iteration
+    r0, rms1, s0, strehl1, residual1 = RMS_Strehl_check(PSF, model, test_images, test_coefs)
+    # Update the Test Images with the new residuals
 
-    test_images_read, test_coefs_read = read_out_noise(test_images, test_coefs, N_copies=3)
+    def update_test_set(PSF, residual, _extra):
+        N_test = residual.shape[0]
+        new_images = np.zeros((N_test, pix, pix, N_channels))
+        for i in range(N_test):
+            im0, _s = PSF.compute_PSF(residual[i])
+            # Store the images in a least and then turn it into array
+            nom_im = [im0]
+            for c in _extra:
+                ims, _s = PSF.compute_PSF(residual[i] + c)
+                nom_im.append(ims)
+                # print(len(nom_im))
+            new_images[i] = np.moveaxis(np.array(nom_im), 0, -1)
+        return new_images
 
-    r0, rms1, s0, strehl1 = RMS_Strehl_check(PSF, model, test_images_read, test_coefs_read)
+    new_test_images = update_test_set(PSF, residual1, _extra)
+    r1, rms2, s1, strehl2, residual2 = RMS_Strehl_check(PSF, model, new_test_images, residual1)
+
+    new_test_images = update_test_set(PSF, residual2, _extra)
+    r2, rms3, s2, strehl3, residual3 = RMS_Strehl_check(PSF, model, new_test_images, residual2)
+
 
     plt.figure()
     plt.hist(r0, histtype='step', label='Before Calibration')
     plt.hist(rms1, histtype='step', label='1 Channel', color='black')
     plt.axvline(np.mean(rms1), linestyle='--', color='black')
-    # plt.hist(rms2, histtype='step', label='2 Channels', color='red')
-    # plt.axvline(np.mean(rms2), linestyle='--', color='red')
-    # plt.hist(rms4, histtype='step', label='4 Channels', color='green')
-    # plt.axvline(np.mean(rms4), linestyle='--', color='green')
-    # plt.legend()
     plt.xlabel(r'RMS wavefront')
     plt.xlim([0, 1.5])
 
@@ -653,11 +655,6 @@ if __name__ == "__main__":
     plt.hist(s0, histtype='step', label='Before Calibration')
     plt.hist(strehl1, histtype='step', label='1 Channel', color='black')
     plt.axvline(np.mean(strehl1), linestyle='--', color='black')
-    # plt.hist(strehl2, histtype='step', label='2 Channels', color='red')
-    # plt.axvline(np.mean(strehl2), linestyle='--', color='red')
-    # plt.hist(strehl4, histtype='step', label='4 Channels', color='green')
-    # plt.axvline(np.mean(strehl4), linestyle='--', color='green')
-    # plt.legend()
     plt.xlim([0, 1.0])
     plt.xlabel(r'Strehl ratio')
     plt.show()
@@ -667,15 +664,49 @@ if __name__ == "__main__":
     perfect_ds = 1 / x_dummy - 1
 
     plt.figure()
-    plt.scatter(s0, strehl1, s=10)
-    plt.plot(x_dummy, x_dummy, label='No Correction', linestyle='--', color='black')
+    plt.scatter(s0, strehl1, s=8, label='1', color='royalblue')
+    plt.scatter(strehl1, strehl2, s=8, label='2', color='crimson')
+    plt.scatter(strehl2, strehl3, s=8, label='3', color='yellowgreen')
+    plt.plot(x_dummy, x_dummy, linestyle='--', color='black')
     plt.xlabel('Initial Strehl')
     plt.ylabel('Final Strehl')
-    plt.legend()
+    plt.legend(title='Iteration')
     plt.xlim([0.1, 1])
     plt.ylim([0.1, 1])
     plt.grid(True)
     plt.show()
+
+    def count_strehl(s0, s1, s2, s3):
+        N_samples = len(s0)
+        s0 = np.sort(s0)
+        s1 = np.sort(s1)
+        s2 = np.sort(s2)
+        s3 = np.sort(s3)
+
+        print("\nSample size: %d" %N_samples)
+
+        s0_7 = len(np.argwhere(s0 > 0.7))
+        s1_7 = len(np.argwhere(s1 > 0.7))
+        s2_7 = len(np.argwhere(s2 > 0.7))
+        s3_7 = len(np.argwhere(s3 > 0.7))
+
+        s0_8 = len(np.argwhere(s0 > 0.8))
+        s1_8 = len(np.argwhere(s1 > 0.8))
+        s2_8 = len(np.argwhere(s2 > 0.8))
+        s3_8 = len(np.argwhere(s3 > 0.8))
+
+        s0_9 = len(np.argwhere(s0 > 0.9))
+        s1_9 = len(np.argwhere(s1 > 0.9))
+        s2_9 = len(np.argwhere(s2 > 0.9))
+        s3_9 = len(np.argwhere(s3 > 0.9))
+        print("Strehl Ratios || Initial | 1st Iteration | 2nd Iteration | 3rd Iteration")
+        print("Above 0.7:         %3d           %3d             %3d             %3d" %(s0_7, s1_7, s2_7, s3_7))
+        print("Above 0.8:         %3d           %3d             %3d             %3d" %(s0_8, s1_8, s2_8, s3_8))
+        print("Above 0.9:         %3d           %3d             %3d             %3d" %(s0_9, s1_9, s2_9, s3_9))
+
+
+    count_strehl(s0, strehl1, strehl2, strehl3)
+
 
     plt.figure()
     plt.scatter(s0, ds, s=10)
