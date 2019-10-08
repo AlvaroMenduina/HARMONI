@@ -23,6 +23,19 @@ N_PIX = 256                 # Pixels for the Fourier arrays
 RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
 RHO_OBSC = 0.15             # Central obscuration
 
+def invert_mask(x, mask):
+    """
+    Takes a vector X which is the result of masking a 2D with the Mask
+    and reconstructs the 2D array
+    Useful when you need to evaluate a Zernike Surface and most of the array is Masked
+    """
+    N = mask.shape[0]
+    ij = np.argwhere(mask==True)
+    i, j = ij[:,0], ij[:,1]
+    result = np.zeros((N, N))
+    result[i,j] = x
+    return result
+
 # ==================================================================================================================== #
 #                                   Deformable Mirror - ACTUATOR MODEL functions
 # ==================================================================================================================== #
@@ -190,42 +203,7 @@ if __name__ == "__main__":
     #                       GPU version
     # ================================================================================================================ #
 
-
-
-    mod = SourceModule("""__global__ void d_matrixProdCuda(float *d_A, float *d_B, float *d_C, int dim){
-        float Cs = 0;
-        int bofx, bofy; // Block offset
-        long x, y, z;
-        int i;
-   
-       // Each  threadblock computes one submatrix of size blocksize x blocksize, and each
-       // thread in a threadblock computes the product for only one element.
-       // After each submatrix the threads advance to the next submatrix, until all submatrices
-       // are processed and the running total for each element/thread is the final result.
-    
-       bofx = blockDim.x * blockIdx.x;
-       bofy = blockDim.y * blockIdx.y;
-   
-       for(i = 0; i < dim/blockDim.x; i++){
-        // Each thread computes the product for a single element of the (sub)matrix C inside the block :
-            for(z=0; z < blockDim.x; z++){
-                Cs += d_A[dim * (bofy + threadIdx.y) + i * blockDim.y + z] * d_B[dim * (z + (i * blockDim.x)) + bofx + threadIdx.x];
-            }
-        }
-           
-       // Compute block and thread offset and then store result in global memory :
-       x = bofx + threadIdx.x; // row index for this thread
-       y = bofy + threadIdx.y; // col index for this thread
-       d_C[y * dim + x] = Cs;}
-       
-       
-       
-       
-       """)
-
-    threadsPerBlock = np.int32(32)
-    mod2 = SourceModule("""   
-    
+    mod = SourceModule("""   
     __global__ void MatMulNoShared(float* A, float* B, float* C, int ARows, int ACols, int BRows, int BCols, int CRows, int CCols) {
         
         float CValue = 0;
@@ -233,74 +211,95 @@ if __name__ == "__main__":
         int Row = blockIdx.y*TILE_DIM + threadIdx.y;
         int Col = blockIdx.x*TILE_DIM + threadIdx.x;
     
-        for (int k = 0; k < (TILE_DIM + ACols - 1)/TILE_DIM; k++) {
-                
+        for (int k = 0; k < (TILE_DIM + ACols - 1)/TILE_DIM; k++) {  
             for (int n = 0; n < TILE_DIM; ++n) 
                 if ((k*TILE_DIM + n < ACols && Row < ARows) && (k*TILE_DIM + n < BRows && Col < BCols))
-                    CValue += A[Row*ACols + k*TILE_DIM + n] * B[(k*TILE_DIM + n)*BCols + Col];
-            
+                    CValue += A[Row*ACols + k*TILE_DIM + n] * B[(k*TILE_DIM + n)*BCols + Col];            
         }
         
         if (Row < CRows && Col < CCols) C[((blockIdx.y * blockDim.y + threadIdx.y)*CCols)+(blockIdx.x*blockDim.x)+threadIdx.x]=CValue;
     }""")
-
     flat_actuator = rbf_mat[-1].copy().astype(np.float32)
-    new_phase = np.zeros((flat_actuator.shape[0], N_examples)).astype(np.float32)
+    Nx = np.int32(flat_actuator.shape[0])   # N_PIX^2
+    Ny = np.int32(N_act)
+    Nz = np.int32(N_examples)
+    BLOCK_SIZE = int(32)
+    GRID_X = int(np.ceil(N_examples / BLOCK_SIZE))
+    GRID_Y = int(np.ceil(flat_actuator.shape[0] / BLOCK_SIZE))
+
+    # New_Phase [N_PIX^2, N_EXAMP] = Flat_Actuator [N_PIX^2, N_ACT] * Coefs [N_ACT, N_EXAMP]
+    new_phase = np.zeros((Nx, Nz)).astype(np.float32)
+
+    # Allocata GPU Memory
     flat_actuator_gpu = cuda.mem_alloc(flat_actuator.nbytes)
     new_phase_gpu = cuda.mem_alloc(new_phase.nbytes)
     coefs_gpu = cuda.mem_alloc(coefs.nbytes)
 
+    # Transfer to GPU
     cuda.memcpy_htod(flat_actuator_gpu, flat_actuator)
     cuda.memcpy_htod(new_phase_gpu, new_phase)
     cuda.memcpy_htod(coefs_gpu, coefs)
 
-    func = mod2.get_function("MatMulNoShared")
-    Nx = np.int32(flat_actuator.shape[0])
-    # Nx = np.int32(32)
-    Ny = np.int32(N_act)
-    Nz = np.int32(N_examples)
-    func(flat_actuator_gpu, coefs_gpu, new_phase_gpu, Nx, Ny, Ny, Nz, Nx, Nz, block=(32, 32, 1), grid=(32, 364))
+    func = mod.get_function("MatMulNoShared")
+    func(flat_actuator_gpu, coefs_gpu, new_phase_gpu, Nx, Ny, Ny, Nz, Nx, Nz, block=(BLOCK_SIZE, BLOCK_SIZE, 1), grid=(GRID_X, GRID_Y))
     cuda.memcpy_dtoh(new_phase, new_phase_gpu)
 
     plt.imshow(new_phase - np.dot(flat_actuator, coefs))
     plt.colorbar()
     plt.show()
 
+    # ================================================================================================================ #
+
+    mod2 = SourceModule("""   
+    __global__ void InvertMask(float* FlatPhase, float* PhaseCube, int* i_index, int* j_index, int N_PIX, int N_flat){
+
+        int n_example = blockIdx.y;
+        int z_flat = blockIdx.x * blockDim.x + threadIdx.x;
+        float value;
+        if (z_flat < N_flat) {
+            value = FlatPhase[gridDim.y*z_flat + n_example];
+            
+            int i = i_index[z_flat];
+            int j = j_index[z_flat];
+            //if (n_example == 0) printf("\\n%d", i);
+            
+            PhaseCube[N_PIX * N_PIX * n_example + N_PIX * j + i] = value;
+            //PhaseCube[i][j][n_example] = value;
+            }  
+        }""")
+
+
+    phase_cube = np.zeros((N_examples, N_PIX, N_PIX)).astype(np.float32)
+    i0 = np.linspace(0, N_PIX, N_PIX).astype(np.int32)
+    ii, jj = np.meshgrid(i0, i0)
+    i_f = ii[PSF.pupil_mask].astype(np.int32)
+    j_f = jj[PSF.pupil_mask].astype(np.int32)
+
+    phase_cube_gpu = cuda.mem_alloc(phase_cube.nbytes)
+    i_gpu = cuda.mem_alloc(i_f.nbytes)
+    j_gpu = cuda.mem_alloc(j_f.nbytes)
+
+    cuda.memcpy_htod(phase_cube_gpu, phase_cube)
+    cuda.memcpy_htod(i_gpu, i_f)
+    cuda.memcpy_htod(j_gpu, j_f)
+
+    func = mod2.get_function("InvertMask")
+    func(new_phase_gpu, phase_cube_gpu, i_gpu, j_gpu, np.int32(256), Nx, block=(1024, 1, 1), grid=(12, 1000))
+    cuda.memcpy_dtoh(phase_cube, phase_cube_gpu)
+
+    k = 0
+    p0 = invert_mask(new_phase[:, k], PSF.pupil_mask)
+    p1 = phase_cube[k]
+    plt.figure()
+    plt.imshow(p0)
+    plt.figure()
+    plt.imshow(p1 - p0)
+    plt.show()
 
 
 
 
 
-
-
-
-
-
-
-
-
-    mod = SourceModule("""__global__ void mat_mul(float * C, float * A, float * B, int n){
-        int row = blockIdx.x * blockDim.x + threadIdx.x;
-        int col = blockIdx.y * blockDim.y + threadIdx.y;
-        for (int k = 0; k < n; k++) {
-            C[row * n + col] += A[row * n + k] * B[k * n + col];}
-    }""")
-    N = 10000
-    a = np.random.randn(N, N).astype(np.float32)
-    b = np.random.randn(N, N).astype(np.float32)
-    c = np.empty_like(a)
-    a_gpu = cuda.mem_alloc(a.nbytes)
-    b_gpu = cuda.mem_alloc(b.nbytes)
-    c_gpu = cuda.mem_alloc(c.nbytes)
-    cuda.memcpy_htod(a_gpu, a)
-    cuda.memcpy_htod(b_gpu, b)
-    cuda.memcpy_htod(c_gpu, c)
-
-    func = mod.get_function("mat_mul")
-    N = np.int32(N)
-    func(c_gpu, a_gpu, b_gpu, N, block=(10, 10, 1))
-
-    cuda.memcpy_dtoh(c, c_gpu)
 
 
 
