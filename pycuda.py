@@ -4,6 +4,8 @@
 
 Trying to generate training examples on the GPU
 
+
+http://www.orangeowlsolutions.com/archives/526
 """
 
 import pycuda.driver as cuda
@@ -34,6 +36,21 @@ def invert_mask(x, mask):
     i, j = ij[:,0], ij[:,1]
     result = np.zeros((N, N))
     result[i,j] = x
+    return result
+
+def invert_mask_datacube(x, mask):
+    """
+    Takes a vector X which is the result of masking a 2D with the Mask
+    and reconstructs the 2D array
+    Useful when you need to evaluate a Zernike Surface and most of the array is Masked
+    """
+    M = x.shape[-1]
+    N = mask.shape[0]
+    ij = np.argwhere(mask==True)
+    i, j = ij[:,0], ij[:,1]
+    result = np.zeros((M, N, N)).astype(np.float32)
+    for k in range(M):
+        result[k,i,j] = x[:,k]
     return result
 
 # ==================================================================================================================== #
@@ -163,7 +180,7 @@ if __name__ == "__main__":
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
-    N_actuators = 25
+    N_actuators = 45
     centers, MAX_FREQ = actuator_centres(N_actuators)
     # centers = radial_grid(N_radial=5)
     N_act = len(centers[0])
@@ -188,7 +205,7 @@ if __name__ == "__main__":
     PSF = PointSpreadFunction(rbf_mat[0], rbf_mat[1])
 
     ### Time how long it takes
-    N_examples = 1000
+    N_examples = 5000
     coefs = np.random.uniform(low=-1, high=1, size=(N_act, N_examples)).astype(np.float32)
     start = time.time()
     for i in range(N_examples):
@@ -198,11 +215,20 @@ if __name__ == "__main__":
     print('\nCPU: %d images (%d, %d) pixels in %.3f seconds' %(N_examples, N_PIX, N_PIX, time_cpu))
     print('Average time: %.3f sec / example' %(time_cpu/N_examples))
 
+    # ================================================================================================================ #
+
+    start = time.time()
+    phase_cpu = np.dot(rbf_mat[-1], coefs)
+    end_dot = time.time()
+    datacube_cpu = invert_mask_datacube(phase_cpu, PSF.pupil_mask)
+    end = time.time()
+    time_cpu = end_dot - start
+    print("\nTime to produce %d Wavefronts [%d Actuators] in the CPU: %.3f sec" %(N_examples, N_act, time_cpu))
 
     # ================================================================================================================ #
     #                       GPU version
     # ================================================================================================================ #
-
+    start_gpu = time.time()
     mod = SourceModule("""   
     __global__ void MatMulNoShared(float* A, float* B, float* C, int ARows, int ACols, int BRows, int BCols, int CRows, int CCols) {
         
@@ -219,6 +245,35 @@ if __name__ == "__main__":
         
         if (Row < CRows && Col < CCols) C[((blockIdx.y * blockDim.y + threadIdx.y)*CCols)+(blockIdx.x*blockDim.x)+threadIdx.x]=CValue;
     }""")
+    start_gpu = time.time()
+    mod_shared = SourceModule("""
+    #define TILE_DIM 32
+    __global__ void MatMulShared(float* A, float* B, float* C, int ARows, int ACols, int BRows, int BCols, int CRows, int CCols) {
+        float CValue = 0;
+        //int TILE_DIM = blockDim.x;
+        int Row = blockIdx.y*TILE_DIM + threadIdx.y;
+        int Col = blockIdx.x*TILE_DIM + threadIdx.x;
+        
+        __shared__ float As[TILE_DIM][TILE_DIM];
+        __shared__ float Bs[TILE_DIM][TILE_DIM];
+        for (int k = 0; k < (TILE_DIM + ACols - 1)/TILE_DIM; k++) {
+            if (k*TILE_DIM + threadIdx.x < ACols && Row < ARows)	As[threadIdx.y][threadIdx.x] = A[Row*ACols + k*TILE_DIM + threadIdx.x];
+            else													As[threadIdx.y][threadIdx.x] = 0.0;
+            
+            if (k*TILE_DIM + threadIdx.y < BRows && Col < BCols)	Bs[threadIdx.y][threadIdx.x] = B[(k*TILE_DIM + threadIdx.y)*BCols + Col];
+            else													Bs[threadIdx.y][threadIdx.x] = 0.0;
+            
+            __syncthreads();
+            for (int n = 0; n < TILE_DIM; ++n) CValue += As[threadIdx.y][n] * Bs[n][threadIdx.x];
+            __syncthreads();
+        }
+        if (Row < CRows && Col < CCols) C[((blockIdx.y * blockDim.y + threadIdx.y)*CCols)+(blockIdx.x*blockDim.x)+threadIdx.x]=CValue;
+    }
+    """)
+
+    # func = mod.get_function("MatMulNoShared")
+    func = mod_shared.get_function("MatMulShared")
+
     flat_actuator = rbf_mat[-1].copy().astype(np.float32)
     Nx = np.int32(flat_actuator.shape[0])   # N_PIX^2
     Ny = np.int32(N_act)
@@ -240,13 +295,14 @@ if __name__ == "__main__":
     cuda.memcpy_htod(new_phase_gpu, new_phase)
     cuda.memcpy_htod(coefs_gpu, coefs)
 
-    func = mod.get_function("MatMulNoShared")
+
     func(flat_actuator_gpu, coefs_gpu, new_phase_gpu, Nx, Ny, Ny, Nz, Nx, Nz, block=(BLOCK_SIZE, BLOCK_SIZE, 1), grid=(GRID_X, GRID_Y))
     cuda.memcpy_dtoh(new_phase, new_phase_gpu)
-
-    plt.imshow(new_phase - np.dot(flat_actuator, coefs))
-    plt.colorbar()
-    plt.show()
+    end_dot_gpu = time.time()
+    #
+    # plt.imshow(new_phase - np.dot(flat_actuator, coefs))
+    # plt.colorbar()
+    # plt.show()
 
     # ================================================================================================================ #
 
@@ -284,72 +340,47 @@ if __name__ == "__main__":
     cuda.memcpy_htod(j_gpu, j_f)
 
     func = mod2.get_function("InvertMask")
-    func(new_phase_gpu, phase_cube_gpu, i_gpu, j_gpu, np.int32(256), Nx, block=(1024, 1, 1), grid=(12, 1000))
+    GRID_X = int(np.ceil(flat_actuator.shape[0] / 1024))
+    func(new_phase_gpu, phase_cube_gpu, i_gpu, j_gpu, np.int32(N_PIX), Nx, block=(1024, 1, 1), grid=(GRID_X, 5000))
     cuda.memcpy_dtoh(phase_cube, phase_cube_gpu)
+    end_gpu = time.time()
+    time_gpu = end_gpu - start_gpu
+    print("\nTime to produce %d Wavefronts [%d Actuators] in the GPU: %.3f sec" % (N_examples, N_act, time_gpu))
 
     k = 0
-    p0 = invert_mask(new_phase[:, k], PSF.pupil_mask)
+    # p0 = invert_mask(new_phase[:, k], PSF.pupil_mask)
+    p0 = invert_mask_datacube(new_phase, PSF.pupil_mask)[k]
     p1 = phase_cube[k]
     plt.figure()
     plt.imshow(p0)
     plt.figure()
-    plt.imshow(p1 - p0)
+    plt.imshow(p1)
     plt.show()
 
+    mod3 = SourceModule("""
+    #include <cufft.h>
+    __global__ void FFT2D(float* FlatPhase, int N_PIX){
+        cufftHandle plan;
+
+        cufftPlan2d(&plan, N_PIX, N_PIX, CUFFT_C2C);
+        
+        }""")
+
+    func = mod3.get_function("FFT2D")
+
+    import pyculib.fft as pyfft
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    # Use Curandom to generate the coefficients directly on the GPU
+    from pycuda.curandom import rand as curand
+    a_gpu = curand((50,))
 
 
 
     # ==================
 
-    model_mat = PSF.model_matrix.copy().astype(np.float32)
-    some_coef = np.random.randn(N_act).astype(np.float32)
-    flat_phase = phase0[PSF.pupil_mask].astype(np.float32)
-    phase_empty = np.zeros((N_PIX, N_PIX))
-    i0 = np.linspace(0, N_PIX, N_PIX).astype(np.int32)
-    ii, jj = np.meshgrid(i0, i0)
-    i_f = ii[PSF.pupil_mask].astype(np.int32)
-    j_f = jj[PSF.pupil_mask].astype(np.int32)
 
-    flat_phase_gpu = cuda.mem_alloc(flat_phase.nbytes)
-    phase_empty_gpu = cuda.mem_alloc(phase_empty.nbytes)
-    i_gpu = cuda.mem_alloc(i_f.nbytes)
-    j_gpu = cuda.mem_alloc(j_f.nbytes)
-    cuda.memcpy_htod(flat_phase_gpu, flat_phase)
-    cuda.memcpy_htod(phase_empty_gpu, phase_empty)
-    cuda.memcpy_htod(i_gpu, i_f)
-    cuda.memcpy_htod(j_gpu, j_f)
-
-    mod = SourceModule(""" 
-        #include <stdio.h>
-        __global__ void invert_mask (float *flat_c, float *c, float *i_index, float *j_index, int dim){
-        int row = blockIdx.x * blockDim.x + threadIdx.x;
-        int col = blockIdx.y * blockDim.y + threadIdx.y;
-        int i = i_index[row + dim * col];
-        int j = j_index[row + dim * col];
-        printf("I am %dth thread in threadIdx.x:%d.threadIdx.y:%d  blockIdx.:%d blockIdx.y:%d blockDim.x:%d blockDim.y:%d\\n",(threadIdx.x + threadIdx.y*blockDim.x + (blockIdx.x*blockDim.x*blockDim.y)+(blockIdx.y*blockDim.x*blockDim.y)),threadIdx.x, threadIdx.y,blockIdx.x,blockIdx.y,blockDim.x,blockDim.y);
-    }""")
-
-
-    invert_mask = mod.get_function("invert_mask")
-    invert_mask(flat_phase_gpu, phase_empty_gpu, i_gpu, j_gpu, block=(32, 32, 1), grid=(1, 1))
-    cuda.memcpy_dtoh(phase_empty, phase_empty_gpu)
 
     mod = SourceModule("""
         #include <stdio.h>

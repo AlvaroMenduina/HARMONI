@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import zern_core as zern
 from scipy.optimize import least_squares
+import time
 
 from keras import models
 from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten
@@ -255,8 +256,8 @@ class LS_fit(object):
 
     def __call__(self, coef_high, **kwargs):
         true_phase = np.dot(self.high, coef_high)
-        x0 = np.zeros(self.low.shape[-1])
-        result = least_squares(self.residuals, x0, args=(true_phase,))
+        x0 = np.random.uniform(low=-1, high=1, size=self.low.shape[-1])
+        result = least_squares(self.residuals, x0, args=(true_phase,), verbose=2)
         return result.x
 
 class Zernike_fit(object):
@@ -346,6 +347,7 @@ def amplitude_errors_set(PSF_model_high, PSF_model_low, test_high):
 
 def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=500):
 
+    start = time.time()
     N_samples = N_train + N_test
     N_act_high, N_act_low = PSF_model_high.N_act, PSF_model_low.N_act
     coef_high = np.random.uniform(low=-Z, high=Z, size=(N_samples, N_act_high))
@@ -358,7 +360,13 @@ def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=50
     defocus = np.dot(PSF_model_low.RBF_mat, defocus_coef)
     dataset = np.empty((N_samples, pix, pix, 2))
 
-    ls_phase_fit = LS_fit(PSF_model_high.RBF_flat, PSF_model_low.RBF_flat)
+    # ls_phase_fit = LS_fit(PSF_model_high.RBF_flat, PSF_model_low.RBF_flat)
+    M_high = PSF_model_high.RBF_flat.copy()
+    M_low = PSF_model_low.RBF_flat.copy()
+    N = np.dot(M_low.T, M_low)
+    inv_N = np.linalg.inv(N)
+    MM = np.dot(M_low.T, M_high)
+    LS_mat = np.dot(inv_N, MM)
 
     for i in range(N_samples):
         c_high = coef_high[i]
@@ -373,10 +381,18 @@ def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=50
         PSF_model_high.defocus = np.zeros_like(defocus)
 
         # Fit the Phase to lower order
-        coef_low[i] = ls_phase_fit(c_high)
+        # coef_low[i] = ls_phase_fit(c_high)
+        # print('\n')
+        # print(coef_low[i])
+        coef_low[i] = np.dot(LS_mat, c_high)
 
         if i%100 == 0:
             print(i)
+
+    end = time.time()
+    dt = end - start
+    print("\n%d examples created in %.3f sec" %(N_samples, dt))
+    print("\n%.3f sec/example" %(dt / N_samples))
 
     return dataset[:N_train], dataset[N_train:], coef_high[:N_train], coef_high[N_train:], coef_low[:N_train], coef_low[N_train:]
 
@@ -540,8 +556,8 @@ if __name__ == "__main__":
 
     """ (3) Define the PSF model """
 
-    PSF = PointSpreadFunction(rbf_mat, amplitude=True)
-    PSF_low = PointSpreadFunction(rbf_mat_low, amplitude=True)
+    PSF = PointSpreadFunction(rbf_mat, amplitude=False)
+    PSF_low = PointSpreadFunction(rbf_mat_low, amplitude=False)
 
     ### See how the RMS amplitude error varies with the Strength of coefficients
     plt.figure()
@@ -581,7 +597,7 @@ if __name__ == "__main__":
 
     # '''''''''''''''''''
 
-    N_train, N_test = 25000, 500
+    N_train, N_test = 10000, 500
     train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = generate_training_set(PSF, PSF_low, N_train, N_test)
 
     ### Load already available training sets
@@ -590,17 +606,29 @@ if __name__ == "__main__":
     def load_datasets():
         path_train = 'Actuators_training'
         train_PSF = np.concatenate([np.load(os.path.join(path_train, 'train_PSF.npy')),
-                                    np.load(os.path.join(path_train, 'train_PSF2.npy'))], axis=0)
+                                    np.load(os.path.join(path_train, 'train_PSF2.npy')),
+                                    np.load(os.path.join(path_train, 'train_PSF3.npy'))], axis=0)
+
         test_PSF = np.concatenate([np.load(os.path.join(path_train, 'test_PSF.npy')),
-                                    np.load(os.path.join(path_train, 'test_PSF2.npy'))], axis=0)
+                                   np.load(os.path.join(path_train, 'test_PSF2.npy')),
+                                   np.load(os.path.join(path_train, 'test_PSF3.npy'))], axis=0)
+
         train_coef = np.concatenate([np.load(os.path.join(path_train, 'train_coef.npy')),
-                                    np.load(os.path.join(path_train, 'train_coef2.npy'))], axis=0)
+                                    np.load(os.path.join(path_train, 'train_coef2.npy')),
+                                     np.load(os.path.join(path_train, 'train_coef3.npy'))], axis=0)
+
         test_coef = np.concatenate([np.load(os.path.join(path_train, 'test_coef.npy')),
-                                    np.load(os.path.join(path_train, 'test_coef2.npy'))], axis=0)
+                                    np.load(os.path.join(path_train, 'test_coef2.npy')),
+                                    np.load(os.path.join(path_train, 'test_coef3.npy'))], axis=0)
+
         train_low = np.concatenate([np.load(os.path.join(path_train, 'train_low.npy')),
-                                    np.load(os.path.join(path_train, 'train_low2.npy'))], axis=0)
+                                    np.load(os.path.join(path_train, 'train_low2.npy')),
+                                    np.load(os.path.join(path_train, 'train_low3.npy'))], axis=0)
+
         test_low = np.concatenate([np.load(os.path.join(path_train, 'test_low.npy')),
-                                    np.load(os.path.join(path_train, 'test_low2.npy'))], axis=0)
+                                    np.load(os.path.join(path_train, 'test_low2.npy')),
+                                   np.load(os.path.join(path_train, 'test_low3.npy'))], axis=0)
+
         return train_PSF, test_PSF, train_coef, test_coef, train_low, test_low
 
 
@@ -613,12 +641,12 @@ if __name__ == "__main__":
     train_low = np.load('train_low.npy')
     test_low = np.load('test_low.npy')
 
-    np.save('train_PSF2.npy', train_PSF)
-    np.save('test_PSF2.npy', test_PSF)
-    np.save('train_coef2.npy', train_coef)
-    np.save('test_coef2.npy', test_coef)
-    np.save('train_low2.npy', train_low)
-    np.save('test_low2.npy', test_low)
+    np.save('train_PSF3.npy', train_PSF)
+    np.save('test_PSF3.npy', test_PSF)
+    np.save('train_coef3.npy', train_coef)
+    np.save('test_coef3.npy', test_coef)
+    np.save('train_low3.npy', train_low)
+    np.save('test_low3.npy', test_low)
 
 
 
@@ -663,9 +691,44 @@ if __name__ == "__main__":
 
     model.compile(optimizer='adam', loss='mean_squared_error')
 
-    train_history = model.fit(x=train_PSF, y=train_low,
+    train_history = model.fit(x=train_PSF[:30000], y=train_low[:30000],
                               validation_data=(test_PSF, test_low),
                               epochs=100, batch_size=32, shuffle=True, verbose=1)
+
+    loss_hist_2000 = train_history.history['loss']
+    val_hist_2000 = train_history.history['val_loss']
+
+    plt.figure()
+    plt.plot(loss_hist_100, label='1')
+    plt.plot(loss_hist_500, label='5')
+    plt.plot(loss_hist_1000, label='10')
+    plt.plot(loss_hist_2000, label='20')
+    plt.xlabel(r'Iterations')
+    plt.ylabel('Loss')
+    plt.legend(title='x1000 examples')
+
+
+    plt.figure()
+    plt.plot(val_hist_100, label='1')
+    plt.plot(val_hist_500, label='5')
+    plt.plot(val_hist_1000, label='10')
+    plt.plot(val_hist_2000, label='20')
+    plt.xlabel(r'Iterations')
+    plt.ylabel('Loss')
+    plt.legend(title='x1000 examples')
+    plt.show()
+
+    n_ex = [1, 5, 10, 20]
+    last_val = [x[-1] for x in [val_hist_100, val_hist_500, val_hist_1000, val_hist_2000]]
+    plt.figure()
+    plt.plot(n_ex, last_val)
+
+
+
+
+
+
+
     # train_history = model.fit(x=crop_datacubes(aug_train_PSF, crop_pix), y=aug_train_low,
     #                           validation_data=(crop_datacubes(aug_test_PSF, crop_pix), aug_test_low),
     #                           epochs=200, batch_size=32, shuffle=True, verbose=1)
@@ -1136,7 +1199,7 @@ if __name__ == "__main__":
 
     amp_test_PSF = amplitude_errors_set(PSF_high4, PSF_low, test_coef)
 
-    performance_check(PSF, PSF_low, model, amp_test_PSF, test_coef, test_low)
+    performance_check(PSF, PSF_low, model, test_PSF, test_coef, test_low)
     # performance_check(PSF, PSF_low2, model2, test_PSF, test_coef, test_low2)
     plt.show()
 
