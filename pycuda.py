@@ -145,6 +145,15 @@ class PointSpreadFunction(object):
 
         self.model_matrix = model_matrix
         self.pupil_mask = pupil_mask
+        self.PEAK = self.peak_PSF()
+
+    def peak_PSF(self):
+        """
+        Compute the PEAK of the PSF without aberrations so that we can
+        normalize everything by it
+        """
+        im, strehl = self.compute_PSF(np.zeros(self.model_matrix.shape[-1]))
+        return strehl
 
     def compute_PSF(self, coef):
 
@@ -152,7 +161,16 @@ class PointSpreadFunction(object):
         pupil_function = self.pupil_mask * np.exp(1j * phase)
         image = (np.abs(fftshift(fft2(pupil_function))))**2
 
-        return image
+        try:
+            image /= self.PEAK
+
+        except AttributeError:
+            # If self.PEAK is not defined, self.compute_PSF will compute the peak
+            pass
+
+        strehl = np.max(image)
+
+        return image, strehl
 
 if __name__ == "__main__":
 
@@ -205,11 +223,13 @@ if __name__ == "__main__":
     PSF = PointSpreadFunction(rbf_mat[0], rbf_mat[1])
 
     ### Time how long it takes
-    N_examples = 5000
+    N_examples = 1000
     coefs = np.random.uniform(low=-1, high=1, size=(N_act, N_examples)).astype(np.float32)
     start = time.time()
+    _img = []
     for i in range(N_examples):
-        _img = PSF.compute_PSF(coefs[:, i])
+        _i, _s = PSF.compute_PSF(coefs[:, i])
+        _img.append(_i)
     end = time.time()
     time_cpu = end - start
     print('\nCPU: %d images (%d, %d) pixels in %.3f seconds' %(N_examples, N_PIX, N_PIX, time_cpu))
@@ -221,9 +241,13 @@ if __name__ == "__main__":
     phase_cpu = np.dot(rbf_mat[-1], coefs)
     end_dot = time.time()
     datacube_cpu = invert_mask_datacube(phase_cpu, PSF.pupil_mask)
+    pupil_f = PSF.pupil_mask[np.newaxis, :, :] * np.exp(1j * datacube_cpu)
+    f = fftshift(fft2(pupil_f))
+    img_cpu = (np.abs(f))**2
     end = time.time()
-    time_cpu = end_dot - start
+    time_cpu = end - start
     print("\nTime to produce %d Wavefronts [%d Actuators] in the CPU: %.3f sec" %(N_examples, N_act, time_cpu))
+    print('Average time: %.3f sec / example' % (time_cpu / N_examples))
 
     # ================================================================================================================ #
     #                       GPU version

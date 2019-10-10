@@ -2,7 +2,7 @@
 ========================================================================================================================
                                           ~~  HARMONI Simulations  ~~
 
-                                            Actuator Model Tests
+                                             Actuator Model Tests
 
 ========================================================================================================================
 
@@ -13,6 +13,8 @@ Model: Deformable Mirror actuator model with Gaussian influence functions
 
 """
 
+import cupy as cp
+import os
 import numpy as np
 from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
@@ -43,6 +45,34 @@ SPAXEL_RAD = RHO_APER * wave / ELT_DIAM * 1e-6
 SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
 print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wave))
 
+
+def invert_mask(x, mask):
+    """
+    Takes a vector X which is the result of masking a 2D with the Mask
+    and reconstructs the 2D array
+    Useful when you need to evaluate a Zernike Surface and most of the array is Masked
+    """
+    N = mask.shape[0]
+    ij = np.argwhere(mask==True)
+    i, j = ij[:,0], ij[:,1]
+    result = np.zeros((N, N))
+    result[i,j] = x
+    return result
+
+def invert_mask_datacube(x, mask):
+    """
+    Takes a vector X which is the result of masking a 2D with the Mask
+    and reconstructs the 2D array
+    Useful when you need to evaluate a Zernike Surface and most of the array is Masked
+    """
+    M = x.shape[-1]
+    N = mask.shape[0]
+    ij = np.argwhere(mask==True)
+    i, j = ij[:,0], ij[:,1]
+    result = np.zeros((M, N, N)).astype(np.float32)
+    for k in range(M):
+        result[k,i,j] = x[:,k]
+    return result
 
 # ==================================================================================================================== #
 #                                   Deformable Mirror - ACTUATOR MODEL functions
@@ -81,9 +111,11 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=T
     inside a circle of rho_aper, assuming there are N_actuators
     along the [-1, 1] line
 
-    :param N_actuators:
-    :param rho_aper:
-    :return:
+    :param N_actuators: Number of actuators along the [-1, 1] line
+    :param rho_aper: Relative size of the aperture wrt [-1, 1]
+    :param rho_obsc: Relative size of the obscuration
+    :param radial: if True, we add actuators at the boundaries RHO_APER, RHO_OBSC
+    :return: [act (list of actuator centres), delta (actuator separation)], max_freq (max spatial frequency we sense)
     """
 
     x0 = np.linspace(-1., 1., N_actuators, endpoint=True)
@@ -95,13 +127,13 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=T
     x_f = xx.flatten()
     y_f = yy.flatten()
 
-    act = []
+    act = []    # List of actuator centres (Xc, Yc)
     for x_c, y_c in zip(x_f, y_f):
         r = np.sqrt(x_c ** 2 + y_c ** 2)
-        if r < rho_aper - delta/2 and r > rho_obsc + delta/2:
+        if r < (rho_aper - delta/2) and r > (rho_obsc + delta/2):   # Leave some margin close to the boundary
             act.append([x_c, y_c])
 
-    if radial:
+    if radial:  # Add actuators at the boundaries, keeping a constant angular distance
         for r in [rho_aper, rho_obsc]:
             N_radial = int(np.floor(2*np.pi*r/delta))
             d_theta = 2*np.pi / N_radial
@@ -110,12 +142,16 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=T
             for t in theta:
                 act.append([r*np.cos(t), r*np.sin(t)])
 
-
     total_act = len(act)
     print('Total Actuators: ', total_act)
     return [act, delta], max_freq
 
 def plot_actuators(centers):
+    """
+    Plot the actuators given their centre positions [(Xc, Yc), ..., ]
+    :param centers: act from actuator_centres
+    :return:
+    """
     N_act = len(centers[0])
     fig = plt.figure()
     ax = fig.add_subplot(111)
@@ -124,13 +160,27 @@ def plot_actuators(centers):
     ax.add_patch(circ1)
     ax.add_patch(circ2)
     for c in centers[0]:
-        ax.scatter(c[0], c[1], color='red')
+        ax.scatter(c[0], c[1], color='red', s=20)
     ax.set_aspect('equal')
     plt.xlim([-1, 1])
     plt.ylim([-1, 1])
     plt.title('%d actuators' %N_act)
 
-def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
+def actuator_matrix(centres, alpha=0.75, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
+    """
+    Computes the matrix containing the Influence Function of each actuator
+    Returns a matrix of size [N_PIX, N_PIX, N_actuators] where each [N_PIX, N_PIX, k] slice
+    represents the effect of "poking" one actuator
+
+    Current model: Gaussian function
+
+    :param centres: [act, delta] list from actuator_centres containing the centres and the spacing
+    :param alpha: scaling factor to control the tail of the Gaussian and avoid overlap / crosstalk
+    :param rho_aper:
+    :param rho_obsc:
+    :return:
+    """
+    #TODO: Update the Model to something other than a Gaussian
 
     cent, delta = centres
     N_act = len(cent)
@@ -143,25 +193,115 @@ def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     for k in range(N_act):
         xc, yc = cent[k][0], cent[k][1]
         r2 = (xx - xc) ** 2 + (yy - yc) ** 2
-        matrix[:, :, k] = pupil * np.exp(-r2 / (0.75 * delta) ** 2)
+        matrix[:, :, k] = pupil * np.exp(-r2 / (alpha * delta) ** 2)
 
     mat_flat = matrix[pupil]
 
     return matrix, pupil, mat_flat
 
+def draw_actuator_commands(commands, centers):
+    cent, delta = centers
+    x = np.linspace(-1, 1, 2*N_PIX, endpoint=True)
+    xx, yy = np.meshgrid(x, x)
+    image = np.zeros((2*N_PIX, 2*N_PIX))
+    for i, (xc, yc) in enumerate(cent):
+        act_mask = (xx - xc)**2 + (yy - yc)**2 <= (delta/3)**2
+        image += commands[i] * act_mask
+
+    return image
+
+def command_check(model, test_PSF, test_low):
+    N_test = test_low.shape[0]
+    guess_low = model.predict(test_PSF)
+    residual_low = test_low - guess_low
+    error = []
+    for k in range(N_test):
+        c = residual_low[k]
+        im = np.abs(draw_actuator_commands(c))
+        error.append(im)
+        # m_act = min(im.min(), -im.max())
+        # plt.figure()
+        # plt.imshow(im, cmap='bwr')
+        # plt.clim(m_act, -m_act)
+        # plt.colorbar()
+    err = np.array(error)
+    mean_err = np.mean(err, axis=0)
+    plt.figure()
+    plt.imshow(mean_err, cmap='Reds')
+    plt.colorbar()
+    plt.clim(np.min(mean_err[np.nonzero(mean_err)]), mean_err.max())
+    plt.title(r'Average Actuator Error (Absolute Value)')
+    plt.show()
+
 # ==================================================================================================================== #
 #                                          Point Spread Function
 # ==================================================================================================================== #
+
+class PointSpreadFunctionFast(object):
+    """
+    Faster version of the PSF that uses a single FFT operation to generate multiple images
+    """
+    minPix, maxPix = (N_PIX + 1 - pix) // 2, (N_PIX + 1 + pix) // 2
+
+    def __init__(self, matrices, amplitude=False):
+
+        self.N_act = matrices[0].shape[-1]
+        self.RBF_mat = matrices[0].copy()
+        self.pupil_mask = matrices[1].copy()
+        self.RBF_flat = matrices[2].copy()
+        self.PEAK = self.peak_PSF()
+
+    def peak_PSF(self):
+        """
+        Compute the PEAK of the PSF without aberrations so that we can
+        normalize everything by it
+        """
+        im, strehl = self.compute_PSF(np.zeros((1, self.N_act)))
+        return strehl
+
+    def compute_PSF(self, coef, crop=True, amplitude=False):
+        """
+        Compute the PSF and the Strehl ratio
+        """
+
+        phase_flat = np.dot(self.RBF_flat, coef.T)
+        phase_datacube = invert_mask_datacube(phase_flat, self.pupil_mask)
+        pupil_function = self.pupil_mask[np.newaxis, :, :] * np.exp(1j * phase_datacube)
+        # print("\nSize of Complex Pupil Function array: %.3f Gbytes" %(pupil_function.nbytes / 1e9))
+
+        # x_gpu = cp.asarray(pupil_function)
+        # image_gpu = (cp.abs(cp.fft.fftshift(cp.fft.fft2(x_gpu))))**2
+        # image = image_gpu.get()
+
+        # f = (np.abs(fft2(pupil_function)))**2
+        # plt.figure()
+        # plt.imshow(f[0])
+        image = (np.abs(fftshift(fft2(pupil_function), axes=(1,2))))**2
+
+        try:
+            image /= self.PEAK
+
+        except AttributeError:
+            # If self.PEAK is not defined, self.compute_PSF will compute the peak
+            pass
+
+        strehl = np.max(image, axis=(1, 2))
+
+        if crop:
+            image = image[:, self.minPix:self.maxPix, self.minPix:self.maxPix]
+        else:
+            pass
+        # print("\nSize of Image : %.3f Gbytes" % (image.nbytes / 1e9))
+        return image, strehl
 
 
 class PointSpreadFunction(object):
     """
     PointSpreadFunction is in charge of computing the PSF
-    for a given set of Zernike coefficients
+    for a given set of Actuator coefficients
     """
 
-    N_pix = N_PIX             # Number of pixels for the FFT computations
-    minPix, maxPix = (N_pix + 1 - pix) // 2, (N_pix + 1 + pix) // 2
+    minPix, maxPix = (N_PIX + 1 - pix) // 2, (N_PIX + 1 + pix) // 2
 
     def __init__(self, matrices, amplitude=False):
 
@@ -178,7 +318,7 @@ class PointSpreadFunction(object):
     def generate_amplitude(self):
         centers, MAX_FREQ = actuator_centres(N_actuators=10)
         plot_actuators(centers)
-        return rbf_matrix(centers)[0]
+        return actuator_matrix(centers)[0]
 
     def amplitude_errors(self, strength=0.06):
         N_amp = self.amplitude_matrix.shape[-1]
@@ -233,11 +373,11 @@ class PointSpreadFunction(object):
             pass
         return image, strehl
 
-    def plot_PSF(self, coef, wave_idx):
+    def plot_PSF(self, coef):
         """
         Plot an image of the PSF
         """
-        PSF, strehl = self.compute_PSF(coef, wave_idx)
+        PSF, strehl = self.compute_PSF(coef)
 
         plt.figure()
         plt.imshow(PSF)
@@ -346,21 +486,36 @@ def amplitude_errors_set(PSF_model_high, PSF_model_low, test_high):
     return dataset
 
 def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=500):
+    """
+    Function to generate a dataset of PSF images to train the Machine Learning models
+    The Wavefronts and PSF images are computed with PSF_model_high, a model with
+    higher actuator density to cover higher spatial frequencies (more realistic wavefronts)
+
+    For each high-frequency Wavefront, we Least-Squares fit the coefficients for a lower-density
+    actuator model PSF_model_low, representing our Deformable Mirror.
+
+    The coefficients of such LS fit are used as 'perfect' correction for training, as it is the
+    best out DM could do.
+
+    :param PSF_model_high: High-spatial freq. actuator model to generate Wavefronts and PSF
+    :param PSF_model_low: Low-spatial freq. actuator model representing the Deformable Mirror
+    :param N_train: Number of examples used for Training
+    :param N_test: Number of examples used for Testing
+    :return:
+    """
 
     start = time.time()
     N_samples = N_train + N_test
     N_act_high, N_act_low = PSF_model_high.N_act, PSF_model_low.N_act
-    coef_high = np.random.uniform(low=-Z, high=Z, size=(N_samples, N_act_high))
-    coef_low = np.zeros((N_samples, N_act_low))
+    coef_high = np.random.uniform(low=-Z, high=Z, size=(N_act_high, N_samples))
 
-    # FIXME! Watch out when using the ACTUATOR MODE
-    # defocus_coef = np.random.uniform(low=-1, high=1, size=N_act_low)
-    # np.save('defocus_coef', defocus_coef)
-    defocus_coef = np.load('defocus_coef.npy')
-    defocus = np.dot(PSF_model_low.RBF_mat, defocus_coef)
-    dataset = np.empty((N_samples, pix, pix, 2))
+    # LEAST SQUARES solution to the Fit of a Wavefront created with High-Spatial Freq. to Low-Spatial Freq. model
+    # It follows the method:   y (obs) = H (model) * x (fit)
+    # where y = M_high * coef_high  the Wavefront
+    # and H = M_low the Deformable mirror model, and x = coef_low
+    # The LS solution, following the Normal Equation: H.t * y = H.t * H * x
+    # H.t * y = N * x      such that x_LS = inv_N * (H.t * y) = inv(M_low.t, M_low) * (M_low.T * M_high) * coef_high
 
-    # ls_phase_fit = LS_fit(PSF_model_high.RBF_flat, PSF_model_low.RBF_flat)
     M_high = PSF_model_high.RBF_flat.copy()
     M_low = PSF_model_low.RBF_flat.copy()
     N = np.dot(M_low.T, M_low)
@@ -368,27 +523,62 @@ def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=50
     MM = np.dot(M_low.T, M_high)
     LS_mat = np.dot(inv_N, MM)
 
-    for i in range(N_samples):
-        c_high = coef_high[i]
-        # Nominal image
-        im0, _s = PSF_model_high.compute_PSF(c_high)
-        dataset[i, :, :, 0] = im0
+    c_low = np.dot(LS_mat, coef_high)
+    coef_low = np.moveaxis(c_low, 0, -1)             # LS fit of each Wavefront coefficient to the DM model
+    coef_high = np.moveaxis(coef_high, 0, -1)
+    print(coef_high.shape)
+    print(coef_low.shape)
 
-        # Defocused image
-        PSF_model_high.defocus = defocus.copy()
-        im_foc, _s = PSF_model_high.compute_PSF(c_high)
-        dataset[i, :, :, 1] = im_foc
-        PSF_model_high.defocus = np.zeros_like(defocus)
+    plt.figure()
+    plt.imshow(np.dot(PSF_model_high.RBF_mat, coef_high[1]))
+    plt.colorbar()
 
-        # Fit the Phase to lower order
-        # coef_low[i] = ls_phase_fit(c_high)
-        # print('\n')
-        # print(coef_low[i])
-        coef_low[i] = np.dot(LS_mat, c_high)
+    plt.figure()
+    plt.imshow(np.dot(PSF_model_low.RBF_mat, coef_low[1]))
+    plt.colorbar()
+    plt.show()
 
-        if i%100 == 0:
-            print(i)
+    # FIXME! Watch out when using the ACTUATOR MODE
+    defocus_coef = np.random.uniform(low=-1, high=1, size=N_act_low)
+    # np.save('defocus_coef', defocus_coef)
+    # defocus_coef = np.load('defocus_coef.npy')
+    # WATCH OUT!: The Defocus can only be applied with our DM with coef_low, but the Wavefronts
+    # are computed with the High-Frequency Model. So we have to LS fit the low-order Defocus to
+    # High order coefficients
 
+    N_d = np.dot(M_high.T, M_high)
+    inv_N_d = np.linalg.inv(N_d)
+    MM_d = np.dot(M_high.T, M_low)
+    LS_mat_d = np.dot(inv_N_d, MM_d)
+    defocus_high = np.dot(LS_mat_d, defocus_coef)
+    print(defocus_high)
+
+    plt.figure()
+    plt.imshow(np.dot(PSF_model_low.RBF_mat, defocus_coef))
+    plt.title(r'Extra wavefront')
+    plt.colorbar()
+    #
+    # plt.figure()
+    # plt.imshow(np.dot(PSF_model_high.RBF_mat, defocus_high) - np.dot(PSF_model_low.RBF_mat, defocus_coef))
+    # plt.colorbar()
+    # plt.clim(-0.75, 1.5)
+    # plt.show()
+
+    batch_size = 1000
+    N_batches = N_samples // batch_size
+    dataset = []
+    print("\nGenerating a dataset of %d PSF examples" %N_samples)
+    print("Task divided in %d batches of %d images" %(N_batches, batch_size))
+    for k in range(N_batches):
+        print("Batch #%d" %(k+1))
+        data = np.empty((batch_size, pix, pix, 2))
+        img_nominal = PSF_model_high.compute_PSF(coef_high[k*batch_size:(k+1)*batch_size])
+        img_defocus = PSF_model_high.compute_PSF(coef_high[k*batch_size:(k+1)*batch_size] + defocus_high[np.newaxis, :])
+        data[:,:,:,0] = img_nominal[0]
+        data[:,:,:,1] = img_defocus[0]
+
+        dataset.append(data)
+    dataset = np.concatenate(dataset, axis=0)
     end = time.time()
     dt = end - start
     print("\n%d examples created in %.3f sec" %(N_samples, dt))
@@ -491,19 +681,18 @@ if __name__ == "__main__":
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
-    """ (1) Define the ACTUATORS """
+    """ (1) Define the ACTUATOR model for the WAVEFRONT """
 
     N_actuators = 25
     centers, MAX_FREQ = actuator_centres(N_actuators)
-    # centers = radial_grid(N_radial=5)
     N_act = len(centers[0])
     plot_actuators(centers)
 
-    rbf_mat = rbf_matrix(centers)        # Actuator matrix
+    rbf_mat = actuator_matrix(centers)        # Actuator matrix
 
     c_act = np.random.uniform(-1, 1, size=N_act)
     phase0 = np.dot(rbf_mat[0], c_act)
-    p0 = min(phase0.min(), -phase0.max())
+    p0 = min(np.min(phase0), -np.max(phase0))
 
     plt.figure()
     plt.imshow(phase0, extent=(-1,1,-1,1), cmap='bwr')
@@ -515,35 +704,36 @@ if __name__ == "__main__":
     plt.ylim([-1, 1])
     plt.show()
 
-    """ (2) Define a lower order actuator model """
+    # ================================================================================================================ #
+
+    """ (2) Define a lower order ACTUATOR model for the DEFORMABLE MIRROR """
 
     centers_low, low_freq = actuator_centres(N_actuators=17)
-    # centers_low = radial_grid(N_radial=3)
     N_act_low = len(centers_low[0])
     plot_actuators(centers_low)
-    rbf_mat_low = rbf_matrix(centers_low)
+    act_mat_low = actuator_matrix(centers_low)
 
     # Fit the high-frequency map to the LOW actuator model
-    ls_phase_fit = LS_fit(rbf_mat[-1], rbf_mat_low[-1])
+    ls_phase_fit = LS_fit(rbf_mat[-1], act_mat_low[-1])
     c_act_low = ls_phase_fit(c_act)
 
-    guess0 = np.dot(rbf_mat_low[0], c_act_low)
+    guess0 = np.dot(act_mat_low[0], c_act_low)
 
-    mins = min(phase0.min(), guess0.min())
-    maxs = max(phase0.max(), guess0.max())
+    mins = min(np.min(phase0), np.min(guess0))
+    maxs = max(np.max(phase0), np.max(guess0))
 
     m = min(mins, -maxs)
     mapp = 'bwr'
     f, (ax1, ax2, ax3) = plt.subplots(1, 3)
     ax1 = plt.subplot(1, 3, 1)
     img1 = ax1.imshow(phase0, cmap=mapp)
-    ax1.set_title('True Wavefront')
+    ax1.set_title('High-Spatial Freq. Wavefront')
     img1.set_clim(m, -m)
     plt.colorbar(img1, ax=ax1, orientation='horizontal')
 
     ax2 = plt.subplot(1, 3, 2)
     img2 = ax2.imshow(guess0, cmap=mapp)
-    ax2.set_title('Guessed Wavefront')
+    ax2.set_title('Least-Squares fit to DM model')
     img2.set_clim(m, -m)
     plt.colorbar(img2, ax=ax2, orientation='horizontal')
 
@@ -554,20 +744,12 @@ if __name__ == "__main__":
     plt.colorbar(img3, ax=ax3, orientation='horizontal')
     plt.show()
 
-    """ (3) Define the PSF model """
+    # ================================================================================================================ #
 
-    PSF = PointSpreadFunction(rbf_mat, amplitude=False)
-    PSF_low = PointSpreadFunction(rbf_mat_low, amplitude=False)
+    """ (3) Define the PSF models """
 
-    ### See how the RMS amplitude error varies with the Strength of coefficients
-    plt.figure()
-    for s in [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]:
-        for k in range(20):
-            c_amp, rms_amp = PSF_low.amplitude_errors(strength=s)
-            plt.scatter(s, rms_amp, s=2, color='black')
-    plt.xlabel('Coefficient Strength')
-    plt.ylabel('RMS amplitude error')
-    plt.show()
+    PSF = PointSpreadFunctionFast(rbf_mat)
+    PSF_low = PointSpreadFunctionFast(act_mat_low)
 
     # Make sure the Spatial frequency is properly calculated.
     fx = low_freq
@@ -581,7 +763,6 @@ if __name__ == "__main__":
         plt.scatter(c[0], c[1], color='black', s=10)
     plt.xlim([-RHO_APER, RHO_APER])
     plt.ylim([-RHO_APER, RHO_APER])
-    plt.show()
 
     pupil_function = PSF_low.pupil_mask * np.exp(1j * wavef)
     image = (np.abs(fftshift(fft2(pupil_function)))) ** 2 / PSF_low.PEAK
@@ -591,62 +772,42 @@ if __name__ == "__main__":
     ax = fig.add_subplot(111)
     circ1 = Circle((0.5,-0.5), SPAXEL_MAS * low_freq /2, linestyle='--', fill=None, color='white')
     ax.add_patch(circ1)
-    # c = max(-error_rms.min(), error_rms.max())
     im = ax.imshow(image, cmap='viridis', extent=[-pix//2, pix//2, -pix//2, pix//2])
     plt.show()
 
-    # '''''''''''''''''''
+    # ================================================================================================================ #
 
-    N_train, N_test = 10000, 500
+    """ (4) Machine Learning model """
+
+    # WATCH OUT for the size of the sets bc of MEMORY limitations.
+    # 1000 examples use around 0.525 Gbytes of memory during the FFT calculations (256 x 256)
+    N_train, N_test = 10000, 1000
     train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = generate_training_set(PSF, PSF_low, N_train, N_test)
+    plt.show()
 
-    ### Load already available training sets
-    import os
+    N_channels = 2          # 1 Nominal, 1 Defocused PSF
+    input_shape = (pix, pix, N_channels,)
 
-    def load_datasets():
-        path_train = 'Actuators_training'
-        train_PSF = np.concatenate([np.load(os.path.join(path_train, 'train_PSF.npy')),
-                                    np.load(os.path.join(path_train, 'train_PSF2.npy')),
-                                    np.load(os.path.join(path_train, 'train_PSF3.npy'))], axis=0)
+    from keras.regularizers import l2
 
-        test_PSF = np.concatenate([np.load(os.path.join(path_train, 'test_PSF.npy')),
-                                   np.load(os.path.join(path_train, 'test_PSF2.npy')),
-                                   np.load(os.path.join(path_train, 'test_PSF3.npy'))], axis=0)
+    model = models.Sequential()
+    model.add(Conv2D(128, kernel_size=(3, 3), strides=(1, 1),
+                     activation='relu',
+                     input_shape=input_shape))
+    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Flatten())
+    model.add(Dense(N_act_low))
+    model.summary()
 
-        train_coef = np.concatenate([np.load(os.path.join(path_train, 'train_coef.npy')),
-                                    np.load(os.path.join(path_train, 'train_coef2.npy')),
-                                     np.load(os.path.join(path_train, 'train_coef3.npy'))], axis=0)
+    model.compile(optimizer='adam', loss='mean_squared_error')
 
-        test_coef = np.concatenate([np.load(os.path.join(path_train, 'test_coef.npy')),
-                                    np.load(os.path.join(path_train, 'test_coef2.npy')),
-                                    np.load(os.path.join(path_train, 'test_coef3.npy'))], axis=0)
-
-        train_low = np.concatenate([np.load(os.path.join(path_train, 'train_low.npy')),
-                                    np.load(os.path.join(path_train, 'train_low2.npy')),
-                                    np.load(os.path.join(path_train, 'train_low3.npy'))], axis=0)
-
-        test_low = np.concatenate([np.load(os.path.join(path_train, 'test_low.npy')),
-                                    np.load(os.path.join(path_train, 'test_low2.npy')),
-                                   np.load(os.path.join(path_train, 'test_low3.npy'))], axis=0)
-
-        return train_PSF, test_PSF, train_coef, test_coef, train_low, test_low
+    train_history = model.fit(x=train_PSF, y=train_low,
+                              validation_data=(test_PSF, test_low),
+                              epochs=100, batch_size=32, shuffle=True, verbose=1)
 
 
-    train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = load_datasets()
-
-    train_PSF = np.load('train_PSF.npy')
-    test_PSF = np.load('test_PSF.npy')
-    train_coef = np.load('train_coef.npy')
-    test_coef = np.load('test_coef.npy')
-    train_low = np.load('train_low.npy')
-    test_low = np.load('test_low.npy')
-
-    np.save('train_PSF3.npy', train_PSF)
-    np.save('test_PSF3.npy', test_PSF)
-    np.save('train_coef3.npy', train_coef)
-    np.save('test_coef3.npy', test_coef)
-    np.save('train_low3.npy', train_low)
-    np.save('test_low3.npy', test_low)
 
 
 
@@ -672,39 +833,20 @@ if __name__ == "__main__":
     train_PSF_read = crop_datacubes(train_PSF_read, crop_pix)
     test_PSF_read = crop_datacubes(test_PSF_read, crop_pix)
 
-    N_channels = 2
-    # input_shape = (crop_pix, crop_pix, N_channels,)
-    input_shape = (pix, pix, N_channels,)
 
-    from keras.regularizers import l2
 
-    model = models.Sequential()
-    model.add(Conv2D(128, kernel_size=(3, 3), strides=(1, 1),
-                     activation='relu',
-                     input_shape=input_shape))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(64, (3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Flatten())
-    model.add(Dense(N_act_low))
-    model.summary()
-
-    model.compile(optimizer='adam', loss='mean_squared_error')
-
-    train_history = model.fit(x=train_PSF[:30000], y=train_low[:30000],
-                              validation_data=(test_PSF, test_low),
-                              epochs=100, batch_size=32, shuffle=True, verbose=1)
-
-    loss_hist_2000 = train_history.history['loss']
-    val_hist_2000 = train_history.history['val_loss']
+    loss_hist_3000 = train_history.history['loss']
+    val_hist_3000 = train_history.history['val_loss']
 
     plt.figure()
     plt.plot(loss_hist_100, label='1')
     plt.plot(loss_hist_500, label='5')
     plt.plot(loss_hist_1000, label='10')
     plt.plot(loss_hist_2000, label='20')
+    plt.plot(loss_hist_3000, label='30')
     plt.xlabel(r'Iterations')
     plt.ylabel('Loss')
+    plt.ylim([0, 0.75])
     plt.legend(title='x1000 examples')
 
 
@@ -713,17 +855,31 @@ if __name__ == "__main__":
     plt.plot(val_hist_500, label='5')
     plt.plot(val_hist_1000, label='10')
     plt.plot(val_hist_2000, label='20')
+    plt.plot(val_hist_3000, label='30')
     plt.xlabel(r'Iterations')
     plt.ylabel('Loss')
+    plt.ylim([0, 0.75])
+    # plt.yscale('log')
     plt.legend(title='x1000 examples')
     plt.show()
 
-    n_ex = [1, 5, 10, 20]
-    last_val = [x[-1] for x in [val_hist_100, val_hist_500, val_hist_1000, val_hist_2000]]
+    n_ex = [1, 5, 10, 20, 30]
+    last_val = [x[-1] for x in [val_hist_100, val_hist_500, val_hist_1000, val_hist_2000, val_hist_3000]]
     plt.figure()
     plt.plot(n_ex, last_val)
+    plt.ylabel('Final Validation Loss')
+    plt.xlabel('Number of Training Examples')
+    plt.show()
 
-
+    ### See how the RMS amplitude error varies with the Strength of coefficients
+    plt.figure()
+    for s in [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]:
+        for k in range(20):
+            c_amp, rms_amp = PSF_low.amplitude_errors(strength=s)
+            plt.scatter(s, rms_amp, s=2, color='black')
+    plt.xlabel('Coefficient Strength')
+    plt.ylabel('RMS amplitude error')
+    plt.show()
 
 
 
@@ -965,39 +1121,7 @@ if __name__ == "__main__":
     plt.ylim([-5, 0])
     plt.show()
 
-    def draw_actuator_commands(commands, centers):
-        cent, delta = centers
-        x = np.linspace(-1, 1, 2*N_PIX, endpoint=True)
-        xx, yy = np.meshgrid(x, x)
-        image = np.zeros((2*N_PIX, 2*N_PIX))
-        for i, (xc, yc) in enumerate(cent):
-            act_mask = (xx - xc)**2 + (yy - yc)**2 <= (delta/3)**2
-            image += commands[i] * act_mask
 
-        return image
-
-    def command_check(model, test_PSF, test_low):
-        N_test = test_low.shape[0]
-        guess_low = model.predict(test_PSF)
-        residual_low = test_low - guess_low
-        error = []
-        for k in range(N_test):
-            c = residual_low[k]
-            im = np.abs(draw_actuator_commands(c))
-            error.append(im)
-            # m_act = min(im.min(), -im.max())
-            # plt.figure()
-            # plt.imshow(im, cmap='bwr')
-            # plt.clim(m_act, -m_act)
-            # plt.colorbar()
-        err = np.array(error)
-        mean_err = np.mean(err, axis=0)
-        plt.figure()
-        plt.imshow(mean_err, cmap='Reds')
-        plt.colorbar()
-        plt.clim(np.min(mean_err[np.nonzero(mean_err)]), mean_err.max())
-        plt.title(r'Average Actuator Error (Absolute Value)')
-        plt.show()
 
     def psd_check(PSF_low, model, test_PSF, test_low):
 
@@ -1211,8 +1335,8 @@ if __name__ == "__main__":
     centers_low2 = actuator_centres(N_actuators=14)
     plot_actuators(centers_low2)
     N_act_low2 = len(centers_low2[0])
-    rbf_mat_low2 = rbf_matrix(centers_low2)
-    PSF_low2 = PointSpreadFunction(rbf_mat_low2)
+    act_mat_low2 = actuator_matrix(centers_low2)
+    PSF_low2 = PointSpreadFunction(act_mat_low2)
     train_low2, test_low2 = adapt_training_set_coef(PSF, PSF_low2, train_coef, test_coef)
     model2 = Sequential()
     model2.add(Conv2D(64, kernel_size=(3, 3), strides=(1, 1),
@@ -1236,8 +1360,8 @@ if __name__ == "__main__":
     centers_low3 = actuator_centres(N_actuators=11)
     plot_actuators(centers_low3)
     N_act_low3 = len(centers_low3[0])
-    rbf_mat_low3 = rbf_matrix(centers_low3)
-    PSF_low3 = PointSpreadFunction(rbf_mat_low3)
+    act_mat_low3 = actuator_matrix(centers_low3)
+    PSF_low3 = PointSpreadFunction(act_mat_low3)
     train_low3, test_low3 = adapt_training_set_coef(PSF, PSF_low3, train_coef, test_coef)
     model3 = Sequential()
     model3.add(Conv2D(64, kernel_size=(3, 3), strides=(1, 1),
@@ -1722,7 +1846,7 @@ if __name__ == "__main__":
         print('Total Actuators: ', total_act)
         return act, delta
 
-    def rbf_matrix(cent, delta, rho_aper=0.5, rho_obsc=0.3/2):
+    def actuator_matrix(cent, delta, rho_aper=0.5, rho_obsc=0.3/2):
         N_act = len(cent)
         matrix = np.empty((N_PIX, N_PIX, N_act))
         x0 = np.linspace(-1., 1., N_PIX, endpoint=True)
@@ -1758,7 +1882,7 @@ if __name__ == "__main__":
     plt.title('%d actuators' %N_act)
     plt.show()
 
-    rbf_mat, rbf_flat = rbf_matrix(cent, delta)
+    rbf_mat, rbf_flat = actuator_matrix(cent, delta)
     one_act = np.zeros(N_act)
     k = 5
     one_act[k] = 1
@@ -1955,6 +2079,44 @@ if __name__ == "__main__":
     #             print(i)
     #
     #     return dataset[:N_train], dataset[N_train:], true_coef[:N_train], true_coef[N_train:]
+
+    def load_datasets():
+        path_train = 'Actuators_training'
+        train_PSF = np.concatenate([np.load(os.path.join(path_train, 'train_PSF.npy')),
+                                    np.load(os.path.join(path_train, 'train_PSF2.npy')),
+                                    np.load(os.path.join(path_train, 'train_PSF3.npy'))], axis=0)
+
+        test_PSF = np.concatenate([np.load(os.path.join(path_train, 'test_PSF.npy')),
+                                   np.load(os.path.join(path_train, 'test_PSF2.npy')),
+                                   np.load(os.path.join(path_train, 'test_PSF3.npy'))], axis=0)
+
+        train_coef = np.concatenate([np.load(os.path.join(path_train, 'train_coef.npy')),
+                                     np.load(os.path.join(path_train, 'train_coef2.npy')),
+                                     np.load(os.path.join(path_train, 'train_coef3.npy'))], axis=0)
+
+        test_coef = np.concatenate([np.load(os.path.join(path_train, 'test_coef.npy')),
+                                    np.load(os.path.join(path_train, 'test_coef2.npy')),
+                                    np.load(os.path.join(path_train, 'test_coef3.npy'))], axis=0)
+
+        train_low = np.concatenate([np.load(os.path.join(path_train, 'train_low.npy')),
+                                    np.load(os.path.join(path_train, 'train_low2.npy')),
+                                    np.load(os.path.join(path_train, 'train_low3.npy'))], axis=0)
+
+        test_low = np.concatenate([np.load(os.path.join(path_train, 'test_low.npy')),
+                                   np.load(os.path.join(path_train, 'test_low2.npy')),
+                                   np.load(os.path.join(path_train, 'test_low3.npy'))], axis=0)
+
+        return train_PSF, test_PSF, train_coef, test_coef, train_low, test_low
+
+
+    train_PSF, test_PSF, train_coef, test_coef, train_low, test_low = load_datasets()
+
+    np.save('train_PSF3.npy', train_PSF)
+    np.save('test_PSF3.npy', test_PSF)
+    np.save('train_coef3.npy', train_coef)
+    np.save('test_coef3.npy', test_coef)
+    np.save('train_low3.npy', train_low)
+    np.save('test_low3.npy', test_low)
 
 
 
