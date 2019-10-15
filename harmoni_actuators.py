@@ -12,6 +12,7 @@ Demonstrate that we need not use Zernike polynomials
 Model: Deformable Mirror actuator model with Gaussian influence functions
 
 """
+
 from __future__ import print_function
 import os
 import numpy as np
@@ -251,6 +252,30 @@ class PointSpreadFunctionFast(object):
         self.RBF_flat = matrices[2].copy()
         self.PEAK = self.peak_PSF()
 
+    def generate_amplitude(self):
+        centers, MAX_FREQ = actuator_centres(N_actuators=10)
+        plot_actuators(centers)
+        return actuator_matrix(centers)[0]
+
+    def amplitude_error(self, strength, N_cases):
+        self.amplitude_matrix = self.generate_amplitude()
+
+        N_amp = self.amplitude_matrix.shape[-1]
+        new_pupil = np.empty((N_cases, N_PIX, N_PIX))
+        RMS = []
+        for k in range(N_cases):
+            coef = strength * np.random.uniform(low=-1, high=1, size=N_amp)
+            amp_map = np.dot(self.amplitude_matrix, coef)
+            non_zero_map = amp_map[self.pupil_mask]
+            amp0 = np.mean(non_zero_map)
+            amp_map -= amp0
+            rms = np.std(amp_map[self.pupil_mask])
+            RMS.append(rms)
+            new_pupil[k] = self.pupil_mask * (self.pupil_mask + amp_map)
+        print("\nAmplitude errors with an average of %.3f per cent RMS" %np.mean(RMS))
+
+        return new_pupil
+
     def peak_PSF(self):
         """
         Compute the PEAK of the PSF without aberrations so that we can
@@ -259,14 +284,20 @@ class PointSpreadFunctionFast(object):
         im, strehl = self.compute_PSF(np.zeros((1, self.N_act)))
         return strehl
 
-    def compute_PSF(self, coef, crop=True, amplitude=False):
+    def compute_PSF(self, coef, crop=True, amplitude=None):
         """
         Compute the PSF and the Strehl ratio
         """
 
         phase_flat = np.dot(self.RBF_flat, coef.T)
         phase_datacube = invert_mask_datacube(phase_flat, self.pupil_mask)
-        pupil_function = self.pupil_mask[np.newaxis, :, :] * np.exp(1j * phase_datacube)
+        if amplitude is None:
+            pupil_function = self.pupil_mask[np.newaxis, :, :] * np.exp(1j * phase_datacube)
+        elif amplitude is not None:
+            N_cases = phase_datacube.shape[0]
+            new_pupil = self.amplitude_error(amplitude, N_cases)
+            pupil_function = new_pupil * np.exp(1j * phase_datacube)
+
         # print("\nSize of Complex Pupil Function array: %.3f Gbytes" %(pupil_function.nbytes / 1e9))
 
         image = (np.abs(fftshift(fft2(pupil_function), axes=(1,2))))**2
@@ -478,7 +509,7 @@ def amplitude_errors_set(PSF_model_high, PSF_model_low, test_high):
             print(i)
     return dataset
 
-def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=500):
+def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=500, amplitude=None):
     """
     Function to generate a dataset of PSF images to train the Machine Learning models
     The Wavefronts and PSF images are computed with PSF_model_high, a model with
@@ -532,9 +563,9 @@ def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=50
     plt.show()
 
     # FIXME! Watch out when using the ACTUATOR MODE
-    defocus_coef = np.random.uniform(low=-1, high=1, size=N_act_low)
+    # defocus_coef = np.random.uniform(low=-1, high=1, size=N_act_low)
     # np.save('defocus_coef', defocus_coef)
-    # defocus_coef = np.load('defocus_coef.npy')
+    defocus_coef = np.load('defocus_coef.npy')
     # WATCH OUT!: The Defocus can only be applied with our DM with coef_low, but the Wavefronts
     # are computed with the High-Frequency Model. So we have to LS fit the low-order Defocus to
     # High order coefficients
@@ -565,8 +596,8 @@ def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=50
     for k in range(N_batches):
         print("Batch #%d" %(k+1))
         data = np.empty((batch_size, pix, pix, 2))
-        img_nominal = PSF_model_high.compute_PSF(coef_high[k*batch_size:(k+1)*batch_size])
-        img_defocus = PSF_model_high.compute_PSF(coef_high[k*batch_size:(k+1)*batch_size] + defocus_high[np.newaxis, :])
+        img_nominal = PSF_model_high.compute_PSF(coef_high[k*batch_size:(k+1)*batch_size], amplitude)
+        img_defocus = PSF_model_high.compute_PSF(coef_high[k*batch_size:(k+1)*batch_size] + defocus_high[np.newaxis, :], amplitude)
         data[:,:,:,0] = img_nominal[0]
         data[:,:,:,1] = img_defocus[0]
 
@@ -1031,6 +1062,19 @@ if __name__ == "__main__":
 
     ### Check the performance
     performance_check(PSF, PSF_low, model_readout, test_PSF_read, test_high_read, test_low_read)
+
+    # ================================================================================================================ #
+
+    ### AMPLITUDE ERRORS
+
+    N_train, N_test = 1000, 0
+    amplitude = 0.04
+    amp_PSF, _PSF, amp_coef, _c, amp_coef_low, _cc = generate_training_set(PSF, PSF_low, N_train, N_test, amplitude)
+    plt.show()
+
+    PSF.compute_PSF(np.zeros((1, N_act)), amplitude=0.01)
+
+
 
     # ================================================================================================================ #
     # from __future__ import print_function
