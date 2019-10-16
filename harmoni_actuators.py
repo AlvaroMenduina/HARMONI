@@ -254,7 +254,7 @@ class PointSpreadFunctionFast(object):
 
     def generate_amplitude(self):
         centers, MAX_FREQ = actuator_centres(N_actuators=10)
-        plot_actuators(centers)
+        # plot_actuators(centers)
         return actuator_matrix(centers)[0]
 
     def amplitude_error(self, strength, N_cases):
@@ -272,7 +272,8 @@ class PointSpreadFunctionFast(object):
             rms = np.std(amp_map[self.pupil_mask])
             RMS.append(rms)
             new_pupil[k] = self.pupil_mask * (self.pupil_mask + amp_map)
-        print("\nAmplitude errors with an average of %.3f per cent RMS" %np.mean(RMS))
+        self.RMS_amp = 100*np.mean(RMS)
+        print("\nAmplitude errors with an average of %.3f per cent RMS" %(100*np.mean(RMS)))
 
         return new_pupil
 
@@ -318,96 +319,6 @@ class PointSpreadFunctionFast(object):
         # print("\nSize of Image : %.3f Gbytes" % (image.nbytes / 1e9))
         return image, strehl
 
-
-class PointSpreadFunction(object):
-    """
-    PointSpreadFunction is in charge of computing the PSF
-    for a given set of Actuator coefficients
-    """
-
-    minPix, maxPix = (N_PIX + 1 - pix) // 2, (N_PIX + 1 + pix) // 2
-
-    def __init__(self, matrices, amplitude=False):
-
-        self.N_act = matrices[0].shape[-1]
-        self.RBF_mat = matrices[0].copy()
-        self.pupil_mask = matrices[1].copy()
-        self.RBF_flat = matrices[2].copy()
-        self.defocus = np.zeros_like(matrices[1])
-
-        self.PEAK = self.peak_PSF()
-        if amplitude:
-            self.amplitude_matrix = self.generate_amplitude()
-
-    def generate_amplitude(self):
-        centers, MAX_FREQ = actuator_centres(N_actuators=10)
-        plot_actuators(centers)
-        return actuator_matrix(centers)[0]
-
-    def amplitude_errors(self, strength=0.06):
-        N_amp = self.amplitude_matrix.shape[-1]
-        coef = strength * np.random.uniform(low=-1, high=1, size=N_amp)
-        amp_map = np.dot(self.amplitude_matrix, coef)
-        non_zero_map = amp_map[self.pupil_mask]
-        amp0 = np.mean(non_zero_map)
-        amp_map -= amp0
-        rms = np.std(amp_map[self.pupil_mask])
-        new_pupil = self.pupil_mask * (self.pupil_mask + amp_map)
-        # plt.figure()
-        # plt.imshow(new_pupil)
-        # plt.clim(1+amp_map.min(), 1+amp_map.max())
-        # plt.colorbar()
-        # plt.show()
-        return new_pupil
-
-    def peak_PSF(self):
-        """
-        Compute the PEAK of the PSF without aberrations so that we can
-        normalize everything by it
-        """
-        im, strehl = self.compute_PSF(np.zeros(self.N_act))
-        return strehl
-
-    def compute_PSF(self, coef, crop=True, amplitude=False):
-        """
-        Compute the PSF and the Strehl ratio
-        """
-
-        phase = np.dot(self.RBF_mat, coef) + self.defocus
-
-        if amplitude:
-            amplitude_error = self.amplitude_errors()
-            pupil_function = amplitude_error * np.exp(1j * phase)
-        if not amplitude:
-            pupil_function = self.pupil_mask * np.exp(1j * phase)
-        image = (np.abs(fftshift(fft2(pupil_function))))**2
-
-        try:
-            image /= self.PEAK
-
-        except AttributeError:
-            # If self.PEAK is not defined, self.compute_PSF will compute the peak
-            pass
-
-        strehl = np.max(image)
-
-        if crop:
-            image = image[self.minPix:self.maxPix, self.minPix:self.maxPix]
-        else:
-            pass
-        return image, strehl
-
-    def plot_PSF(self, coef):
-        """
-        Plot an image of the PSF
-        """
-        PSF, strehl = self.compute_PSF(coef)
-
-        plt.figure()
-        plt.imshow(PSF)
-        plt.title('Strehl: %.3f' %strehl)
-        plt.colorbar()
-        plt.clim(vmin=0, vmax=1)
 
 class LS_fit(object):
 
@@ -553,14 +464,14 @@ def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=50
     print(coef_high.shape)
     print(coef_low.shape)
 
-    plt.figure()
-    plt.imshow(np.dot(PSF_model_high.RBF_mat, coef_high[1]))
-    plt.colorbar()
-
-    plt.figure()
-    plt.imshow(np.dot(PSF_model_low.RBF_mat, coef_low[1]))
-    plt.colorbar()
-    plt.show()
+    # plt.figure()
+    # plt.imshow(np.dot(PSF_model_high.RBF_mat, coef_high[1]))
+    # plt.colorbar()
+    #
+    # plt.figure()
+    # plt.imshow(np.dot(PSF_model_low.RBF_mat, coef_low[1]))
+    # plt.colorbar()
+    # plt.show()
 
     # FIXME! Watch out when using the ACTUATOR MODE
     # defocus_coef = np.random.uniform(low=-1, high=1, size=N_act_low)
@@ -577,10 +488,10 @@ def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=50
     defocus_high = np.dot(LS_mat_d, defocus_coef)
     print(defocus_high)
 
-    plt.figure()
-    plt.imshow(np.dot(PSF_model_low.RBF_mat, defocus_coef))
-    plt.title(r'Extra wavefront')
-    plt.colorbar()
+    # plt.figure()
+    # plt.imshow(np.dot(PSF_model_low.RBF_mat, defocus_coef))
+    # plt.title(r'Extra wavefront')
+    # plt.colorbar()
     #
     # plt.figure()
     # plt.imshow(np.dot(PSF_model_high.RBF_mat, defocus_high) - np.dot(PSF_model_low.RBF_mat, defocus_coef))
@@ -596,8 +507,10 @@ def generate_training_set(PSF_model_high, PSF_model_low, N_train=1500, N_test=50
     for k in range(N_batches):
         print("Batch #%d" %(k+1))
         data = np.empty((batch_size, pix, pix, 2))
-        img_nominal = PSF_model_high.compute_PSF(coef_high[k*batch_size:(k+1)*batch_size], amplitude)
-        img_defocus = PSF_model_high.compute_PSF(coef_high[k*batch_size:(k+1)*batch_size] + defocus_high[np.newaxis, :], amplitude)
+        nom_c = coef_high[k*batch_size:(k+1)*batch_size]
+        img_nominal = PSF_model_high.compute_PSF(nom_c, True, amplitude)
+        def_c = coef_high[k*batch_size:(k+1)*batch_size] + defocus_high[np.newaxis, :]
+        img_defocus = PSF_model_high.compute_PSF(def_c, True, amplitude)
         data[:,:,:,0] = img_nominal[0]
         data[:,:,:,1] = img_defocus[0]
 
@@ -848,7 +761,7 @@ if __name__ == "__main__":
 
         RMS0, RMS_ideal, RMS_true = [], [], []
 
-        for k in range(N_test):
+        for k in range(test_PSF.shape[0]):
 
             phase_high = np.dot(PSF_high.RBF_mat, test_coef[k])
             phase_fit_low = np.dot(PSF_low.RBF_mat, test_low[k])
@@ -874,6 +787,11 @@ if __name__ == "__main__":
         plt.legend()
 
         for k in range(10):     # Show 10 examples of wavefronts
+            phase_high = np.dot(PSF_high.RBF_mat, test_coef[k])
+            phase_fit_low = np.dot(PSF_low.RBF_mat, test_low[k])
+            ideal_residual = phase_high - phase_fit_low
+            phase_guess_low = np.dot(PSF_low.RBF_mat, guess_low[k])
+            true_residual = phase_high - phase_guess_low
 
             mins = min(phase_high.min(), phase_fit_low.min())
             maxs = max(phase_high.max(), phase_fit_low.max())
@@ -1066,13 +984,70 @@ if __name__ == "__main__":
     # ================================================================================================================ #
 
     ### AMPLITUDE ERRORS
+    def performance_amplitude(PSF_high, PSF_low, model, test_PSF, test_coef, test_low, N_samples=1000):
 
-    N_train, N_test = 1000, 0
-    amplitude = 0.04
-    amp_PSF, _PSF, amp_coef, _c, amp_coef_low, _cc = generate_training_set(PSF, PSF_low, N_train, N_test, amplitude)
-    plt.show()
+        pupil_mask = PSF_high.pupil_mask
+        guess_low = model.predict(test_PSF)             # Predictions of the Model
+        residual_low = test_low - guess_low             # Residual error after calibration
+        n_test = norm(test_low, axis=1)
+        n_residual = norm(residual_low, axis=1)
+        improve = 100 * np.mean((n_test - n_residual) / n_test)     # Relative improvement in norm coef
+        print('Average improvement [Norm LOW coefficients] : %.2f per cent' %improve)
 
-    PSF.compute_PSF(np.zeros((1, N_act)), amplitude=0.01)
+        RMS0, RMS_ideal, RMS_true = [], [], []
+
+        for k in range(test_PSF.shape[0]):
+
+            phase_high = np.dot(PSF_high.RBF_mat, test_coef[k])
+            phase_fit_low = np.dot(PSF_low.RBF_mat, test_low[k])
+            ideal_residual = phase_high - phase_fit_low
+            phase_guess_low = np.dot(PSF_low.RBF_mat, guess_low[k])
+            true_residual = phase_high - phase_guess_low
+
+            rms = []
+            for p in [phase_high, phase_fit_low, ideal_residual, phase_guess_low, true_residual]:
+                _flat = p[pupil_mask]
+                rms.append(np.std(_flat))
+
+            RMS0.append(rms[0])             # Initial RMS wavefront
+            RMS_ideal.append(rms[2])        # Ideal RMS wavefront if the model guess was perfect
+            RMS_true.append((rms[-1]))      # True RMS wavefront after calibration
+
+        plt.figure()
+        plt.hist(RMS0, histtype='step', label='Initial Wavefront')
+        plt.hist(RMS_ideal, histtype='step', label='Ideal Residual')
+        plt.hist(RMS_true, histtype='step', label='No Amplitude Error')
+        plt.xlabel(r'RMS wavefront $\lambda$')
+        # plt.xlim([0.2, 0.8])
+        mu0 = np.mean(RMS_true)
+
+        mean_RMS = [mu0]
+
+        pcent_amp = [0.0]
+        for amplitude in [0.025, 0.050, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40]:
+            amp_PSF, _PSF, amp_coef, _c, amp_coef_low, _cc = generate_training_set(PSF_high, PSF_low, N_samples, 0,
+                                                                                   amplitude)
+            r = PSF_high.RMS_amp.copy()
+            pcent_amp.append(r)
+            amp_guess_low = model.predict(amp_PSF)
+
+            RMS = []
+            for k in range(N_samples):
+                phase_high = np.dot(PSF_high.RBF_mat, amp_coef[k])
+                phase_guess_low = np.dot(PSF_low.RBF_mat, amp_guess_low[k])
+                true_residual = phase_high - phase_guess_low
+                RMS.append(np.std(true_residual[pupil_mask]))
+            mean_RMS.append(np.mean(RMS))
+            plt.hist(RMS, histtype='step', label='%.2f' %r )
+        plt.legend()
+
+        plt.figure()
+        plt.scatter(pcent_amp, mean_RMS)
+        plt.plot(pcent_amp, mean_RMS)
+        plt.xlabel('Percentage RMS amplitude error')
+        plt.ylabel(r'Residual RMS wavefront error [waves]')
+        plt.show()
+    performance_amplitude(PSF, PSF_low, model, test_PSF, test_coef, test_low)
 
 
 
