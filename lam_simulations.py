@@ -18,12 +18,13 @@ from pyzdde.zdde import readBeamFile
 from astropy.io import fits
 
 # Slices
-list_slices = [17, 19, 21, 53, 55, 57, 59]
+# list_slices = [17, 19, 21, 53, 55, 57, 59]
+list_slices = [11, 13, 15, 17, 19, 21, 23, 25, 27, 49, 51, 53, 55, 57, 59, 61, 63]
 # list_slices = [17, 19, 21, 55]
 i_central = 19
 
 # POP arrays - Nyquist sampled PSF
-x_size = 2.08           # Physical size of array at Image Plane
+x_size = 4*2.08           # Physical size of array at Image Plane
 N_pix = 128              # Number of pixels in the Zemax BFL
 N_crop = 128             # Crop to a smaller region around the PSF
 min_pix = N_pix//2 - N_crop//2
@@ -122,11 +123,11 @@ def load_files(path, file_list, N, defocus=False):
         for k in range(N):
             if k < 10:
                 # We have to adjust for the ZBF format. Before 10 it adds a space []3
-                # name_nominal = 'IFU_TopAB_HARMONI_light' + '% d_' % k
-                name_nominal = 'IFUAB_FDR_1_04clean_Tolerance' + '% d_' % k
+                name_nominal = 'IFU_TopAB_HARMONI_LAM' + '% d_' % k
+                # name_nominal = 'IFUAB_FDR_1_04clean_Tolerance' + '% d_' % k
             else:
-                # name_nominal = 'IFU_TopAB_HARMONI_light' + '%d_' % k
-                name_nominal = 'IFUAB_FDR_1_04clean_Tolerance' + '%d_' % k
+                name_nominal = 'IFU_TopAB_HARMONI_LAM' + '%d_' % k
+                # name_nominal = 'IFUAB_FDR_1_04clean_Tolerance' + '%d_' % k
 
             pop_slicer_nom.get_zemax_files(path, name_nominal, file_list)
             slicers_nom = np.sum(pop_slicer_nom.beam_data, axis=0)[min_pix:max_pix, min_pix:max_pix]
@@ -144,12 +145,12 @@ def load_files(path, file_list, N, defocus=False):
             if k < 10:
                 # We have to adjust for the ZBF format. Before 10 it adds a space []3
                 # name_nominal = 'IFU_TopAB_HARMONI_light' + '% d_' % k
-                name_nominal = 'IFUAB_FDR_1_04clean_Tolerance' + '% d_' % k
-                name_defocus = 'IFUAB_FDR_1_04clean_Tolerance' + '% d_FOC_' % k
+                name_nominal = 'IFU_TopAB_HARMONI_LAM' + '% d_' % k
+                name_defocus = 'IFU_TopAB_HARMONI_LAM' + '% d_FOC_' % k
             else:
                 # name_nominal = 'IFU_TopAB_HARMONI_light' + '%d_' % k
-                name_nominal = 'IFUAB_FDR_1_04clean_Tolerance' + '%d_' % k
-                name_defocus = 'IFUAB_FDR_1_04clean_Tolerance' + '%d_FOC_' % k
+                name_nominal = 'IFU_TopAB_HARMONI_LAM' + '%d_' % k
+                name_defocus = 'IFU_TopAB_HARMONI_LAM' + '%d_FOC_' % k
 
             pop_slicer_nom.get_zemax_files(path, name_nominal, file_list)
             slicers_nom = np.sum(pop_slicer_nom.beam_data, axis=0)[min_pix:max_pix, min_pix:max_pix]
@@ -257,7 +258,7 @@ class Resampler_Zemax(object):
         :param N_slices: Number of slices to consider in the PSF
         :return: an array of size (2*N_slices, N_pix)
         """
-        physical_length = 2.08      # Length of the PSF arrays [mm]
+        physical_length = 4*2.08      # Length of the PSF arrays [mm]
         slicer_width = 0.130        # Size of a slice in the image plane [mm]
         N_pix = PSF_array.shape[0]
         pixels_per_slice = N_pix / (physical_length / slicer_width)
@@ -343,7 +344,8 @@ def plot_slices(ls, color='white'):
 
 if __name__ == "__main__":
 
-    path_files_slicer = os.path.abspath('H:\POP\IFU CLEAN\_NO SLICER APERTURE')
+    # path_files_slicer = os.path.abspath('H:\POP\IFU CLEAN\_NO SLICER APERTURE')
+    path_files_slicer = os.path.abspath('H:\Zemax\POP\BEAMFILES')
 
     N_points_slicer = 21
     max_wave = 0.25
@@ -359,7 +361,7 @@ if __name__ == "__main__":
     #                  RESAMPLE THE PSF TO MATCH THE 4 X 4 MAS SCALE                 #
     # ============================================================================== #
 
-    N_slices = 7
+    N_slices = 17
     width = 0.130
     length = width * N_slices
     resampled_extend = (-length/2, length/2, -length/2, length/2)
@@ -594,21 +596,22 @@ if __name__ == "__main__":
     #                        LOAD DATA FOR PHASE DIVERSITY                           #
     # ============================================================================== #
 
+    path_files = os.path.abspath('H:\Zemax\POP\BEAMFILES')
     N_examples = 5
     factor = max_wave
     coef_random = np.random.uniform(low=-factor, high=factor, size=(N_examples, len(folders)))
     np.savetxt(os.path.join(path_data, 'coef_random.txt'), coef_random, fmt='%.5f')
     np.save(os.path.join(path_data, 'coef_random'), coef_random)
 
-    PSFs_PD = load_files(os.path.join(path_files, 'DATA LAM'), N=N_examples,
+    PSFs_PD = load_files(os.path.join(path_files), N=N_examples,
                          file_list=list_slices, defocus=True)
     # PSFs_PD[1] is the Square N_pix, N_pix set, and it contains both NOM and FOC
     PSFs_PD_nom = resampler.resample_all_PSFs(PSFs_PD[1][:,0,:,:], N_slices=N_slices)
-    PSFs_PD_nom /= PEAK
+    PSFs_PD_nom /= PEAK_slicer
 
     # DEFOCUSED version
     PSFs_PD_foc = resampler.resample_all_PSFs(PSFs_PD[1][:,1,:,:], N_slices=N_slices)
-    PSFs_PD_foc /= PEAK
+    PSFs_PD_foc /= PEAK_slicer
 
     for i in range(N_examples):
         im = np.concatenate((PSFs_PD_nom[i], PSFs_PD_foc[i]), axis=1)
