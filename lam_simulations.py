@@ -19,16 +19,13 @@ from astropy.io import fits
 
 # Slices
 # list_slices = [17, 19, 21, 53, 55, 57, 59]
-list_slices = [11, 13, 15, 17, 19, 21, 23, 25, 27, 49, 51, 53, 55, 57, 59, 61, 63]
-# list_slices = [17, 19, 21, 55]
+list_slices = list(np.arange(1, 77, 2))
 i_central = 19
 
 # POP arrays - Nyquist sampled PSF
 x_size = 4*2.08           # Physical size of array at Image Plane
 N_pix = 128              # Number of pixels in the Zemax BFL
 N_crop = 128             # Crop to a smaller region around the PSF
-min_pix = N_pix//2 - N_crop//2
-max_pix = N_pix//2 + N_crop//2
 extends = [-x_size / 2, x_size / 2, -x_size / 2, x_size / 2]
 
 # Zernikes: Defocus, Astigmatism x2, Coma x2
@@ -107,12 +104,14 @@ def read_all_zemax_files(path_zemax, name_convention, file_list):
     return beam_info, irradiance_values, powers
 
 
-def load_files(path, file_list, N, defocus=False):
+def load_files(path, file_list, N, N_pix=N_pix, N_crop=N_crop, defocus=False):
     """
     Loads the Zemax beam files, constructs the PSFs
     and normalizes everything by the intensity of the PSF
     at i_norm (the Nominal PSF)
     """
+    min_pix = N_pix // 2 - N_crop // 2
+    max_pix = N_pix // 2 + N_crop // 2
 
     pop_slicer_nom = POP_Slicer()
 
@@ -320,6 +319,18 @@ class Resampler_Zemax(object):
         PSF_unflipped = PSF_resample.T
         return PSF_unflipped
 
+    def average_two_pixels(self, resampled_PSF):
+        pix = resampled_PSF.shape[0]
+        new_PSF = np.zeros((pix//2, pix))
+        print("%d Pixels" %pix)
+        for i in range(pix//2):
+            print("Row: %d, (%d : %d)" %(i, 2*i, 2*i+2))
+            pair = resampled_PSF[2*i:2*i+2, :]
+            print(pair[:, pix//2])
+            avg = np.mean(pair, axis=0)
+            new_PSF[i, :] = avg
+        return new_PSF
+
     def resample_all_PSFs(self, PSFs, N_slices):
         """
         Repeats self.resample_PSF across a whole array of PSFs
@@ -343,6 +354,96 @@ def plot_slices(ls, color='white'):
 
 
 if __name__ == "__main__":
+
+    path_files = os.path.abspath('D:\Thesis\LAM\POP')
+
+
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+    path_perfect = os.path.join(path_files, 'PERFECT 4MAS')      # Nominal PSF (No added wavefront)
+
+    ### (1) Load the NOMINAL PSF
+    PSFs_perfect = load_files(path_perfect, N=1, file_list=list_slices)
+    PEAK = np.max(PSFs_perfect[1][0])
+    # PSFs_perfect[1] /= PEAK        # Rescale by the peak of the nominal PSF
+
+    plt.figure()
+    plt.imshow(PSFs_perfect[1][0], origin='lower')
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(np.log10(PSFs_perfect[1][0]))
+    plt.title('Nominal PSF (4 mas) Log10 scale')
+    plt.colorbar()
+    plt.show()
+
+    N_slices = 38
+    resampler = Resampler_Zemax()
+    P = PSFs_perfect[1][0]
+    PSF_4x4_slicer = resampler.resample_PSF(P, N_slices=N_slices)
+    p = resampler.average_two_pixels(PSF_4x4_slicer)
+
+    plt.figure()
+    plt.imshow(np.log10(p))
+    plt.title('Nominal PSF (4 mas) Log10 scale')
+    plt.colorbar()
+    plt.show()
+
+
+    ### (2) Load the 2mas NOMINAL PSF
+    path_perfect2mas = os.path.join(path_files, 'PERFECT 2MAS')      # Nominal PSF (No added wavefront)
+    PSFs_perfect2mas = load_files(path_perfect2mas, N=1, N_pix=256, N_crop=256, file_list=list_slices)
+    PEAK2mas = np.max(PSFs_perfect2mas[1][0])
+    # PSFs_perfect2mas[1] /= PEAK2mas        # Rescale by the peak of the nominal PSF
+
+    PSF_4x4_slicer = resampler.resample_PSF(PSFs_perfect2mas[1][0], N_slices=N_slices)
+    p = resampler.average_two_pixels(PSF_4x4_slicer)
+
+    plt.figure()
+    plt.imshow(np.log10(PSFs_perfect2mas[1][0]))
+    plt.title('Nominal PSF (2mas) Log10 scale')
+    plt.colorbar()
+    plt.show()
+
+    ### (2) Load the 1mas NOMINAL PSF
+    path_perfect1mas = os.path.join(path_files, 'PERFECT 1MAS')      # Nominal PSF (No added wavefront)
+    PSFs_perfect1mas = load_files(path_perfect1mas, N=1, N_pix=512, N_crop=512, file_list=list_slices)
+
+    plt.figure()
+    plt.imshow(np.log10(PSFs_perfect1mas[1][0]))
+    plt.title('Nominal PSF (1mas) Log10 scale')
+    plt.colorbar()
+    plt.show()
+
+
+
+    ### (2) Load the ABERRATED PSFs
+    path_aberrated = os.path.join(path_files, 'ABERRATED 4MAS')
+    N_examples = 1
+    PSFs_PD = load_files(os.path.join(path_aberrated), N=N_examples,
+                         file_list=list_slices, defocus=True)
+
+
+
+
+
+
+    # ============================================================================== #
+
+
+    ### Old Stuff
 
     # path_files_slicer = os.path.abspath('H:\POP\IFU CLEAN\_NO SLICER APERTURE')
     path_files_slicer = os.path.abspath('H:\Zemax\POP\BEAMFILES')
@@ -606,11 +707,17 @@ if __name__ == "__main__":
     PSFs_PD = load_files(os.path.join(path_files), N=N_examples,
                          file_list=list_slices, defocus=True)
     # PSFs_PD[1] is the Square N_pix, N_pix set, and it contains both NOM and FOC
-    PSFs_PD_nom = resampler.resample_all_PSFs(PSFs_PD[1][:,0,:,:], N_slices=N_slices)
+
+    ## DO NOT resample
+    PSFs_PD_nom = PSFs_PD[1][:,0,:,:].copy()
+    PSFs_PD_foc = PSFs_PD[1][:,1,:,:].copy()
+
+
+    # PSFs_PD_nom = resampler.resample_all_PSFs(PSFs_PD[1][:,0,:,:], N_slices=N_slices)
     PSFs_PD_nom /= PEAK_slicer
 
     # DEFOCUSED version
-    PSFs_PD_foc = resampler.resample_all_PSFs(PSFs_PD[1][:,1,:,:], N_slices=N_slices)
+    # PSFs_PD_foc = resampler.resample_all_PSFs(PSFs_PD[1][:,1,:,:], N_slices=N_slices)
     PSFs_PD_foc /= PEAK_slicer
 
     for i in range(N_examples):
@@ -618,13 +725,13 @@ if __name__ == "__main__":
         plt.figure()
         plt.imshow(im, extent=(-length, length, -length/2, length/2), origin='lower')
         plt.colorbar()
-        plot_slices(ls)
+        # plot_slices(ls)
     plt.show()
 
-    np.save(os.path.join(path_data, 'random_psfs_nominal'), PSFs_PD_nom)
-    np.save(os.path.join(path_data, 'random_psfs_defocused'), PSFs_PD_foc)
+    np.save(os.path.join(path_files_slicer, 'random_psfs_nominal'), PSFs_PD_nom)
+    np.save(os.path.join(path_files_slicer, 'random_psfs_defocused'), PSFs_PD_foc)
 
-    def save_fits(nominal, defocused, zern_coef):
+    def save_fits(nominal, defocused):
         # Saves a FITS file for each random PSF
         # The primary HDU contains the nominal PSF, the 1st extension
         # contains the defocused version
@@ -637,19 +744,19 @@ if __name__ == "__main__":
             hdr['COMMENT'] = 'All Zernike intensities defined in [waves] at 1.5 um, following the Zernike Fringe definition from Zemax. Pixel scale [mm]. Auxiliary defocus [waves]'
             hdr['PXLSCALE'] = slicer_width/2   # Pixels per slice
             hdr['AUXFOC'] = 0.15
-            for j, aberr in enumerate(folders):
-                hdr[aberr] = zern_coef[i, j]
+            # for j, aberr in enumerate(folders):
+                # hdr[aberr] = zern_coef[i, j]
 
-            hdu.writeto(os.path.join(path_data, 'random_psf_%d.fits') %i, overwrite=True)
+            hdu.writeto(os.path.join(path_files_slicer, 'random_psf_%d.fits') %i, overwrite=True)
             print('Saving file %d' %i)
 
-    save_fits(PSFs_PD_nom, PSFs_PD_foc, coef_random)
+    save_fits(PSFs_PD_nom, PSFs_PD_foc)
 
     hdu_PD_nom = fits.PrimaryHDU(PSFs_PD_nom)
-    hdu_PD_nom.writeto(os.path.join(path_data, 'random_psfs_nominal.fits'))
+    hdu_PD_nom.writeto(os.path.join(path_files_slicer, 'random_psfs_nominal.fits'))
 
     hdu_PD_foc = fits.PrimaryHDU(PSFs_PD_foc)
-    hdu_PD_foc.writeto(os.path.join(path_data, 'random_psfs_defocused.fits'))
+    hdu_PD_foc.writeto(os.path.join(path_files_slicer, 'random_psfs_defocused.fits'))
 
 
 
