@@ -357,13 +357,48 @@ if __name__ == "__main__":
 
     path_files = os.path.abspath('D:\Thesis\LAM\POP')
 
+    """ Cropping of the PSF by the Image Slicer """
+
+    path_crop = os.path.join(path_files, 'PSF CROP SLICER')
+    pop_slicer_nom = POP_Slicer()
+    name = 'IFU_TopAB_HARMONI_0031.ZBF'
+    file_name = os.path.join(path_crop, name)
+    PIX, _PIX, deltas, PSF_central, power = read_beam_file(file_name)
+    dx
+
+    crop = 100
+    min_crop = PIX // 2 - crop // 2
+    max_crop = PIX // 2 + crop // 2
+    PSF_central_crop = PSF_central[min_crop:max_crop, min_crop:max_crop]
+    PEAK_crop = np.max(PSF_central_crop)
+    PSF_central_crop /= PEAK_crop
+
+    plt.figure()
+    plt.imshow(PSF_central_crop)
+    plt.title('PSF at the Image Slicer')
+
+    plt.figure()
+    plt.imshow(np.log10(PSF_central_crop))
+    plt.colorbar()
+    plt.title('PSF [log] at the Image Slicer')
+
+    plt.figure()
+    plt.plot(PSF_central_crop[crop//2, :], label='Along Slice')
+    plt.plot(PSF_central_crop[:, crop//2], label='Across Slice')
+    plt.axhline(0.5, linestyle='--', color='black')
+    plt.legend()
+    plt.show()
+
+    across = PSF_central_crop[:, crop//2]
+    non_zero_pixels = np.argwhere(across > 1e-3).shape[0]
+
+    wave = 1.5e-3   # mm
+    D = 39          # m
 
 
-    
 
 
-
-
+    ### Aberrated PSF
 
 
 
