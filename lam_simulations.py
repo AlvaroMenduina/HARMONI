@@ -133,6 +133,8 @@ def load_files(path, file_list, N, N_pix=N_pix, N_crop=N_crop, defocus=False):
 
             PSFs[k, :, :] = slicers_nom
             flat_PSFs[k, :] = slicers_nom.flatten()
+            info_nom = pop_slicer_nom.beam_info
+            info = [info_nom]
 
     if defocus:
 
@@ -159,8 +161,11 @@ def load_files(path, file_list, N, N_pix=N_pix, N_crop=N_crop, defocus=False):
 
             PSFs[k, 0, :, :], PSFs[k, 1, :, :] = slicers_nom, slicers_foc
             flat_PSFs[k, :] = np.concatenate((slicers_nom.flatten(), slicers_foc.flatten()))
+            info_foc = pop_slicer_foc.beam_info
 
-    return [flat_PSFs, PSFs]
+            info = [info_foc, info_foc]
+
+    return [flat_PSFs, PSFs, info]
 
 class POP_Slicer(object):
     """
@@ -352,8 +357,32 @@ def plot_slices(ls, color='white'):
     plt.axhline(y=5 * width / 2, color=color, linestyle=ls, alpha=0.2)
     plt.axhline(y=-5 * width / 2, color=color, linestyle=ls, alpha=0.2)
 
+def crop_array(array, crop=25):
+    PIX = array.shape[0]
+    min_crop = PIX // 2 - crop // 2
+    max_crop = PIX // 2 + crop // 2
+    array_crop = array[min_crop:max_crop, min_crop:max_crop]
+    return array_crop
+
 
 if __name__ == "__main__":
+
+    plt.rc('font', family='serif')
+    plt.rc('text', usetex=False)
+
+
+    """ High Resolution PSF - Impact of the Slicer """
+    # With high-fidelity ZEMAX POP simulations
+    path_0 = os.path.abspath('D:\Thesis\LAM\POP\Slicer Characterization\PerfectPSF')
+    # list0 = [53, 21, 55, 19, 57, 17, 59]
+    list0 = [19]
+    PSF0 = load_files(path_0, N=1, N_pix=2048, N_crop=2048, file_list=list0)
+
+    plt.figure()
+    plt.imshow(PSF0[1][0])
+    plt.colorbar()
+    plt.show()
+
 
     path_files = os.path.abspath('D:\Thesis\LAM\POP')
 
@@ -363,8 +392,8 @@ if __name__ == "__main__":
     pop_slicer_nom = POP_Slicer()
     name = 'IFU_TopAB_HARMONI_0031.ZBF'
     file_name = os.path.join(path_crop, name)
-    PIX, _PIX, deltas, PSF_central, power = read_beam_file(file_name)
-    dx
+    _PIX, deltas, PSF_central, power = read_beam_file(file_name)
+    PIX = _PIX[0]
 
     crop = 100
     min_crop = PIX // 2 - crop // 2
@@ -395,24 +424,14 @@ if __name__ == "__main__":
     wave = 1.5e-3   # mm
     D = 39          # m
 
-
-
-
-    ### Aberrated PSF
-
-
-
-
-
-
-
+    # ================================================================================================================ #
 
     path_perfect = os.path.join(path_files, 'PERFECT 4MAS')      # Nominal PSF (No added wavefront)
 
-    ### (1) Load the NOMINAL PSF
+    """(1) Load the NOMINAL PSF """
     PSFs_perfect = load_files(path_perfect, N=1, file_list=list_slices)
     PEAK = np.max(PSFs_perfect[1][0])
-    # PSFs_perfect[1] /= PEAK        # Rescale by the peak of the nominal PSF
+    PSFs_perfect[1] /= PEAK        # Rescale by the peak of the nominal PSF
 
     plt.figure()
     plt.imshow(PSFs_perfect[1][0], origin='lower')
@@ -436,39 +455,230 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.show()
 
-
-    ### (2) Load the 2mas NOMINAL PSF
+    """ (2) Load the 2mas NOMINAL PSF """
     path_perfect2mas = os.path.join(path_files, 'PERFECT 2MAS')      # Nominal PSF (No added wavefront)
-    PSFs_perfect2mas = load_files(path_perfect2mas, N=1, N_pix=256, N_crop=256, file_list=list_slices)
+    PSFs_perfect2mas = load_files(path_perfect2mas, N=1, N_pix=256, N_crop=256, file_list=list_slices, defocus=True)
     PEAK2mas = np.max(PSFs_perfect2mas[1][0])
     # PSFs_perfect2mas[1] /= PEAK2mas        # Rescale by the peak of the nominal PSF
-
-    PSF_4x4_slicer = resampler.resample_PSF(PSFs_perfect2mas[1][0], N_slices=N_slices)
-    p = resampler.average_two_pixels(PSF_4x4_slicer)
+    #
+    # PSF_4x4_slicer = resampler.resample_PSF(PSFs_perfect2mas[1][0], N_slices=N_slices)
+    # p = resampler.average_two_pixels(PSF_4x4_slicer)
 
     plt.figure()
-    plt.imshow(np.log10(PSFs_perfect2mas[1][0]))
+    plt.imshow(PSFs_perfect2mas[1][0,0])
     plt.title('Nominal PSF (2mas) Log10 scale')
     plt.colorbar()
     plt.show()
 
-    ### (2) Load the 1mas NOMINAL PSF
+    # ### (2) Load the 1mas NOMINAL PSF
     path_perfect1mas = os.path.join(path_files, 'PERFECT 1MAS')      # Nominal PSF (No added wavefront)
-    PSFs_perfect1mas = load_files(path_perfect1mas, N=1, N_pix=512, N_crop=512, file_list=list_slices)
+    PSFs_perfect1mas = load_files(path_perfect1mas, N=1, N_pix=512, N_crop=512, file_list=list_slices, defocus=True)
 
     plt.figure()
-    plt.imshow(np.log10(PSFs_perfect1mas[1][0]))
+    plt.imshow(PSFs_perfect1mas[1][0, 0])
     plt.title('Nominal PSF (1mas) Log10 scale')
     plt.colorbar()
     plt.show()
 
+    save_fits(PSFs_perfect1mas[1][:,0], PSFs_perfect1mas[1][:,1], path=path_perfect1mas, name='perfect_psf1mas')
+
+    # ================================================================================================================ #
+
+    ### Aberrated PSF
+    N_Zern = 3      # Only Defocus and Astigmatism
+    Z_strength = 0.25
+    N_examples = 10
+    path_aberrations = os.path.join(path_files, 'ABERRATED 4MAS')
+    # coef_random = np.random.uniform(low=-Z_strength, high=Z_strength, size=(N_examples, N_Zern))
+    # np.savetxt(os.path.join(path_aberrations, 'coef_random.txt'), coef_random, fmt='%.5f')
+    coef_random = np.loadtxt(os.path.join(path_aberrations, 'coef_random.txt'))
+
+    PSFs_PD = load_files(os.path.join(path_aberrations), N=N_examples, file_list=list_slices, defocus=True)
+    # PSFs_PD[1] is the Square N_pix, N_pix set, and it contains both NOM and FOC
+
+    ## DO NOT resample
+    PSFs_PD_nom = PSFs_PD[1][:,0,:,:].copy()
+    PSFs_PD_foc = PSFs_PD[1][:,1,:,:].copy()
+
+    PSFs_PD_nom /= PEAK
+    PSFs_PD_foc /= PEAK
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(crop_array(PSFs_perfect[1][0]))
+    ax1.set_title(r'Nominal PSF (No Aberrations)')
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(crop_array(PSFs_PD_nom[0]))
+    ax2.set_title(r'Aberrated PSF [No defocus]')
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(crop_array(PSFs_PD_foc[0]))
+    ax3.set_title(r'Aberrated PSF [With defocus]')
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(np.log10(crop_array(PSFs_perfect[1][0])))
+    ax1.set_title(r'Nominal PSF (No Aberrations)')
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(np.log10(crop_array(PSFs_PD_nom[0])))
+    ax2.set_title(r'Aberrated PSF [No defocus]')
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(np.log10(crop_array(PSFs_PD_foc[0])))
+    ax3.set_title(r'Aberrated PSF [With defocus]')
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+    # ================================================================================================================ #
+
+    """ 3 PIX resampling """
+    path_aberrations = os.path.join(path_files, 'ABERRATED 3PIX_SLICE')
+
+    PSFs_PD = load_files(os.path.join(path_aberrations), N=N_examples, file_list=list_slices, defocus=True)
+    PSFs_PD_nom = PSFs_PD[1][:,0].copy()
+    PSFs_PD_foc = PSFs_PD[1][:,1].copy()
+
+    def resample_3pix_slice(PSF_array, N_slices=42, N_crop=34):
+
+        # Only consider arrays of slice [N_slices, N_slices]
+        # Oversize the number of slices because to make sure we are getting all of them
+        # The slicer has an even number of slices which makes it difficult to center the PSF
+
+        N_pix = PSF_array.shape[0]
+        min_slice = N_pix // 2 - N_slices // 2
+        max_slice = N_pix // 2 + N_slices // 2
+
+        pix_slice = 3
+        pix_central = N_pix // 2
+        # print(PSF_array[pix_central, pix_central])
+
+        new_PSF = np.zeros((N_slices, N_slices))
+
+        # Start with the Central Slice
+        low_central = int(N_pix//2 - pix_slice//2)
+        up_central = int(N_pix//2 + 1 + pix_slice//2)
+        central_slice = PSF_array[low_central:up_central, :]
+        avg_central_slice = np.mean(central_slice[:, min_slice:max_slice], axis=0)
+        new_PSF[N_slices//2, :] = avg_central_slice
+
+        for i in np.arange(1, N_slices//2):
+            # print("Slice %d" %i)
+            this_slice = PSF_array[low_central + i*pix_slice:up_central + i*pix_slice, :]
+            avg_this_slice = np.mean(this_slice[:, min_slice:max_slice], axis=0)
+            new_PSF[N_slices // 2 + i, :] = avg_this_slice
+            # plt.show()
+        for j in np.arange(1, N_slices//2):
+            # print("Slice -%d" %j)
+            this_slice = PSF_array[low_central - j*pix_slice:up_central - j*pix_slice, :]
+            avg_this_slice = np.mean(this_slice[:, min_slice:max_slice], axis=0)
+            new_PSF[N_slices // 2 - j, :] = avg_this_slice
+        # plt.figure()
+        # plt.imshow(np.log10(new_PSF))
+        # plt.show()
+
+        new_crop = crop_array(new_PSF, N_crop)
+        # plt.figure()
+        # plt.imshow(np.log10(new_crop))
+
+        return new_crop
+
+    def resample_PSFs(nominal, defocused, N_crop=34):
+        N_PSFs = nominal.shape[0]
+        new_nom = np.zeros((N_PSFs, N_crop, N_crop))
+        new_foc = np.zeros((N_PSFs, N_crop, N_crop))
+        for k in range(N_PSFs):
+            new_nom[k] = resample_3pix_slice(nominal[k], N_crop=N_crop)
+            new_foc[k] = resample_3pix_slice(defocused[k], N_crop=N_crop)
+
+        return new_nom, new_foc
 
 
-    ### (2) Load the ABERRATED PSFs
-    path_aberrated = os.path.join(path_files, 'ABERRATED 4MAS')
-    N_examples = 1
-    PSFs_PD = load_files(os.path.join(path_aberrated), N=N_examples,
-                         file_list=list_slices, defocus=True)
+    nominal, defocused = resample_PSFs(PSFs_PD_nom, PSFs_PD_foc)
+
+    def save_fits(nominal, defocused, path, name):
+
+        n_files = nominal.shape[0]
+        slicer_width = 0.130     #[mm]
+        for i in range(n_files):
+            hdu = fits.PrimaryHDU([nominal[i], defocused[i]])
+            hdr = hdu.header
+            hdr['COMMENT'] = 'All Zernike intensities defined in [waves] at 1.5 um, following the Zernike Fringe definition from Zemax. Pixel scale [mm]. Auxiliary defocus [waves]'
+            hdr['PXLSCALE'] = slicer_width/2   # Pixels per slice
+            hdr['AUXFOC'] = 0.15
+            # for j, aberr in enumerate(folders):
+                # hdr[aberr] = zern_coef[i, j]
+
+            hdu.writeto(os.path.join(path, name+'%d.fits') %i, overwrite=True)
+            print('Saving file %d' %i)
+
+    save_fits(nominal, defocused, path=path_aberrations, name='random_psf_')
+
+    # ================================================================================================================ #
+
+    """ Does the perfect PSF change depending on the BEAM sampling even when we resample to 128? """
+    path_sampling = os.path.join(path_files, 'PERFECT PSF 3PIX_SLICE')
+
+    p_PSFs = []
+    BEAM_PIX = [1024, 512, 256]
+    PEAK_BEAM = 1
+    PEAKS = []
+    for i, b in enumerate(BEAM_PIX):
+        path_PIX = os.path.join(path_sampling, str(b))
+        PSFs = load_files(os.path.join(path_PIX), N=1, file_list=list_slices, defocus=False)[1]
+        PSFs, _p = resample_PSFs(PSFs, PSFs)
+        if i == 0:
+            PEAK_BEAM = np.max(PSFs[0])
+        pp = PSFs[0] / PEAK_BEAM
+        p_PSFs.append(pp)
+        PEAKS.append(np.max(pp))
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(p_PSFs[0])
+    ax1.set_title(BEAM_PIX[0])
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(p_PSFs[0] - p_PSFs[1], cmap='bwr')
+    ax2.set_title(r'Difference %d - %d' %(BEAM_PIX[0], BEAM_PIX[1]))
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(p_PSFs[0] - p_PSFs[2], cmap='bwr')
+    ax3.set_title(r'Difference %d - %d' %(BEAM_PIX[0], BEAM_PIX[2]))
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(p_PSFs[0])
+    ax1.set_title(BEAM_PIX[0])
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(np.log10(np.abs(p_PSFs[0] - p_PSFs[1])), cmap='Reds')
+    ax2.set_title(r'Difference %d - %d [log10]' %(BEAM_PIX[0], BEAM_PIX[1]))
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(np.log10(np.abs(p_PSFs[0] - p_PSFs[2])), cmap='Reds')
+    ax3.set_title(r'Difference %d - %d [log10]' %(BEAM_PIX[0], BEAM_PIX[2]))
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+    ### Load the perfect PSF
+    PSFs = load_files(os.path.join(path_sampling, str(256)), N=1, file_list=list_slices, defocus=True)[1]
+    PSF_nom, PSF_foc = resample_PSFs(PSFs[:,0], PSFs[:,1])
+    save_fits(PSF_nom, PSF_nom, path=os.path.join(path_sampling, str(256)), name='perfect_psf_nomnom')
+
 
 
 
