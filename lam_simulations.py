@@ -349,13 +349,17 @@ class Resampler_Zemax(object):
             new_PSFs[i] = self.resample_PSF(PSFs[i], N_slices=N_slices)
         return new_PSFs
 
-def plot_slices(ls, color='white'):
+def plot_slices(ls, width=0.130, color='white'):
     plt.axhline(y=width / 2, color=color, linestyle=ls, alpha=0.7)
     plt.axhline(y=-width / 2, color=color, linestyle=ls, alpha=0.7)
     plt.axhline(y=3 * width / 2, color=color, linestyle=ls, alpha=0.5)
     plt.axhline(y=-3 * width / 2, color=color, linestyle=ls, alpha=0.5)
     plt.axhline(y=5 * width / 2, color=color, linestyle=ls, alpha=0.2)
     plt.axhline(y=-5 * width / 2, color=color, linestyle=ls, alpha=0.2)
+    plt.axhline(y=7 * width / 2, color=color, linestyle=ls, alpha=0.15)
+    plt.axhline(y=-7 * width / 2, color=color, linestyle=ls, alpha=0.15)
+    plt.axhline(y=9 * width / 2, color=color, linestyle=ls, alpha=0.1)
+    plt.axhline(y=-9 * width / 2, color=color, linestyle=ls, alpha=0.1)
 
 def crop_array(array, crop=25):
     PIX = array.shape[0]
@@ -370,18 +374,218 @@ if __name__ == "__main__":
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
-
     """ High Resolution PSF - Impact of the Slicer """
     # With high-fidelity ZEMAX POP simulations
     path_0 = os.path.abspath('D:\Thesis\LAM\POP\Slicer Characterization\PerfectPSF')
-    # list0 = [53, 21, 55, 19, 57, 17, 59]
-    list0 = [19]
+    list0 = [51, 23, 53, 21, 55, 19, 57, 17, 59, 15, 61]
+    list0 = list_slices
+    n_slices = len(list0)
+    width_slice = 0.130
+    # list0 = [19]
     PSF0 = load_files(path_0, N=1, N_pix=2048, N_crop=2048, file_list=list0)
+    PEAK0 = np.max(PSF0[1])
+    X, Y = PSF0[-1][0][0,1:]
+    extent_array = [-X/2, X/2, -Y/2, Y/2]
+
+    cmap = 'jet'
 
     plt.figure()
-    plt.imshow(PSF0[1][0])
+    plt.imshow(PSF0[1][0], extent=extent_array, cmap=cmap, origin='lower')
+    plt.colorbar()
+    plot_slices(ls='--', color='black')
+    plt.xlim([-n_slices/2 * width_slice, n_slices/2 * width_slice])
+    plt.ylim([-n_slices/2 * width_slice, n_slices/2 * width_slice])
+    plt.show()
+
+    plt.figure()
+    plt.imshow(np.log10(PSF0[1][0]), extent=extent_array, cmap=cmap, origin='lower')
+    plt.colorbar()
+    plot_slices(ls='--', color='black')
+    plt.xlim([-n_slices/4 * width_slice, n_slices/4 * width_slice])
+    plt.ylim([-n_slices/4 * width_slice, n_slices/4 * width_slice])
+    plt.show()
+
+    # Compare it to a PSF with a Slicer oversized
+    PSF_oversized = load_files(os.path.join(path_0, 'Oversized'), N=1, N_pix=2048, N_crop=2048, file_list=[19])
+    PEAK_OVERSIZE = np.max(PSF_oversized[1])
+    PSF_oversized[1] /= PEAK_OVERSIZE
+    PSF0[1] /= PEAK_OVERSIZE
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow((PSF0[1][0]), extent=extent_array, cmap=cmap, origin='lower')
+    ax1.set_title(r'Nominal PSF')
+    ax1.set_xlim([-n_slices/8 * width_slice, n_slices/8 * width_slice])
+    ax1.set_ylim([-n_slices/8 * width_slice, n_slices/8 * width_slice])
+    plot_slices(ls='--', color='white')
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow((PSF_oversized[1][0]), extent=extent_array, cmap=cmap, origin='lower')
+    ax2.set_title(r'Nominal PSF [Oversized Slicer]')
+    ax2.set_xlim([-n_slices/8 * width_slice, n_slices/8 * width_slice])
+    ax2.set_ylim([-n_slices/8 * width_slice, n_slices/8 * width_slice])
+    plot_slices(ls='--', color='white')
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    r1 = PSF_oversized[1][0] - PSF0[1][0]
+    rmin = min(np.min(r1), -np.max(r1))
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow((r1), extent=extent_array, cmap='bwr', origin='lower')
+    ax3.set_title(r'Residual')
+    ax3.set_xlim([-n_slices/8 * width_slice, n_slices/8 * width_slice])
+    ax3.set_ylim([-n_slices/8 * width_slice, n_slices/8 * width_slice])
+    img3.set_clim(rmin, -rmin)
+    plot_slices(ls='--', color='black')
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(np.log10(PSF0[1][0]), extent=extent_array, cmap=cmap, origin='lower')
+    ax1.set_title(r'Nominal PSF')
+    ax1.set_xlim([-n_slices/4 * width_slice, n_slices/4 * width_slice])
+    ax1.set_ylim([-n_slices/4 * width_slice, n_slices/4 * width_slice])
+    plot_slices(ls='--', color='black')
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(np.log10(PSF_oversized[1][0]), extent=extent_array, cmap=cmap, origin='lower')
+    ax2.set_title(r'Nominal PSF [Oversized Slicer]')
+    ax2.set_xlim([-n_slices/4 * width_slice, n_slices/4 * width_slice])
+    ax2.set_ylim([-n_slices/4 * width_slice, n_slices/4 * width_slice])
+    plot_slices(ls='--', color='black')
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+    r1 = np.abs(PSF_oversized[1][0] - PSF0[1][0])
+
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(np.log10(r1), extent=extent_array, cmap=cmap, origin='lower')
+    ax3.set_title(r'Residual')
+    ax3.set_xlim([-n_slices/4 * width_slice, n_slices/4 * width_slice])
+    ax3.set_ylim([-n_slices/4 * width_slice, n_slices/4 * width_slice])
+    plot_slices(ls='--', color='black')
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+    """ Do we see these effects at 4mas? """
+
+    def resample_3pix_slice(PSF_array, N_slices=42, N_crop=34):
+
+        # Only consider arrays of slice [N_slices, N_slices]
+        # Oversize the number of slices because to make sure we are getting all of them
+        # The slicer has an even number of slices which makes it difficult to center the PSF
+
+        N_pix = PSF_array.shape[0]
+        min_slice = N_pix // 2 - N_slices // 2
+        max_slice = N_pix // 2 + N_slices // 2
+
+        pix_slice = 3
+        pix_central = N_pix // 2
+        # print(PSF_array[pix_central, pix_central])
+
+        new_PSF = np.zeros((N_slices, N_slices))
+
+        # Start with the Central Slice
+        low_central = int(N_pix//2 - pix_slice//2)
+        up_central = int(N_pix//2 + 1 + pix_slice//2)
+        central_slice = PSF_array[low_central:up_central, :]
+        avg_central_slice = np.mean(central_slice[:, min_slice:max_slice], axis=0)
+        new_PSF[N_slices//2, :] = avg_central_slice
+
+        for i in np.arange(1, N_slices//2):
+            # print("Slice %d" %i)
+            this_slice = PSF_array[low_central + i*pix_slice:up_central + i*pix_slice, :]
+            avg_this_slice = np.mean(this_slice[:, min_slice:max_slice], axis=0)
+            new_PSF[N_slices // 2 + i, :] = avg_this_slice
+            # plt.show()
+        for j in np.arange(1, N_slices//2):
+            # print("Slice -%d" %j)
+            this_slice = PSF_array[low_central - j*pix_slice:up_central - j*pix_slice, :]
+            avg_this_slice = np.mean(this_slice[:, min_slice:max_slice], axis=0)
+            new_PSF[N_slices // 2 - j, :] = avg_this_slice
+        # plt.figure()
+        # plt.imshow(np.log10(new_PSF))
+        # plt.show()
+
+        new_crop = crop_array(new_PSF, N_crop)
+        # plt.figure()
+        # plt.imshow(np.log10(new_crop))
+
+        return new_crop
+
+    def resample_PSFs(nominal, defocused, N_crop=34):
+        N_PSFs = nominal.shape[0]
+        new_nom = np.zeros((N_PSFs, N_crop, N_crop))
+        new_foc = np.zeros((N_PSFs, N_crop, N_crop))
+        for k in range(N_PSFs):
+            new_nom[k] = resample_3pix_slice(nominal[k], N_crop=N_crop)
+            new_foc[k] = resample_3pix_slice(defocused[k], N_crop=N_crop)
+
+        return new_nom, new_foc
+
+    path_4mas = os.path.join(path_0, '4MAS')
+
+    PSF_4mas = load_files(path_4mas, N=1, N_pix=128, N_crop=128, file_list=list0)
+    PSF_4mas, _a = resample_PSFs(PSF_4mas[1], PSF_4mas[1])
+
+    plt.figure()
+    plt.imshow(PSF_4mas[0])
     plt.colorbar()
     plt.show()
+
+
+    path_4mas_over = os.path.join(path_0, '4MAS', 'Oversized')
+
+    PSF_4mas_over = load_files(path_4mas_over, N=1, N_pix=128, N_crop=128, file_list=[19])
+    PSF_4mas_over, _a = resample_PSFs(PSF_4mas_over[1], PSF_4mas_over[1])
+    plt.figure()
+    plt.imshow(PSF_4mas_over[0] - PSF_4mas[0])
+    plt.colorbar()
+    plt.show()
+
+    p_over = np.max(PSF_4mas_over[0])
+    PSF_4mas_over[0] /= p_over
+    PSF_4mas[0] /= p_over
+
+
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow((PSF_4mas[0]), cmap=cmap, origin='lower')
+    ax1.set_title(r'Nominal PSF')
+    # plot_slices(ls='--', color='white')
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow((PSF_4mas_over[0]), cmap=cmap, origin='lower')
+    ax2.set_title(r'Nominal PSF [Oversized Slicer]')
+    # plot_slices(ls='--', color='white')
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    r1 = 100*(PSF_4mas_over[0] - PSF_4mas[0])
+    rmin = min(np.min(r1), -np.max(r1))
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow((r1), cmap='bwr', origin='lower')
+    ax3.set_title(r'Residual [per cent]')
+    img3.set_clim(rmin, -rmin)
+    # plot_slices(ls='--', color='black')
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
     path_files = os.path.abspath('D:\Thesis\LAM\POP')
