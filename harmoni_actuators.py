@@ -272,6 +272,14 @@ class PointSpreadFunctionFast(object):
             rms = np.std(amp_map[self.pupil_mask])
             RMS.append(rms)
             new_pupil[k] = self.pupil_mask * (self.pupil_mask + amp_map)
+            if k % 100 == 0:
+                img = new_pupil[k]
+                cmax = max(-np.min(img[self.pupil_mask] - 1), np.max(img[self.pupil_mask] - 1))
+                plt.figure()
+                plt.imshow(img, cmap='bwr')
+                plt.clim(1 - cmax, 1 + cmax)
+                plt.title(r'RMS deviations %.2f per cent' %(100*RMS[k]))
+                plt.colorbar()
         self.RMS_amp = 100*np.mean(RMS)
         print("\nAmplitude errors with an average of %.3f per cent RMS" %(100*np.mean(RMS)))
 
@@ -1025,7 +1033,7 @@ if __name__ == "__main__":
 
         pcent_amp = [0.0]
         for amplitude in [0.025, 0.050, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40]:
-            amp_PSF, _PSF, amp_coef, _c, amp_coef_low, _cc = generate_training_set(PSF_high, PSF_low, N_samples, 0,
+            amp_PSF, _PSF, amp_coef, _c, amp_coef_low, _cc = generate_training_set(PSF, PSF_low, N_samples, 0,
                                                                                    amplitude)
             r = PSF_high.RMS_amp.copy()
             pcent_amp.append(r)
@@ -1048,6 +1056,192 @@ if __name__ == "__main__":
         plt.ylabel(r'Residual RMS wavefront error [waves]')
         plt.show()
     performance_amplitude(PSF, PSF_low, model, test_PSF, test_coef, test_low)
+
+    ### Amplitude Errors Theory
+
+    plt.figure()
+    amp = 0.025
+    N_cases = 100
+    pupil_mask = PSF.pupil_mask.copy()
+    amp_centers, _freq = actuator_centres(N_actuators=10)
+    N_amp = len(amp_centers[0])
+    amplitude_matrix = actuator_matrix(amp_centers)[0]
+    new_pupil = np.empty((N_cases, N_PIX, N_PIX))
+    RMS = []
+
+    ## Random Maps
+    for k in range(N_cases):
+        amp_coef = amp * np.random.uniform(low=-1, high=1, size=N_amp)
+        amp_map = np.dot(amplitude_matrix, amp_coef)
+        non_zero_map = amp_map[pupil_mask]
+        amp0 = np.mean(non_zero_map)
+        amp_map -= amp0
+        rms = np.std(amp_map[pupil_mask])
+        RMS.append(rms)
+        new_pupil[k] = pupil_mask * (pupil_mask + amp_map)
+
+    ### Sine waves
+    freq = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    # freq = np.arange(1, 20)
+    for fx in freq:
+        x0 = np.linspace(-1, 1, N_PIX)
+        xx, yy = np.meshgrid(x0, x0)
+        eps = 0.10
+        # plt.figure()
+        for k in range(N_cases):
+            fx = 10
+            amp_map = pupil_mask * eps * np.sin(2 * np.pi * fx * xx / (2*RHO_APER))
+            # plt.plot(amp_map[N_PIX//2, :])
+            rms = np.std(amp_map[pupil_mask])
+            RMS.append(rms)
+            new_pupil[k] = pupil_mask * (pupil_mask + amp_map)
+
+        phase_coef = np.random.uniform(low=-1, high=1, size=(N_act, N_cases))
+        phase_flat = np.dot(PSF.RBF_flat, phase_coef)
+        phase_datacube = invert_mask_datacube(phase_flat, pupil_mask)
+
+        # Images with amplitude errors
+        pupil_function_amp = new_pupil * np.exp(1j * phase_datacube)
+        images_amp = (np.abs(fftshift(fft2(pupil_function_amp), axes=(1, 2)))) ** 2
+        images_amp /= PSF.PEAK
+        images_amp = images_amp[:, PSF.minPix:PSF.maxPix, PSF.minPix:PSF.maxPix]
+
+        # Images WITHOUT errors
+        pupil_function = pupil_mask[np.newaxis, :, :] * np.exp(1j * phase_datacube)
+        images = (np.abs(fftshift(fft2(pupil_function), axes=(1, 2)))) ** 2
+        images /= PSF.PEAK
+        images = images[:, PSF.minPix:PSF.maxPix, PSF.minPix:PSF.maxPix]
+
+        # Perfect PSF
+        pupil_function = pupil_mask * np.exp(1j * pupil_mask)
+        image_perfect = (np.abs(fftshift(fft2(pupil_function)))) ** 2
+        image_perfect /= PSF.PEAK
+        image_perfect = image_perfect[PSF.minPix:PSF.maxPix, PSF.minPix:PSF.maxPix]
+
+        rel_diff = (images_amp - images)/(2*images)
+        p = rel_diff**2 * image_perfect
+        p_mean = np.sqrt(np.mean(p, axis=(1, 2)))
+
+        # plt.figure()
+        # plt.plot(RMS, label='RMS bound')
+        # plt.plot(p_mean, label='A')
+        # plt.yscale('log')
+        # plt.show()
+
+        img_diff = np.abs(images_amp - images)
+        mean_diff = np.mean(img_diff, axis=(1,2))
+        max_diff = np.max(images_amp - images, axis=(1,2))
+        min_diff = np.min(images_amp - images, axis=(1,2))
+
+        plt.scatter(100*[fx], 100*max_diff, color='green', s=10)
+    # plt.scatter(100*[fx], 100*min_diff, color='red', s=10)
+    plt.xlabel('Amplitude Error Spatial Frequency')
+    plt.ylabel('Intensity Variations [pcent]')
+    plt.yscale('log')
+    plt.show()
+
+
+    plt.scatter(100*np.array(RMS), 100*max_diff, color='green', s=10)
+    plt.scatter(100*np.array(RMS), 100*min_diff, color='red', s=10)
+    plt.xlabel('RMS Amplitude Error [pcent]')
+    plt.ylabel('Intensity Variations [pcent]')
+    plt.xlim([0, 25])
+    plt.ylim([0, 25])
+
+
+    ### Compare the Images
+    for k in range(5):
+        r = RMS[k]
+        cm = 'hot'
+        f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        ax1 = plt.subplot(1, 3, 1)
+        im1 = ax1.imshow(images[k], cmap=cm)
+        ax1.set_title('No Amplitude Errors')
+        plt.colorbar(im1, ax=ax1, orientation='horizontal')
+
+        ax2 = plt.subplot(1, 3, 2)
+        im2 = ax2.imshow(images_amp[k], cmap=cm)
+        ax2.set_title('Amplitude Error: RMS %.1f pcent' %(100*r))
+        plt.colorbar(im2, ax=ax2, orientation='horizontal')
+
+        peak = np.max(images[k])
+        ax3 = plt.subplot(1, 3, 3)
+        res = images_amp[k] - images[k]
+        cres = min(np.min(res), -np.max(res))
+        im3 = ax3.imshow(res, cmap='bwr', extent=[-pix//2, pix//2, -pix//2, pix//2])
+        ax3.set_title('Intensity Change Max:%.1f, Min:%.1f pcent PEAK' %(100*max_diff[k] / peak, 100*min_diff[k] / peak))
+        im3.set_clim(cres,-cres)
+        circ1 = Circle((0.5, -0.5), SPAXEL_MAS * _freq / 2, linestyle='--', fill=None, color='black')
+        ax3.add_patch(circ1)
+        cbar = plt.colorbar(im3, ax=ax3, orientation='horizontal')
+
+    plt.show()
+
+    for k in range(2):
+        real_diff = rel_diff[k]
+
+        plt.figure()
+        plt.imshow(p[k])
+        plt.colorbar()
+        plt.title('%d a' %k)
+
+        # plt.figure()
+        # plt.imshow(diff[k])
+        # plt.colorbar()
+        # plt.title('%d b' % k)
+        # plt.show()
+
+
+    # Fourier
+    Pi_delta = new_pupil - pupil_mask[np.newaxis, :, :]
+    F_delta = np.abs(fftshift(fft2(Pi_delta), axes=(1, 2)))
+    F_pi = np.abs(fftshift(fft2(pupil_mask[np.newaxis, :, :]), axes=(1, 2)))
+    diff = 2 * F_delta / F_pi
+    diff = diff[:, PSF.minPix:PSF.maxPix, PSF.minPix:PSF.maxPix]
+
+
+
+    plt.figure()
+    plt.imshow(images_amp[0] - images[0])
+    plt.colorbar()
+    plt.show()
+
+
+
+    plt.figure()
+    plt.imshow(F_pi[0])
+    plt.colorbar()
+    plt.show()
+
+    plt.figure()
+    plt.imshow(images_amp[0])
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(images_amp[0] - images[0])
+    plt.colorbar()
+    plt.show()
+
+    from numpy.fft import fft
+    x = np.linspace(-2, 2, 1024)
+    mask = np.abs(x) <= 1
+    y = mask * np.ones(1024)
+    eps = 0.01
+    y_delta = np.zeros_like(y)
+    N_freq = 25
+    for f in np.random.uniform(0, 10, N_freq):
+        print(f)
+        y_delta += eps * mask * np.sin(2*np.pi * f * x)
+
+    F_Pi = np.abs(fftshift(fft(y)))
+    F_delta = np.abs(fftshift(fft(y_delta)))
+
+    plt.figure()
+    plt.plot(F_Pi)
+    plt.plot(F_delta)
+    plt.show()
+
+
 
 
 

@@ -4,11 +4,11 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import zern_core as zern
-from numpy.fft import fft2, ifft2, fftshift
+from numpy.fft import fft, fft2, ifft2, fftshift
 
 pix = 30                    # Pixels to crop the PSF
 N_PIX = 2*2048                 # Pixels for the Fourier arrays
-RHO_APER = 1/21              # Size of the aperture relative to the physical size of the Fourier arrays
+RHO_APER = 1/101              # Size of the aperture relative to the physical size of the Fourier arrays
 
 # SPAXEL SCALE
 wave = 1.5                 # 1 micron
@@ -18,7 +18,7 @@ SPAXEL_RAD = RHO_APER * wave / ELT_DIAM * 1e-6
 SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
 print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wave))
 
-FWHM_RAD = 1.5e-6 / 39
+FWHM_RAD = wave * 1e-6 / 39
 FWHM_MAS = FWHM_RAD * MILIARCSECS_IN_A_RAD
 FWHM_PIX = FWHM_MAS / SPAXEL_MAS
 
@@ -125,7 +125,7 @@ if __name__ == """__main__""":
         # plt.title(r'Slice Width = %d pix [FWHM_Y = %d pix]' %(width, 22))
         return sliced, mask_slice
 
-    central, mask_slice = slice_mask(image, width=21, i_slice=0, crop=50)
+    central, mask_slice = slice_mask(image, width=101, i_slice=0, crop=50)
     plt.show()
     plt.figure()
     plt.imshow(central)
@@ -187,7 +187,7 @@ if __name__ == """__main__""":
     """ (3) Pupil Plane"""
     pupil_mirror = ifft2(fftshift(masked_slicer))
     pupil_image = (np.abs(pupil_mirror))**2
-    # pup_pix = int(3*N_PIX /4) - 250
+    # pup_pix = int(3*N_PIX /4)
     pup_pix = int(N_PIX /4)
 
     # Pupil Mirror Aperture
@@ -199,9 +199,23 @@ if __name__ == """__main__""":
     # Real and Imaginary part of Pupil Mirror E_field
     plt.figure()
     plt.plot(np.real(pupil_mirror)[:, N_PIX//2])
-    plt.plot(fftshift(ff))
+    # plt.axvline((N_PIX-pup_pix)//2, color='black', linestyle='--')
+    # plt.axvline((N_PIX+pup_pix)//2, color='black', linestyle='--')
+    plt.title('Electric Field at Pupil Mirror')
+    # plt.plot(np.real(mask_pupil * pupil_mirror)[:, N_PIX//2])
+    plt.figure()
+    fp = fftshift(fft((mask_pupil*pupil_mirror)[:, N_PIX//2]))
+    image_fp = ((np.abs(fp))**2)[N_PIX//2 - 100: N_PIX//2 + 100]
+
+    plt.plot(image_fp)
+    plt.title('Exit Slit Image Across the Slice')
     # plt.plot(np.imag(pupil_mirror)[:, N_PIX//2])
     plt.show()
+
+    # TOT = image_fp.sum()
+    TOT_34 = image_fp.sum() / TOT
+    TOT_12 = image_fp.sum() / TOT
+    TOT_14 = image_fp.sum() / TOT
 
     """ (4) Slit Exit """
     masked_pupil_mirror = mask_pupil * pupil_mirror
