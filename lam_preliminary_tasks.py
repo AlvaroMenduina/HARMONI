@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from pyzdde.zdde import readBeamFile
+import zern_core as zern
 
 # Slices
 list_slices = list(np.arange(1, 77, 2))
@@ -240,6 +241,131 @@ if __name__ == "__main__":
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
+    # ===================
+
+    x = np.linspace(-1, 1, 1024, endpoint=True)
+    xx, yy = np.meshgrid(x, x)
+    rho_circ, theta_circ = np.sqrt((xx)**2 + yy**2), np.arctan2(xx, yy)
+    rho_elli, theta_elli = np.sqrt((xx)**2 + (2*yy)**2), np.arctan2(xx, yy)
+    pupil_circ = rho_circ <= 1.0
+    pupil_elli = rho_elli <= 1.0
+
+    ### Clipped Defocus
+    rho_circ, theta_circ = rho_circ[pupil_circ], theta_circ[pupil_circ]
+    zernike = zern.ZernikeNaive(mask=pupil_circ)
+    _phase = zernike(coef=np.zeros(10), rho=rho_circ, theta=theta_circ, normalize_noll=False, mode='Jacobi', print_option='Silent')
+    H_flat = zernike.model_matrix[:,3:]   # remove the piston and tilts
+    H_matrix = zern.invert_model_matrix(H_flat, pupil_circ)
+    defocus_circ = H_matrix[:,:,1].copy()
+
+    ### Elliptic
+    rho_elli, theta_elli = rho_elli[pupil_elli], theta_elli[pupil_elli]
+    zernike = zern.ZernikeNaive(mask=pupil_elli)
+    _phase = zernike(coef=np.zeros(50), rho=rho_elli, theta=theta_elli, normalize_noll=False, mode='Jacobi', print_option='Silent')
+    H_flat = zernike.model_matrix   # remove the piston and tilts
+    H_matrix = zern.invert_model_matrix(H_flat, pupil_elli)
+    piston_elli = H_matrix[:,:,0].copy()
+
+    defocus_circ = piston_elli * defocus_circ
+    defocus_elli = H_matrix[:,:,4].copy()
+
+    plt.figure()
+    plt.imshow(defocus_circ)
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(defocus_elli)
+    plt.colorbar()
+    plt.show()
+
+    # Least Squares fit
+    y_obs = defocus_circ[pupil_elli]
+    H = H_flat
+    Ht = H.T
+    Hy = np.dot(Ht, y_obs)
+    N = np.dot(Ht, H)
+    invN = np.linalg.inv(N)
+    x_LS = np.dot(invN, Hy)
+
+    i_LS = list(np.argwhere(np.abs(x_LS) > 0.1)[:, 0])
+
+    for i in i_LS:
+        plt.figure()
+        plt.imshow(H_matrix[:,:, i])
+    plt.show()
+
+    cm = 'jet'
+    f, ((ax1, ax2, ax3), (ax4, ax5, ax6), (ax7, ax8, ax9)) = plt.subplots(3, 3)
+    ax1 = plt.subplot(3, 3, 1)
+    img1 = ax1.imshow(defocus_circ, cm)
+    ax1.get_xaxis().set_visible(False)
+    ax1.get_yaxis().set_visible(False)
+    ax1.set_title('Clipped Circular Defocus')
+
+    ax2 = plt.subplot(3, 3, 2)
+    img2 = ax2.imshow(defocus_elli, cm)
+    ax2.get_xaxis().set_visible(False)
+    ax2.get_yaxis().set_visible(False)
+    ax2.set_title('Anamorphic Defocus')
+
+    res1 = defocus_circ - defocus_elli
+    ax3 = plt.subplot(3, 3, 3)
+    img3 = ax3.imshow(res1, cm, vmin=-1, vmax=1)
+    ax3.get_xaxis().set_visible(False)
+    ax3.get_yaxis().set_visible(False)
+    ax3.set_title('Residual')
+    # ----------------------------------- #
+
+    astig = H_matrix[:,:, i_LS[2]]
+    piston = H_matrix[:,:, i_LS[0]]
+    new = x_LS[i_LS[0]]*piston + x_LS[i_LS[2]]*astig + x_LS[i_LS[1]] * defocus_elli
+    res2 = defocus_circ - new
+    ax4 = plt.subplot(3, 3, 4)
+    img4 = ax4.imshow(astig, cm)
+    ax4.get_xaxis().set_visible(False)
+    ax4.get_yaxis().set_visible(False)
+    ax4.set_title('Anamorphic Astigmatism')
+
+    ax5 = plt.subplot(3, 3, 5)
+    img5 = ax5.imshow(new, cm, vmin=-1, vmax=1)
+    ax5.get_xaxis().set_visible(False)
+    ax5.get_yaxis().set_visible(False)
+    ax5.set_title('Astigmatism + Defocus')
+
+    ax6 = plt.subplot(3, 3, 6)
+    img6 = ax6.imshow(res2, cm, vmin=-1, vmax=1)
+    ax6.get_xaxis().set_visible(False)
+    ax6.get_yaxis().set_visible(False)
+    ax6.set_title('Residual')
+
+    # ------------------------------------- #
+
+    tref = H_matrix[:, :, i_LS[3]]
+    new2 = new + x_LS[i_LS[3]]*tref
+    res3 = defocus_circ - new2
+    ax7 = plt.subplot(3, 3, 7)
+    img7 = ax7.imshow(tref, cm)
+    ax7.get_xaxis().set_visible(False)
+    ax7.get_yaxis().set_visible(False)
+    ax7.set_title('Anamorphic Quatrefoil')
+
+    ax8 = plt.subplot(3, 3, 8)
+    img8 = ax8.imshow(new, cm, vmin=-1, vmax=1)
+    ax8.get_xaxis().set_visible(False)
+    ax8.get_yaxis().set_visible(False)
+    ax8.set_title('Astig + Defocus + Quatrefoil')
+
+    ax9 = plt.subplot(3, 3, 9)
+    img9 = ax9.imshow(res3, cm, vmin=-1, vmax=1)
+    ax9.get_xaxis().set_visible(False)
+    ax9.get_yaxis().set_visible(False)
+    ax9.set_title('Residual')
+
+
+    plt.show()
+
+
+
     path_prelim = os.path.abspath('D:/Thesis/LAM/POP/Slicer/0 Preliminary Tasks')
     N_slices = len(list_slices)
     # ================================================================================================================ #
@@ -319,6 +445,52 @@ if __name__ == "__main__":
     ax2.get_xaxis().set_visible(False)
     ax2.get_yaxis().set_visible(False)
     ax2.set_title('2048')
+    plt.show()
+
+    # ================================================================================================================ #
+
+    """ Compare to NO SLICER """
+    path_perfect = os.path.join(path_2k, 'Perfect PSF')
+    PSF_2k_perfect = load_slices(path_perfect, N_pix=2048, N_crop=2048, file_list=[19], defocus=False)
+
+    f, (ax1, ax2) = plt.subplots(1, 2)
+    ax1 = plt.subplot(1, 2, 1)
+    img1 = ax1.imshow(crop_array(PSF_2kall, 256))
+    ax1.get_xaxis().set_visible(False)
+    ax1.get_yaxis().set_visible(False)
+    ax1.set_title('With Slicer')
+
+    ax2 = plt.subplot(1, 2, 2)
+    img2 = ax2.imshow(crop_array(PSF_2k_perfect[0], 256))
+    ax2.get_xaxis().set_visible(False)
+    ax2.get_yaxis().set_visible(False)
+    ax2.set_title('Without Slicer')
+
+
+    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    ax1 = plt.subplot(1, 3, 1)
+    img1 = ax1.imshow(crop_array(np.log10(PSF_2kall), 512), vmin=-13, vmax=-3)
+    ax1.get_xaxis().set_visible(False)
+    ax1.get_yaxis().set_visible(False)
+    ax1.set_title('With Slicer')
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 3, 2)
+    img2 = ax2.imshow(crop_array(np.log10(PSF_2k_perfect[0]), 512), vmin=-13, vmax=-3)
+    ax2.get_xaxis().set_visible(False)
+    ax2.get_yaxis().set_visible(False)
+    ax2.set_title('Without Slicer')
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    diff = np.log10(np.abs(PSF_2kall - PSF_2k_perfect[0]))
+
+    ax3 = plt.subplot(1, 3, 3)
+    img3 = ax3.imshow(crop_array(diff, 512), vmin=-13, vmax=-3)
+    ax3.get_xaxis().set_visible(False)
+    ax3.get_yaxis().set_visible(False)
+    ax3.set_title('Absolute Residual Difference')
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+
     plt.show()
 
     # ================================================================================================================ #
