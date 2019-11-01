@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from pyzdde.zdde import readBeamFile
 import zern_core as zern
+from astropy.io import fits
 
 # Slices
 list_slices = list(np.arange(1, 77, 2))
@@ -164,7 +165,7 @@ def load_files(path, file_list, N, N_pix=N_pix, N_crop=N_crop, defocus=False):
 
     return [flat_PSFs, PSFs, info]
 
-def load_slices(path, file_list, N_pix=N_pix, N_crop=N_crop, defocus=False):
+def load_slices(path, name_zemax='IFU_TopAB_HARMONI_LAM', file_list=[19], N_pix=N_pix, N_crop=N_crop, defocus=False):
     """
     Loads the Zemax beam files, constructs the PSFs
     and normalizes everything by the intensity of the PSF
@@ -180,7 +181,8 @@ def load_slices(path, file_list, N_pix=N_pix, N_crop=N_crop, defocus=False):
         # flat_PSFs = np.empty((N, N_crop * N_crop))
         PSFs = np.empty((N, N_crop, N_crop))
 
-        name_nominal = 'IFU_TopAB_HARMONI_LAM' + ' 0_'
+        # name_nominal = 'IFU_TopAB_HARMONI_LAM' + ' 0_'
+        name_nominal = name_zemax + ' 0_'
 
         pop_slicer_nom.get_zemax_files(path, name_nominal, file_list)
         for k in range(N):
@@ -193,7 +195,8 @@ def load_slices(path, file_list, N_pix=N_pix, N_crop=N_crop, defocus=False):
         PSFs = np.empty((N, N_crop, N_crop))
 
         # name_nominal = 'IFU_TopAB_HARMONI_LAM' + ' 0_'
-        name_defocus = 'IFU_TopAB_HARMONI_LAM' + ' 0_FOC_'
+        # name_defocus = 'IFU_TopAB_HARMONI_LAM' + ' 0_FOC_'
+        name_defocus = name_zemax + ' 0_FOC_'
 
         # pop_slicer_nom.get_zemax_files(path, name_nominal, file_list)
         pop_slicer_foc.get_zemax_files(path, name_defocus, file_list)
@@ -241,6 +244,9 @@ if __name__ == "__main__":
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
+    path_prelim = os.path.abspath('D:/Thesis/LAM/POP/Slicer/0 Preliminary Tasks')
+    N_slices = len(list_slices)
+
     # ===================
 
     x = np.linspace(-1, 1, 1024, endpoint=True)
@@ -261,7 +267,7 @@ if __name__ == "__main__":
     ### Elliptic
     rho_elli, theta_elli = rho_elli[pupil_elli], theta_elli[pupil_elli]
     zernike = zern.ZernikeNaive(mask=pupil_elli)
-    _phase = zernike(coef=np.zeros(50), rho=rho_elli, theta=theta_elli, normalize_noll=False, mode='Jacobi', print_option='Silent')
+    _phase = zernike(coef=np.zeros(25), rho=rho_elli, theta=theta_elli, normalize_noll=False, mode='Jacobi', print_option='Silent')
     H_flat = zernike.model_matrix   # remove the piston and tilts
     H_matrix = zern.invert_model_matrix(H_flat, pupil_elli)
     piston_elli = H_matrix[:,:,0].copy()
@@ -364,10 +370,6 @@ if __name__ == "__main__":
 
     plt.show()
 
-
-
-    path_prelim = os.path.abspath('D:/Thesis/LAM/POP/Slicer/0 Preliminary Tasks')
-    N_slices = len(list_slices)
     # ================================================================================================================ #
 
     # Autoresample after the Field Splitter blurs away the rings
@@ -448,6 +450,8 @@ if __name__ == "__main__":
     plt.show()
 
     # ================================================================================================================ #
+    #                           NO IMAGE SLICER
+    # ================================================================================================================ #
 
     """ Compare to NO SLICER """
     path_perfect = os.path.join(path_2k, 'Perfect PSF')
@@ -492,6 +496,231 @@ if __name__ == "__main__":
     plt.colorbar(img3, ax=ax3, orientation='horizontal')
 
     plt.show()
+
+    # ------------------------------------
+    # Save the NO SLICER PSF
+
+    # Fix the anamorphism
+
+    def downsample(array, p=2):
+        PIX = array.shape[0]
+        pix = PIX//2
+
+        print("\nInput array with dimensions: ", array.shape)
+
+        # (1) Fix the anamorphism
+        new_array = np.empty((pix, pix))
+        min_crop = PIX // 2 - pix // 2
+        max_crop = PIX // 2 + pix // 2
+        for k in range(pix):
+            crop = array[2 * k:2 * k + 2, min_crop:max_crop]
+            new_array[k] = np.mean(crop, axis=0)
+
+        print("Fixed Anamorphism. New array: ", new_array.shape)
+        print("Downsample by %dX" %p)
+
+        down_array = np.empty((pix//p, pix//p))
+        aux_array = np.empty((pix//p, pix))
+        for k in range(pix//p):     # Downsample X axis
+            crop = new_array[p * k:p * k + p, :]
+            aux_array[k] = np.mean(crop, axis=0)
+        aux_array = aux_array.T
+        for k in range(pix//p):     # Downsample Y axis
+            crop = aux_array[p * k:p * k + p, :]
+            down_array[k] = (np.mean(crop, axis=0))
+        down_array = down_array.T
+        print("Downsampled array: ", down_array.shape)
+
+        return down_array
+
+    PSF_anam = PSF_2k_perfect[0].copy()
+    PSF_round = downsample(PSF_anam)                # Square
+
+    plt.figure()
+    plt.imshow(np.log10(PSF_round))
+    plt.show()
+
+    def save_fits(data, path, filename):
+        hdu = fits.PrimaryHDU(data)
+        hdu.writeto(os.path.join(path, filename + '.fits'), overwrite=True)
+
+    save_fits([PSF_round], path=path_perfect, filename='no_slicer_PSF')
+
+
+    # ================================================================================================================ #
+    #                       NO ABERRATIONS - Different Resolutions
+    # ================================================================================================================ #
+    path_resolution = os.path.abspath('D:/Thesis/LAM/POP/Slicer/2 No Aberrations/Different Resolutions')
+    zemax_name = 'IFU_TopAB_HARMONI_LAM_FASTPOP'
+
+    # Load the 2048 pixels PSF
+    path_res = os.path.join(path_resolution, '2048')
+    PSF = load_slices(path_res, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=list_slices, defocus=False)
+    PSF_all = np.sum(PSF, axis=0)
+
+    defocus = 0.10
+    path_defocus = os.path.join(path_res, 'Defocus %.2f' %defocus)
+    PSF_defocus = load_slices(path_defocus, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=list_slices, defocus=True)
+    PSF_defocus_all = np.sum(PSF_defocus, axis=0)
+
+    # Fix the anamorphic scale and down sample
+    by_pix = [1, 2, 4, 8, 16, 32]
+    for p in by_pix:
+
+        PSF_round = downsample(PSF_all, p)
+        PSF_defocus_round = downsample(PSF_defocus_all, p)
+        resolution = PSF_round.shape[0]
+
+        f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        ax1 = plt.subplot(1, 3, 1)
+        img1 = ax1.imshow(np.log10(PSF_round))
+        ax1.get_xaxis().set_visible(False)
+        ax1.get_yaxis().set_visible(False)
+        ax1.set_title('Nominal [%d pix]' %resolution)
+
+        ax2 = plt.subplot(1, 3, 2)
+        img2 = ax2.imshow(np.log10(PSF_defocus_round))
+        ax2.get_xaxis().set_visible(False)
+        ax2.get_yaxis().set_visible(False)
+        ax2.set_title(r'Defocus $%.2f \lambda$' % defocus)
+
+        diff = PSF_round - PSF_defocus_round
+        cmin = min(np.min(diff), -np.max(diff))
+
+        ax3 = plt.subplot(1, 3, 3)
+        img3 = ax3.imshow(diff, cmap='seismic', vmin=cmin, vmax=-cmin)
+        ax3.get_xaxis().set_visible(False)
+        ax3.get_yaxis().set_visible(False)
+        ax3.set_title(r'Difference: Nominal - Defocus')
+
+        filename = 'PSF_Resolution_%dpix_foc%.2f' % (resolution, defocus)
+        save_fits([PSF_round, PSF_defocus_round], path=path_resolution, filename=filename)
+
+    plt.show()
+
+    defocus2 = 0.20
+    path_defocus2 = os.path.join(path_res, 'Defocus %.2f' %defocus2)
+    PSF_defocus2 = load_slices(path_defocus2, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=list_slices, defocus=True)
+    PSF_defocus_all2 = np.sum(PSF_defocus2, axis=0)
+
+    defocus3 = 0.30
+    path_defocus3 = os.path.join(path_res, 'Defocus %.2f' %defocus3)
+    PSF_defocus3 = load_slices(path_defocus3, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=list_slices, defocus=True)
+    PSF_defocus_all3 = np.sum(PSF_defocus3, axis=0)
+
+    p = 32
+    PSF_round = downsample(PSF_all, p)
+    PSF_defocus_round = downsample(PSF_defocus_all, p)
+    PSF_defocus_round2 = downsample(PSF_defocus_all2, p)
+    PSF_defocus_round3 = downsample(PSF_defocus_all3, p)
+    p_pix = PSF_round.shape[0]
+    k_pix = p_pix//2
+
+    f, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4)
+    ax1 = plt.subplot(1, 4, 1)
+    img1 = ax1.imshow(crop_array(PSF_round, k_pix))
+    ax1.get_xaxis().set_visible(False)
+    ax1.get_yaxis().set_visible(False)
+    ax1.set_title('Nominal [%d pix]' %p_pix)
+
+    ax2 = plt.subplot(1, 4, 2)
+    img2 = ax2.imshow(crop_array(PSF_defocus_round, k_pix))
+    ax2.get_xaxis().set_visible(False)
+    ax2.get_yaxis().set_visible(False)
+    ax2.set_title(r'Defocus $%.2f \lambda$' % defocus)
+
+    ax3 = plt.subplot(1, 4, 3)
+    img3 = ax3.imshow(crop_array(PSF_defocus_round2, k_pix))
+    ax3.get_xaxis().set_visible(False)
+    ax3.get_yaxis().set_visible(False)
+    ax3.set_title(r'Defocus $%.2f \lambda$' % defocus2)
+
+    ax4 = plt.subplot(1, 4, 4)
+    img4 = ax4.imshow(crop_array(PSF_defocus_round3, k_pix))
+    ax4.get_xaxis().set_visible(False)
+    ax4.get_yaxis().set_visible(False)
+    ax4.set_title(r'Defocus $%.2f \lambda$' % defocus3)
+
+    plt.show()
+
+    diff = PSF_round - PSF_defocus_round
+    cmin = min(np.min(diff), -np.max(diff))
+
+    # ----------------------------------------------------------------------------------- #
+
+    """ Compare With / Without Slicer for each Defocus """
+
+    path_defocus_no_slicer = os.path.join(path_defocus, 'No Slicer')
+    PSF_defocus_no_slicer = load_slices(path_defocus_no_slicer, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=[19], defocus=True)[0]
+    PSF_defocus_round_no_slicer = downsample(PSF_defocus_no_slicer, p=1)
+
+    path_defocus_no_slicer2 = os.path.join(path_defocus2, 'No Slicer')
+    PSF_defocus_no_slicer2 = load_slices(path_defocus_no_slicer2, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=[19], defocus=True)[0]
+    PSF_defocus_round_no_slicer2 = downsample(PSF_defocus_no_slicer2, p=1)
+
+    k_pix = 256
+    f, ((ax1, ax2, ax3, ax4), (ax5, ax6, ax7, ax8)) = plt.subplots(2, 4)
+    ax1 = plt.subplot(2, 4, 1)
+    img1 = ax1.imshow(crop_array(PSF_round, k_pix))
+    ax1.get_xaxis().set_visible(False)
+    ax1.get_yaxis().set_visible(False)
+    ax1.set_title('Nominal [1024 pix]')
+
+    ax2 = plt.subplot(2, 4, 2)
+    img2 = ax2.imshow(crop_array(PSF_defocus_round, k_pix))
+    ax2.get_xaxis().set_visible(False)
+    ax2.get_yaxis().set_visible(False)
+    ax2.set_title(r'Defocus $%.2f \lambda$ [Slicer]' % defocus)
+
+    ax3 = plt.subplot(2, 4, 3)
+    img3 = ax3.imshow(crop_array(PSF_defocus_round_no_slicer, k_pix))
+    ax3.get_xaxis().set_visible(False)
+    ax3.get_yaxis().set_visible(False)
+    ax3.set_title(r'Defocus $%.2f \lambda$ [No Slicer]' % defocus)
+
+    diff = PSF_defocus_round - PSF_defocus_round_no_slicer
+    cmin = min(np.min(diff), -np.max(diff))
+
+    ax4 = plt.subplot(2, 4, 4)
+    img4 = ax4.imshow(crop_array(diff, k_pix), cmap='bwr', vmin=cmin, vmax=-cmin)
+    ax4.get_xaxis().set_visible(False)
+    ax4.get_yaxis().set_visible(False)
+    ax4.set_title(r'Difference: With - Without Slicer]')
+
+    # ----------------------------------------------------- #
+
+    ax5 = plt.subplot(2, 4, 5)
+    img5 = ax5.imshow(crop_array(PSF_round, k_pix))
+    ax5.get_xaxis().set_visible(False)
+    ax5.get_yaxis().set_visible(False)
+    ax5.set_title('Nominal [1024 pix]')
+
+    ax6 = plt.subplot(2, 4, 6)
+    img6 = ax6.imshow(crop_array(PSF_defocus_round2, k_pix))
+    ax6.get_xaxis().set_visible(False)
+    ax6.get_yaxis().set_visible(False)
+    ax6.set_title(r'Defocus $%.2f \lambda$ [Slicer]' % defocus2)
+
+    ax7 = plt.subplot(2, 4, 7)
+    img7 = ax7.imshow(crop_array(PSF_defocus_round_no_slicer2, k_pix))
+    ax7.get_xaxis().set_visible(False)
+    ax7.get_yaxis().set_visible(False)
+    ax7.set_title(r'Defocus $%.2f \lambda$ [No Slicer]' % defocus2)
+
+    diff = PSF_defocus_round2 - PSF_defocus_round_no_slicer2
+    cmin = min(np.min(diff), -np.max(diff))
+
+    ax8 = plt.subplot(2, 4, 8)
+    img8 = ax8.imshow(crop_array(diff, k_pix), cmap='bwr', vmin=cmin, vmax=-cmin)
+    ax8.get_xaxis().set_visible(False)
+    ax8.get_yaxis().set_visible(False)
+    ax8.set_title(r'Difference: With - Without Slicer]')
+
+    plt.show()
+
+
+
+
 
     # ================================================================================================================ #
     #                       DEFOCUS
