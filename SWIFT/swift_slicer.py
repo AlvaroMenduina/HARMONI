@@ -9,7 +9,6 @@ SWIFT Image Slicer simulations using Zemax POP
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import zern_core as zern
 from pyzdde.zdde import readBeamFile
 
 wave_nom = 850          # nmn
@@ -134,7 +133,7 @@ class POP_Slicer(object):
 if __name__ == "__main__":
 
     N = 1
-    path_pop = os.path.abspath('D:\Research\Experimental\SWIFT\POP')
+    path_pop = os.path.abspath('D:\Research\Experimental\SWIFT Optical Models\POP')
     
     PSFs = load_files(path_pop, N=N, file_list=list_slices)
     PEAK = np.max(PSFs[1])
