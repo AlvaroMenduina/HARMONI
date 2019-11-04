@@ -156,8 +156,8 @@ class PointSpreadFunction(object):
         self.RBF_flat = matrices[2].copy()
 
         # Defocus phase
-        # self.defoc_coef = np.random.uniform(low=-1, high=1, size=self.N_act)
-        # self.defoc_phase = np.dot(self.RBF_mat, self.defoc_coef)
+        self.defoc_coef = np.random.uniform(low=-1, high=1, size=self.N_act)
+        self.defoc_phase = np.dot(self.RBF_mat, self.defoc_coef)
 
         self.PEAK = self.peak_PSF()
         self.PerfectPSF, _s = self.compute_PSF(np.zeros(self.N_act))
@@ -185,12 +185,12 @@ class PointSpreadFunction(object):
         pupil_function = self.pupil_mask * np.exp(1j * phase)
         image = (np.abs(fftshift(fft2(pupil_function))))**2
 
-        # focus_pupil = self.pupil_mask * np.exp(1j * (phase + self.defoc_phase))
-        # image_focus = (np.abs(fftshift(fft2(focus_pupil)))) ** 2
+        focus_pupil = self.pupil_mask * np.exp(1j * (phase + self.defoc_phase))
+        image_focus = (np.abs(fftshift(fft2(focus_pupil)))) ** 2
 
         try:
             image /= self.PEAK
-            # image_focus /= self.PEAK
+            image_focus /= self.PEAK
 
         except AttributeError:
             # If self.PEAK is not defined, self.compute_PSF will compute the peak
@@ -198,9 +198,10 @@ class PointSpreadFunction(object):
 
         image = image[self.minPix:self.maxPix, self.minPix:self.maxPix]
         strehl = np.max(image)
-        # image_focus = image_focus[self.minPix:self.maxPix, self.minPix:self.maxPix]
+        image_focus = image_focus[self.minPix:self.maxPix, self.minPix:self.maxPix]
 
-        # image = np.concatenate([image, image_focus], axis=1)
+        image = np.stack([image, image_focus])
+        image = np.moveaxis(image, 0, -1)
 
         return image, strehl
 
@@ -276,7 +277,7 @@ class PsfEnv(object):
         rew_img = diff0 - diff
         # print(rew_strehl, rew_img)
         r3 = -0.05          # Discourage (+) then (-) same action
-        reward = rew_img + rew_strehl
+        reward = rew_img
         # print("Strehl: %.3f" %strehl)
         # template = '\nStrehl gain: {:.4f} || Core gain: {:.4f} || Total Reward {:.4f}'
         # print(template.format(r1, r2, reward))
@@ -344,7 +345,7 @@ N_actuators = 10
 enviro = PsfEnv(N_actuators)
 nb_actions = len(enviro.action_space)
 
-WINDOW_LENGTH = 1
+WINDOW_LENGTH = 2
 input_shape = (pix, pix, WINDOW_LENGTH)
 
 # Reference: https://github.com/mkturkcan/Keras-Pong/blob/master/keras_pong.py
@@ -462,7 +463,7 @@ class Agent_PG(Agent):
             x = cur_x
             # print(x.shape)
             prev_x = cur_x
-            aprob = self.model.predict(x.reshape((1, pix, pix, 1)), batch_size=1).flatten()
+            aprob = self.model.predict(x.reshape((1, pix, pix, WINDOW_LENGTH)), batch_size=1).flatten()
             # aprob = self.model.predict(x, batch_size=1).flatten()
             template = '[ ' + len(aprob) * ' {:.3f} ' + ' ]'
             # print(template.format(*aprob))
@@ -516,7 +517,7 @@ class Agent_PG(Agent):
                     # print(input_tr_y)
                     # print(np.vstack(tr_x).reshape(-1, pix, pix, 1).shape)
                     # print(input_tr_y.shape)
-                    self.model.train_on_batch(np.vstack(tr_x).reshape(-1, pix, pix, 1), input_tr_y)
+                    self.model.train_on_batch(np.vstack(tr_x).reshape(-1, pix, pix, WINDOW_LENGTH), input_tr_y)
                     tr_x, tr_y, prob_actions = [], [], []
                     # Checkpoint
                     # os.remove(self.model_path) if os.path.exists(self.model_path) else None
@@ -548,7 +549,8 @@ class Agent_PG(Agent):
         aprob = self.model.predict(x.reshape((1, pix, pix, 1)), batch_size=1).flatten()
         print(aprob)
 
-        return np.argmax(aprob)
+        # return np.argmax(aprob)
+        return aprob
 
     def test(self):
 
@@ -563,6 +565,122 @@ class Agent_PG(Agent):
 agent = Agent_PG(enviro)
 agent.train()
 
+def take_actions(agent, observation):
+
+    x = observation
+    aprob = agent.model.predict(x.reshape((1, pix, pix, 1)), batch_size=1).flatten()
+    print(aprob)
+    N_act = agent.env.PSF.N_act
+    plus_minus = []
+    done = False
+    for k in range(25):
+        print("\n Sweep, ", np.linalg.norm(agent.env.PSF.state.copy()))
+        for i in range(N_act):
+            pair = aprob[2*i:2*i+2]
+            j = np.argmax(pair)
+            if pair[j] > 0.10:
+                plus_minus.append(j)
+                print('Actuator %d, sign %d' %(i+1, j))
+                print(agent.env.PSF.state.copy())
+                observation, reward, done, info = agent.env.step(2*i + j)
+            if done:
+                break
+        if done:
+            break
+
+img0 = agent.env.reset()
+take_actions(agent, img0)
+
+def plot_rates(agent):
+
+    failed, succeeded, total = agent.failures, agent.successes, agent.total
+    N_episodes = len(failed)
+    one_to_one = np.arange(N_episodes)
+    plt.figure()
+    plt.plot(one_to_one, one_to_one, linestyle='--', color='black')
+    plt.plot(failed, label='Failed', color='red')
+    plt.plot(succeeded, label='Suceeded', color='green')
+    plt.xlabel('Episode')
+    plt.ylabel('Counts')
+    plt.xlim([1, N_episodes])
+    plt.ylim([1, N_episodes])
+    plt.legend()
+
+    f_rate, s_rate = [], []
+    for k in range(N_episodes):
+        s_rate.append(100 * succeeded[k] / total[k])
+        f_rate.append(100 * failed[k] / total[k])
+    plt.figure()
+    plt.plot(s_rate, color='green', label='Success')
+    plt.plot(f_rate, color='red', label='Failure')
+    plt.ylim([0, 100])
+    plt.xlim([1, N_episodes])
+    plt.xlabel('Episode')
+    plt.ylabel('Percent')
+    plt.legend()
+
+    # Average of last 10 rates
+    p = 25
+    f_rate_10, s_rate_10 = [], []
+    for k in np.arange(p, N_episodes):
+        last_10_success = succeeded[k] - succeeded[k - p]
+        last_10_failures = failed[k] - failed[k - p]
+        f_rate_10.append(100 * last_10_failures/ p)
+        s_rate_10.append(100 * last_10_success / p)
+    plt.figure()
+    plt.plot(s_rate_10, color='green')
+    # plt.plot(f_rate_10, color='red')
+    plt.xlabel('Episode')
+    plt.ylabel('Success rate')
+    plt.ylim([0, 100])
+
+
+    plt.show()
+    return
+plot_rates(agent)
+
+
+def test_strehl(agent, N_samples=5, N_iter=100):
+
+    strehls_good, strehls_bad = [], []
+    for k in range(N_samples):
+        print('\nSample Number %d' %(k+1))
+        img0 = agent.env.reset()
+        observation = img0.copy()
+        done = False
+        s = [np.max(observation)]
+        for i in range(N_iter):
+            if done:
+                break
+            else:
+                action = agent.make_action(observation)
+                observation, reward, done, info = agent.env.step(action)
+                s.append(np.max(observation))
+        if s[0] > s[-1]:    # Worse Strehl than before
+            strehls_bad.append(s)
+        if s[0] < s[-1]:    # Better Strehl than before
+            strehls_good.append(s)
+    strehls_bad = np.array(strehls_bad)
+    strehls_good = np.array(strehls_good)
+    print()
+    N_good = strehls_good.shape[0]
+    N_bad = strehls_bad.shape[0]
+    print("\nOut of %d Systems" %N_samples)
+    print("%d improved in Strehl" % N_good)
+    print("%d decreased in Strehl" % N_bad)
+
+    plt.figure()
+    for k in range(N_good):
+        plt.plot(strehls_good[k], color='green')
+    for k in range(N_bad):
+        plt.plot(strehls_bad[k], color='red')
+    plt.xlabel('Iterations')
+    plt.ylabel('Strehl')
+    plt.show()
+
+test_strehl(agent, N_samples=150, N_iter=100)
+
+
 def test(agent, N_samples=5, N_iter=100):
 
     N_act = agent.env.PSF.N_act
@@ -571,6 +689,8 @@ def test(agent, N_samples=5, N_iter=100):
 
     strehls = []
     plt.figure()
+    failed_states = []
+    success_states = []
     for k in range(N_samples):
         print('\nSample Number %d' %(k+1))
         img0 = agent.env.reset()
@@ -579,7 +699,7 @@ def test(agent, N_samples=5, N_iter=100):
         initial_state = agent.env.x0.copy()
         print('Initial State:', template.format(*initial_state))
 
-        s = []
+        s0 = np.max(observation)
         states = [initial_state]
 
         for i in range(N_iter):
@@ -597,6 +717,14 @@ def test(agent, N_samples=5, N_iter=100):
             print('New State:', template.format(*new_state))
             states.append(new_state)
 
+        s = np.max(observation)
+        ds = s - s0
+        if ds < 0:
+            failed_states.append(initial_state)
+        if ds > 0:
+            success_states.append(initial_state)
+    return failed_states, success_states
+
         states = np.array(states)
         print(states.shape)
         plt.figure()
@@ -607,15 +735,22 @@ def test(agent, N_samples=5, N_iter=100):
         plt.ylabel('Coefficient')
         plt.legend(title='Actuator')
 
-        #     s.append(np.max(observation))
-        #     # plt.scatter(i+1, np.max(observation), color='black')
-        #
-        # plt.plot(s, color='black')
-        # strehls.append(s)
-
-
 test(agent)
 plt.show()
+
+fail, succ = test(agent, N_samples=150, N_iter=100)
+
+for (i, j) in itertools.combinations(range(8), 2):
+    plt.figure()
+    for f in fail:
+        plt.scatter(f[i], f[j], color='red')
+        plt.xlabel(i)
+        plt.ylabel(j)
+    for s in succ:
+        plt.scatter(s[i], s[j], color='green')
+        plt.xlabel(i)
+        plt.ylabel(j)
+    plt.show()
 
 
 if __name__ == '__main__':

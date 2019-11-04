@@ -259,21 +259,21 @@ if __name__ == "__main__":
     ### Clipped Defocus
     rho_circ, theta_circ = rho_circ[pupil_circ], theta_circ[pupil_circ]
     zernike = zern.ZernikeNaive(mask=pupil_circ)
-    _phase = zernike(coef=np.zeros(10), rho=rho_circ, theta=theta_circ, normalize_noll=False, mode='Jacobi', print_option='Silent')
-    H_flat = zernike.model_matrix[:,3:]   # remove the piston and tilts
+    _phase = zernike(coef=np.zeros(50), rho=rho_circ, theta=theta_circ, normalize_noll=False, mode='Jacobi', print_option='Silent')
+    H_flat = zernike.model_matrix   # remove the piston and tilts
     H_matrix = zern.invert_model_matrix(H_flat, pupil_circ)
-    defocus_circ = H_matrix[:,:,1].copy()
+    defocus_circ = H_matrix[:,:,4].copy()
 
     ### Elliptic
     rho_elli, theta_elli = rho_elli[pupil_elli], theta_elli[pupil_elli]
     zernike = zern.ZernikeNaive(mask=pupil_elli)
     _phase = zernike(coef=np.zeros(25), rho=rho_elli, theta=theta_elli, normalize_noll=False, mode='Jacobi', print_option='Silent')
-    H_flat = zernike.model_matrix   # remove the piston and tilts
-    H_matrix = zern.invert_model_matrix(H_flat, pupil_elli)
-    piston_elli = H_matrix[:,:,0].copy()
+    H_flat_elli = zernike.model_matrix   # remove the piston and tilts
+    H_matrix_elli = zern.invert_model_matrix(H_flat_elli, pupil_elli)
+    piston_elli = H_matrix_elli[:,:,0].copy()
 
     defocus_circ = piston_elli * defocus_circ
-    defocus_elli = H_matrix[:,:,4].copy()
+    defocus_elli = H_matrix_elli[:,:,4].copy()
 
     plt.figure()
     plt.imshow(defocus_circ)
@@ -286,7 +286,7 @@ if __name__ == "__main__":
 
     # Least Squares fit
     y_obs = defocus_circ[pupil_elli]
-    H = H_flat
+    H = H_flat_elli
     Ht = H.T
     Hy = np.dot(Ht, y_obs)
     N = np.dot(Ht, H)
@@ -297,7 +297,8 @@ if __name__ == "__main__":
 
     for i in i_LS:
         plt.figure()
-        plt.imshow(H_matrix[:,:, i])
+        plt.imshow(H_matrix_elli[:,:, i])
+        plt.title(x_LS[i])
     plt.show()
 
     cm = 'jet'
@@ -369,6 +370,33 @@ if __name__ == "__main__":
 
 
     plt.show()
+
+    """ The other way around! """
+    ### Could we use clipped aberrations to mimic the anamorphic defocus?
+
+    # Least Squares fit
+    aberration = H_matrix_elli[:,:,5].copy()
+    y_obs = aberration[pupil_elli]
+    H_matrix_masked = H_matrix * pupil_elli[:,:,np.newaxis]     # Clip the circular matrix
+    H = H_matrix_masked[pupil_elli]     # Flatten it with the elliptical pupil
+    Ht = H.T
+    Hy = np.dot(Ht, y_obs)
+    N = np.dot(Ht, H)
+    invN = np.linalg.inv(N)
+    x_LS = np.dot(invN, Hy)
+
+    i_LS = list(np.argwhere(np.abs(x_LS) > 0.1)[:, 0])
+    s = np.zeros_like(aberration)
+    for i in i_LS:
+        plt.figure()
+        plt.imshow(H_matrix_masked[:,:, i])
+
+        s += x_LS[i] * H_matrix_masked[:,:, i]
+        rms = np.std(H_matrix[:,:, i][pupil_circ])
+        plt.title(x_LS[i])
+        print(rms)
+    plt.show()
+
 
     # ================================================================================================================ #
 
@@ -546,6 +574,158 @@ if __name__ == "__main__":
 
     save_fits([PSF_round], path=path_perfect, filename='no_slicer_PSF')
 
+    # ================================================================================================================ #
+    # ================================================================================================================ #
+    # ================================================================================================================ #
+
+    """ FIXED THE ANAMORPHIC DEFOCUS """
+
+    path = os.path.abspath('D:/Thesis/LAM/POP/Slicer/9 Other Wavelengths/2.25 um/1024')
+    zemax_name = 'IFU_TopAB_HARMONI_LAM_FASTPOP'
+    PIX = 1024
+    PSF = load_slices(path, name_zemax=zemax_name, N_pix=PIX, N_crop=PIX, file_list=list_slices, defocus=False)
+    PSF_all = np.sum(PSF, axis=0)
+
+    ### Loop Over all Defocus values
+    defocus_values = [0.05, 0.10, 0.20, 0.30]
+    # defocus_values = [0.10]
+    path_fits = os.path.abspath('D:/Thesis/LAM/POP/Slicer/2 No Aberrations/Anamorphic Defocus')
+    for focus in defocus_values:
+
+        # Load the Defocused PSF
+        path_defocus = os.path.join(path, 'Defocus %.2f' % focus)
+        PSF_defocus = load_slices(path_defocus, name_zemax=zemax_name, N_pix=PIX, N_crop=PIX, file_list=list_slices,
+                                  defocus=True)
+        PSF_defocus_all = np.sum(PSF_defocus, axis=0)
+
+        # Load the No Slicer Defocus
+        path_defocus_no_slicer = os.path.join(path_defocus, 'No Slicer')
+        PSF_defocus_no_slicer = load_slices(path_defocus_no_slicer, name_zemax=zemax_name,
+                                            N_pix=PIX, N_crop=PIX, file_list=[19], defocus=True)[0]
+
+        f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+        ax1 = plt.subplot(1, 3, 1)
+        img1 = ax1.imshow(crop_array((PSF_defocus_all), 1024))
+        ax1.get_xaxis().set_visible(False)
+        ax1.get_yaxis().set_visible(False)
+        ax1.set_title('With Slicer')
+        plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+        ax2 = plt.subplot(1, 3, 2)
+        img2 = ax2.imshow(crop_array((PSF_defocus_no_slicer), 1024))
+        ax2.get_xaxis().set_visible(False)
+        ax2.get_yaxis().set_visible(False)
+        ax2.set_title('Without Slicer')
+        plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+        diff = np.log10(np.abs(PSF_2kall - PSF_2k_perfect[0]))
+
+        ax3 = plt.subplot(1, 3, 3)
+        img3 = ax3.imshow(crop_array(diff, 512), vmin=-13, vmax=-3)
+        ax3.get_xaxis().set_visible(False)
+        ax3.get_yaxis().set_visible(False)
+        ax3.set_title('Absolute Residual Difference')
+        plt.colorbar(img3, ax=ax3, orientation='horizontal')
+
+        plt.show()
+
+        # Fix the anamorphic scale and down sample
+        by_pix = [1, 2, 4, 8, 16, 32]
+        for p in by_pix:
+
+            PSF_round = downsample(PSF_all, p)
+            PSF_defocus_round = downsample(PSF_defocus_all, p)
+            resolution = PSF_round.shape[0]
+
+            # Save as .fits
+            filename = 'Perfect_PSF_%dPIX_%.2fFOC' % (resolution, focus)
+            save_fits([PSF_round, PSF_defocus_round], path=path_fits, filename=filename)
+
+
+
+
+
+
+    defocus = 0.10
+    path_defocus = os.path.join(path, 'Defocus %.2f' %defocus)
+    PSF_defocus = load_slices(path_defocus, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=list_slices, defocus=True)
+    PSF_defocus_all = np.sum(PSF_defocus, axis=0)
+
+    defocus2 = 0.20
+    path_defocus2 = os.path.join(path, 'Defocus %.2f' %defocus2)
+    PSF_defocus2 = load_slices(path_defocus2, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=list_slices, defocus=True)
+    PSF_defocus_all2 = np.sum(PSF_defocus2, axis=0)
+
+    f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
+    ax1 = plt.subplot(2, 2, 1)
+    img1 = ax1.imshow(crop_array(PSF_all, 512))
+    ax1.get_xaxis().set_visible(False)
+    ax1.get_yaxis().set_visible(False)
+    ax1.set_title(r'Nominal PSF [Zoom 512 pix]')
+    # plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(2, 2, 2)
+    img2 = ax2.imshow(crop_array(PSF_defocus_all2, 512))
+    ax2.get_xaxis().set_visible(False)
+    ax2.get_yaxis().set_visible(False)
+    ax2.set_title(r'Defocus %.2f $\lambda$' %defocus2)
+    # plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    # diff = np.log10(np.abs(PSF_2kall - PSF_2k_perfect[0]))
+
+    ax3 = plt.subplot(2, 2, 3)
+    img3 = ax3.imshow(np.log10(PSF_all))
+    ax3.get_xaxis().set_visible(False)
+    ax3.get_yaxis().set_visible(False)
+    ax3.set_title(r'Nominal PSF Log10 [2048 pix]')
+    # plt.colorbar(img3, ax=ax3, orientation='horizontal')
+
+    ax4 = plt.subplot(2, 2, 4)
+    img4 = ax4.imshow(np.log10(PSF_defocus_all2))
+    ax4.get_xaxis().set_visible(False)
+    ax4.get_yaxis().set_visible(False)
+    ax4.set_title(r'Defocus %.2f $\lambda$' %defocus2)
+
+    plt.show()
+
+    path_defocus_no_slicer2 = os.path.join(path_defocus2, 'No Slicer')
+    PSF_defocus_no_slicer2 = load_slices(path_defocus_no_slicer2, name_zemax=zemax_name, N_pix=2048, N_crop=2048, file_list=[19], defocus=True)[0]
+
+    #### Compare Defocus With and Without
+
+    pp = np.max(PSF_defocus_no_slicer2)
+
+    f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
+    ax1 = plt.subplot(2, 2, 1)
+    img1 = ax1.imshow(crop_array(PSF_defocus_all2/pp, 512))
+    ax1.get_xaxis().set_visible(False)
+    ax1.get_yaxis().set_visible(False)
+    ax1.set_title(r'Nominal PSF [Zoom 512 pix]')
+    plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(2, 2, 2)
+    img2 = ax2.imshow(crop_array(PSF_defocus_no_slicer2/pp, 512))
+    ax2.get_xaxis().set_visible(False)
+    ax2.get_yaxis().set_visible(False)
+    ax2.set_title(r'Defocus %.2f $\lambda$' %defocus2)
+    plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+    diff = PSF_defocus_no_slicer2/pp - PSF_defocus_all2/pp
+
+    ax3 = plt.subplot(2, 2, 3)
+    img3 = ax3.imshow(crop_array(diff,512))
+    ax3.get_xaxis().set_visible(False)
+    ax3.get_yaxis().set_visible(False)
+    ax3.set_title(r'Nominal PSF Log10 [2048 pix]')
+    plt.colorbar(img3, ax=ax3, orientation='horizontal')
+
+    ax4 = plt.subplot(2, 2, 4)
+    img4 = ax4.imshow(np.log10(PSF_defocus_all2))
+    ax4.get_xaxis().set_visible(False)
+    ax4.get_yaxis().set_visible(False)
+    ax4.set_title(r'Defocus %.2f $\lambda$' %defocus2)
+
+    plt.show()
 
     # ================================================================================================================ #
     #                       NO ABERRATIONS - Different Resolutions
