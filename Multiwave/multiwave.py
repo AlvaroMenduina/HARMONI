@@ -14,13 +14,13 @@ from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
-Z = 1.25                    # Strength of the aberrations
+Z = 1.5                    # Strength of the aberrations
 pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
-N_WAVES = 4
-WAVE_N = 1.6
+N_WAVES = 5
+WAVE_N = 2.0
 
 " Actuators "
 
@@ -201,7 +201,7 @@ if __name__ == "__main__":
     wave0 = 1.0
     waves_ratio = np.linspace(1., WAVE_N / wave0, N_WAVES, endpoint=True)
 
-    N_actuators = 25
+    N_actuators = 20
     centers = actuator_centres(N_actuators, radial=False)
     N_act = len(centers[0][0])
 
@@ -231,7 +231,7 @@ if __name__ == "__main__":
     plt.imshow(rbf_matrices[1][0][:,:,0])
     plt.show()
 
-    c_act = np.random.uniform(-1, 1, size=N_act)
+    c_act = Z*np.random.uniform(-1, 1, size=N_act)
     phase0 = np.dot(rbf_matrices[0][0], c_act)
     phaseN = np.dot(rbf_matrices[1][0], c_act)
 
@@ -246,9 +246,8 @@ if __name__ == "__main__":
 
     PSF = PointSpreadFunction(rbf_matrices)
 
-    PSF.plot_PSF(c_act, wave_idx=0)
-    PSF.plot_PSF(c_act, wave_idx=1)
-    PSF.plot_PSF(c_act, wave_idx=2)
+    for idx in range(N_WAVES):
+        PSF.plot_PSF(c_act, wave_idx=idx)
 
     plt.show()
 
@@ -298,7 +297,7 @@ if __name__ == "__main__":
     training_PSF, test_PSF, training_coef, test_coef = generate_training_set(PSF, N_train, N_test)
 
     k_train = 0
-    plot_waves = 3
+    plot_waves = N_WAVES
     f, axes = plt.subplots(plot_waves, 2)
     for i in range(plot_waves):
         ax = plt.subplot(plot_waves, 2, 2*i + 1)
@@ -390,7 +389,7 @@ if __name__ == "__main__":
 
             train_history = model.fit(x=train_wave, y=training_coef,
                                       validation_data=(test_wave, test_coef),
-                                      epochs=10, batch_size=32, shuffle=True, verbose=1)
+                                      epochs=20, batch_size=32, shuffle=True, verbose=1)
             loss_hist = train_history.history['loss']
             val_hist = train_history.history['val_loss']
             validation_losses.append(val_hist)
@@ -425,8 +424,9 @@ if __name__ == "__main__":
 
     list_waves = list(np.arange(1, N_WAVES + 1))
 
-    plot_waves = 4
+    plot_waves = 5
     n_rows = plot_waves // 2
+    n_rows = 3
     f, axes = plt.subplots(n_rows, n_rows)
     for i in range(n_rows):
         for j in range(n_rows):
@@ -440,13 +440,13 @@ if __name__ == "__main__":
             ax.hist(rms0, histtype='step')
             ax.hist(rms_wave, histtype='step')
             ax.axvline(med_rms, linestyle='--', color='black')
-            ax.set_xlim([0, 1])
-            ax.set_ylim([0, 250])
+            ax.set_xlim([0, 1.2])
+            # ax.set_ylim([0, 250])
             ax.set_title(r'Wave Channels %d | RMW WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
     plt.show()
 
     k_phase = 5
-    plot_waves = 4
+    plot_waves = N_WAVES
     mapp = 'bwr'
     f, axes = plt.subplots(1, plot_waves + 1)
     # Initial Wavefront
@@ -483,15 +483,14 @@ if __name__ == "__main__":
             coef_copy = coef[k].copy()
             for i in range(N_copies):
                 read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
-
                 new_data[N_copies * k + i] = PSF + read_out
                 new_coef[N_copies * k + i] = coef_copy
 
         return new_data, new_coef
 
     RMS_READ = 1./100
-    read_train_PSF, read_train_coef = noise_images(training_PSF, training_coef, RMS_READ, N_copies=3)
-    read_test_PSF, read_test_coef = noise_images(test_PSF, test_coef, RMS_READ, N_copies=3)
+    read_train_PSF, read_train_coef = noise_images(training_PSF, training_coef, RMS_READ, N_copies=5)
+    read_test_PSF, read_test_coef = noise_images(test_PSF, test_coef, RMS_READ, N_copies=5)
 
     ### Check the performance on noisy data
     val_loss, guessed_coef, rms0, rms, wavefr0, wavefronts = test_models(PSF, read_train_PSF, read_test_PSF,

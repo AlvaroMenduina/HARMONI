@@ -580,9 +580,10 @@ if __name__ == "__main__":
 
     """ FIXED THE ANAMORPHIC DEFOCUS """
 
-    path = os.path.abspath('D:/Thesis/LAM/POP/Slicer/9 Other Wavelengths/2.25 um/1024')
+    # path = os.path.abspath('D:/Thesis/LAM/POP/Slicer/9 Other Wavelengths/2.25 um/1024')
+    path = os.path.abspath('D:/Thesis/LAM/POP/Slicer/2 No Aberrations/Anamorphic Defocus/2048')
     zemax_name = 'IFU_TopAB_HARMONI_LAM_FASTPOP'
-    PIX = 1024
+    PIX = 2048
     PSF = load_slices(path, name_zemax=zemax_name, N_pix=PIX, N_crop=PIX, file_list=list_slices, defocus=False)
     PSF_all = np.sum(PSF, axis=0)
 
