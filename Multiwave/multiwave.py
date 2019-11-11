@@ -19,7 +19,7 @@ pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
-N_WAVES = 5
+N_WAVES = 15
 WAVE_N = 2.0
 
 " Actuators "
@@ -229,7 +229,7 @@ if __name__ == "__main__":
 
     plt.figure()
     plt.imshow(rbf_matrices[1][0][:,:,0])
-    plt.show()
+    # plt.show()
 
     c_act = Z*np.random.uniform(-1, 1, size=N_act)
     phase0 = np.dot(rbf_matrices[0][0], c_act)
@@ -242,7 +242,7 @@ if __name__ == "__main__":
     plt.figure()
     plt.imshow(phaseN)
     plt.colorbar()
-    plt.show()
+    # plt.show()
 
     PSF = PointSpreadFunction(rbf_matrices)
 
@@ -295,6 +295,12 @@ if __name__ == "__main__":
 
     N_train, N_test = 5000, 500
     training_PSF, test_PSF, training_coef, test_coef = generate_training_set(PSF, N_train, N_test)
+
+    ### Does it saturate because of the defocus range?
+    # We put a defocus in [nm] that affects the PSF at each wavelength different
+    # For very long wavelengths, the defocus makes almost no difference in intensity
+    # Could it be that at such point we do not gain from "diversity" but from error statistics?
+    # more samples of the readout noise...
 
     k_train = 0
     plot_waves = N_WAVES
@@ -404,7 +410,8 @@ if __name__ == "__main__":
             _rms = []
             for k in range(N_test):
                 phase = np.dot(rbf_mat, residual[k])
-                wavefr.append(phase)
+                # if k < 50:
+                #     wavefr.append(phase)
                 phase_f = phase[pupil_mask]
                 _rms.append(np.std(phase_f))
             wavefronts.append(wavefr)
@@ -424,25 +431,46 @@ if __name__ == "__main__":
 
     list_waves = list(np.arange(1, N_WAVES + 1))
 
-    plot_waves = 5
-    n_rows = plot_waves // 2
-    n_rows = 3
-    f, axes = plt.subplots(n_rows, n_rows)
+    plot_waves = N_WAVES
+    # n_rows = plot_waves // 2
+    n_columns = 4
+    n_rows = 4
+    f, axes = plt.subplots(n_rows, n_columns)
+    mus = []
+    rmses = []
     for i in range(n_rows):
-        for j in range(n_rows):
-            k = n_rows * i + j
+        for j in range(n_columns):
+            k = n_columns * i + j
+            if k >= plot_waves:
+                break
             rms_wave = rms[k]
             avg_rms = np.mean(rms_wave)
             med_rms = np.median(rms_wave)
             std_rms = np.std(rms_wave)
+            mus.append(med_rms)
+            rmses.append(std_rms)
             print(k)
-            ax = plt.subplot(n_rows, n_rows, k + 1)
+            ax = plt.subplot(n_rows, n_columns, k + 1)
             ax.hist(rms0, histtype='step')
             ax.hist(rms_wave, histtype='step')
             ax.axvline(med_rms, linestyle='--', color='black')
-            ax.set_xlim([0, 1.2])
-            # ax.set_ylim([0, 250])
-            ax.set_title(r'Wave Channels %d | RMW WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
+            ax.set_ylim([0, 1250])
+            ax.set_title(r'Channels %d | WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
+            ax.set_xlim([0, 1.25])
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+            if i == n_rows - 1:
+                ax.get_xaxis().set_visible(True)
+                ax.set_xlabel(r'RMS Wavefront [$\lambda$]')
+            if j == 0:
+                ax.get_yaxis().set_visible(True)
+
+    ax = plt.subplot(n_rows, n_columns, n_rows*n_columns)
+    # ax.scatter(list_waves, medians)
+    ax.errorbar(list_waves, mus, yerr=rmses, fmt='o')
+    ax.set_xlabel('Waves considered')
+    ax.set_ylabel(r'RMS Wavefront [$\lambda$]')
+    ax.set_xticks(list_waves)
     plt.show()
 
     k_phase = 5
@@ -479,6 +507,8 @@ if __name__ == "__main__":
         new_coef = np.empty((N_copies * N_PSF, N_act))
 
         for k in range(N_PSF):
+            if k %100 == 0:
+                print(k)
             PSF = dataset[k].copy()
             coef_copy = coef[k].copy()
             for i in range(N_copies):
@@ -489,12 +519,63 @@ if __name__ == "__main__":
         return new_data, new_coef
 
     RMS_READ = 1./100
-    read_train_PSF, read_train_coef = noise_images(training_PSF, training_coef, RMS_READ, N_copies=5)
-    read_test_PSF, read_test_coef = noise_images(test_PSF, test_coef, RMS_READ, N_copies=5)
+    N_copies = 6
+    read_train_PSF, read_train_coef = noise_images(training_PSF, training_coef, RMS_READ, N_copies)
+    read_test_PSF, read_test_coef = noise_images(test_PSF, test_coef, RMS_READ, N_copies)
 
     ### Check the performance on noisy data
     val_loss, guessed_coef, rms0, rms, wavefr0, wavefronts = test_models(PSF, read_train_PSF, read_test_PSF,
                                                                          read_train_coef, read_test_coef)
+
+    """ Good Question """
+    ### Is the improvement because of HAVING EXTRA IMAGES
+    # or is it because we have one image at a higher sampling??
+
+    # To test that, train only on the longest wavelength
+
+    N_channels = 2
+    input_shape = (pix, pix, N_channels,)
+    print(input_shape)
+    model = Sequential()
+    model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Flatten())
+    model.add(Dense(N_act))
+    model.summary()
+    model.compile(optimizer='adam', loss='mean_squared_error')
+
+    # Keep only the last Channels for the Longest Wavelength
+    read_train_wave = read_train_PSF[:, :, :, -N_channels:]
+    read_test_wave = read_test_PSF[:, :, :, -N_channels:]
+
+    train_history = model.fit(x=read_train_wave, y=read_train_coef,
+                              validation_data=(read_test_wave, read_test_coef),
+                              epochs=20, batch_size=32, shuffle=True, verbose=1)
+
+    guess_longwave = model.predict(read_test_wave)
+    residual_longwave = read_test_coef - guess_longwave
+
+    rms_longwave = []
+    for k in range(residual_longwave.shape[0]):
+        phase = np.dot(PSF.RBF_mat[0], residual_longwave[k])
+        phase_f = phase[PSF.pupil_masks[0]]
+        rms_longwave.append(np.std(phase_f))
+
+    plt.figure()
+    plt.hist(rms0, histtype='step', label='Initial')
+    plt.hist(rms[-1], histtype='step', label='%d waves considered' % N_WAVES)
+    plt.axvline(np.median(rms[-1]), color='orange', linestyle='--')
+    std_5 = np.std(rms[-1])
+    plt.hist(rms_longwave, histtype='step', label='1 wave [longest]')
+    plt.axvline(np.median(rms_longwave), color='green', linestyle='--')
+    std_longwave = np.std(rms_longwave)
+    plt.legend()
+    plt.xlim([0, 1.25])
+    plt.xlabel(r'RMS wavefront [$\lambda$]')
+    plt.show()
+
 
 
 
