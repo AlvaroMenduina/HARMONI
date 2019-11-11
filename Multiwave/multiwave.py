@@ -1,13 +1,13 @@
 
 
-
+import os
 import numpy as np
 from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
 from keras import models
-from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Activation, Dropout
+from keras.layers import Dense, Conv2D, AveragePooling2D, MaxPooling2D, Flatten, Activation, Dropout
 from keras.models import Sequential
 from keras import backend as K
 from keras.backend.tensorflow_backend import tf
@@ -19,7 +19,7 @@ pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
-N_WAVES = 15
+N_WAVES = 20
 WAVE_N = 2.0
 
 " Actuators "
@@ -172,7 +172,9 @@ def generate_training_set(PSF_model, N_train=1500, N_test=500):
     # defocus = np.zeros(N_zern)
     # defocus[1] = focus
     # FIXME! Watch out when using the ACTUATOR MODE
-    defocus = np.random.uniform(low=-1, high=1, size=N_act)
+    # defocus = np.random.uniform(low=-1.25, high=1.25, size=N_act)
+    # np.save('defocus', defocus)
+    defocus = np.load('defocus.npy')
     dataset = np.empty((N_samples, pix, pix, 2*N_WAVES))
 
     for i in range(N_samples):
@@ -252,95 +254,105 @@ if __name__ == "__main__":
     plt.show()
 
     # ================================================================================================================ #
-    """ Could the Multiwavelength information be useful for calibration? """
-    ### The Answer is OF COURSE NOT
-    coeff_degen = np.zeros(N_act)
-    k_act = 25
-    coeff_degen[k_act] = 15
-    coeff_degen[-k_act] = 15
-    phase_degen = np.dot(rbf_matrices[0][0], coeff_degen)
-
-    plt.figure()
-    plt.imshow(phase_degen)
-    plt.colorbar()
-    plt.show()
-    for wave_idx in range(N_WAVES):
-        p_plus, _s = PSF.compute_PSF(coeff_degen, wave_idx)
-        coeff_degen[-1] *= -1
-        p_minus, _s = PSF.compute_PSF(coeff_degen, wave_idx)
-
-        mapp = 'viridis'
-
-        f, (ax1, ax2, ax3) = plt.subplots(1, 3)
-        ax1 = plt.subplot(1, 3, 1)
-        img1 = ax1.imshow(p_plus, cmap=mapp)
-        ax1.set_title('Plus')
-        # img1.set_clim(m, -m)
-        plt.colorbar(img1, ax=ax1, orientation='horizontal')
-
-        ax2 = plt.subplot(1, 3, 2)
-        img2 = ax2.imshow(p_minus, cmap=mapp)
-        ax2.set_title('Minus')
-        # img2.set_clim(m, -m)
-        plt.colorbar(img2, ax=ax2, orientation='horizontal')
-
-        ax3 = plt.subplot(1, 3, 3)
-        img3 = ax3.imshow(p_plus - p_minus, cmap=mapp)
-        ax3.set_title('Diff')
-        # img3.set_clim(m, -m)
-        plt.colorbar(img3, ax=ax3, orientation='horizontal')
-    plt.show()
+    # """ Could the Multiwavelength information be useful for calibration? """
+    # ### The Answer is OF COURSE NOT
+    # coeff_degen = np.zeros(N_act)
+    # k_act = 25
+    # coeff_degen[k_act] = 15
+    # coeff_degen[-k_act] = 15
+    # phase_degen = np.dot(rbf_matrices[0][0], coeff_degen)
+    #
+    # plt.figure()
+    # plt.imshow(phase_degen)
+    # plt.colorbar()
+    # plt.show()
+    # for wave_idx in range(N_WAVES):
+    #     p_plus, _s = PSF.compute_PSF(coeff_degen, wave_idx)
+    #     coeff_degen[-1] *= -1
+    #     p_minus, _s = PSF.compute_PSF(coeff_degen, wave_idx)
+    #
+    #     mapp = 'viridis'
+    #
+    #     f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    #     ax1 = plt.subplot(1, 3, 1)
+    #     img1 = ax1.imshow(p_plus, cmap=mapp)
+    #     ax1.set_title('Plus')
+    #     # img1.set_clim(m, -m)
+    #     plt.colorbar(img1, ax=ax1, orientation='horizontal')
+    #
+    #     ax2 = plt.subplot(1, 3, 2)
+    #     img2 = ax2.imshow(p_minus, cmap=mapp)
+    #     ax2.set_title('Minus')
+    #     # img2.set_clim(m, -m)
+    #     plt.colorbar(img2, ax=ax2, orientation='horizontal')
+    #
+    #     ax3 = plt.subplot(1, 3, 3)
+    #     img3 = ax3.imshow(p_plus - p_minus, cmap=mapp)
+    #     ax3.set_title('Diff')
+    #     # img3.set_clim(m, -m)
+    #     plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    # plt.show()
 
     # ------------------------------------------------------------------------------- #
 
+    """ Generate a training set of CLEAN PSF images """
+
     N_train, N_test = 5000, 500
-    training_PSF, test_PSF, training_coef, test_coef = generate_training_set(PSF, N_train, N_test)
+    N_batches = 10
+    for k in range(N_batches):
+        training_PSF, test_PSF, training_coef, test_coef = generate_training_set(PSF, N_train, N_test)
+        np.save('training_PSF%d' % k, training_PSF)
+        np.save('test_PSF%d' % k, test_PSF)
+        np.save('training_coef%d' % k, training_coef)
+        np.save('training_coef%d' % k, test_coef)
 
-    ### Does it saturate because of the defocus range?
-    # We put a defocus in [nm] that affects the PSF at each wavelength different
-    # For very long wavelengths, the defocus makes almost no difference in intensity
-    # Could it be that at such point we do not gain from "diversity" but from error statistics?
-    # more samples of the readout noise...
+    """ In the absence of noise, how many examples do we need? """
+    # Just load 3 channels
+    load_waves = 3
+    training_PSF, test_PSF, training_coef, test_coef = [], [], [], []
+    for k in range(N_batches):
+        training_p = np.load('training_PSF%d.npy' % k)[:, :, :, :2*load_waves]
+        test_p = np.load('test_PSF%d.npy' % k)[:, :, :, :2*load_waves]
+        training_c = np.load('training_coef%d.npy' % k)
+        test_c = np.load('test_coef%d.npy' % k)
 
-    k_train = 0
-    plot_waves = N_WAVES
-    f, axes = plt.subplots(plot_waves, 2)
-    for i in range(plot_waves):
-        ax = plt.subplot(plot_waves, 2, 2*i + 1)
-        PSF_nom = training_PSF[k_train, :,:,2*i]
-        img = ax.imshow(PSF_nom)
-        ax.set_title('Nominal PSF [Wave %.2f]' %waves_ratio[i])
+        training_PSF.append(training_p)
+        test_PSF.append(test_p)
+        training_coef.append(training_c)
+        test_coef.append(test_c)
 
-        ax = plt.subplot(plot_waves, 2, 2*i + 2)
-        PSF_nom = training_PSF[k_train, :,:,2*i+1]
-        img = ax.imshow(PSF_nom)
-        ax.set_title('Defocus PSF [Wave %.2f]' %waves_ratio[i])
+    training_PSF = np.concatenate(training_PSF, axis=0)
+    test_PSF = np.concatenate(test_PSF, axis=0)
+    training_coef = np.concatenate(training_coef, axis=0)
+    test_coef = np.concatenate(test_coef, axis=0)
+
+    N_channels = training_PSF.shape[-1]
+    input_shape = (pix, pix, N_channels,)
+    plt.figure()
+    for k in range(N_batches):
+        model = Sequential()
+        model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+        model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+        model.add(Conv2D(128, (3, 3), activation='relu'))
+        model.add(MaxPooling2D(pool_size=(2, 2)))
+        model.add(Flatten())
+        model.add(Dense(N_act))
+        model.summary()
+        model.compile(optimizer='adam', loss='mean_squared_error')
+        # Slice Channels
+        train_wave = training_PSF[k*N_train : (k+1)*N_train]
+        test_wave = test_PSF[k*N_test : (k+1)*N_test]
+
+        train_history = model.fit(x=train_wave, y=training_coef, validation_data=(test_wave, test_coef),
+                                  epochs=50, batch_size=32, shuffle=True, verbose=1)
+        val_hist = train_history.history['val_loss']
+        plt.plot(val_hist, label=k+1)
+    plt.legend('Batches')
     plt.show()
 
-    waves_considered=1
-    N_channels = 2*waves_considered
-    input_shape = (pix, pix, N_channels,)
 
-    model = Sequential()
-    model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1),
-                     activation='relu',
-                     input_shape=input_shape))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(64, (3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Flatten())
-    model.add(Dense(N_act))
-    model.summary()
 
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    train_history = model.fit(x=training_PSF[:,:,:,:2*waves_considered], y=training_coef,
-                              validation_data=(test_PSF[:,:,:,:2*waves_considered], test_coef),
-                              epochs=250, batch_size=32, shuffle=True, verbose=1)
-    loss_hist = train_history.history['loss']
-    val_hist = train_history.history['val_loss']
-
-    guess = model.predict(test_PSF[:,:,:,:2*waves_considered])
-    residual = test_coef - guess
+    """ What if we include noise in the training? """
 
     def test_models(PSF_model, training_PSF, test_PSF, training_coef, test_coef):
 
@@ -362,69 +374,172 @@ if __name__ == "__main__":
         rbf_mat = PSF_model.RBF_mat[0]
         pupil_mask = PSF_model.pupil_masks[0]
         rms0, rms = [], []
-        wavefr0, wavefronts = [], []
         for k in range(N_test):
             phase0 = np.dot(rbf_mat, test_coef[k])
-            wavefr0.append(phase0)
             phase0_f = phase0[pupil_mask]
             rms0.append(np.std(phase0_f))
-
-        validation_losses = []
         guessed_coef = []
 
         for waves in list_waves:
-
             print("\nConsidering %d Wavelengths" %waves)
 
             N_channels = 2 * waves
             input_shape = (pix, pix, N_channels,)
-            print(input_shape)
             model = Sequential()
-            model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+            model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
             model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-            model.add(Conv2D(64, (3, 3), activation='relu'))
+            model.add(Conv2D(128, (3, 3), activation='relu'))
             model.add(MaxPooling2D(pool_size=(2, 2)))
             model.add(Flatten())
             model.add(Dense(N_act))
             model.summary()
             model.compile(optimizer='adam', loss='mean_squared_error')
-
             # Slice Channels
             train_wave = training_PSF[:, :, :, :N_channels]
             test_wave = test_PSF[:, :, :, :N_channels]
 
-            train_history = model.fit(x=train_wave, y=training_coef,
-                                      validation_data=(test_wave, test_coef),
-                                      epochs=20, batch_size=32, shuffle=True, verbose=1)
-            loss_hist = train_history.history['loss']
-            val_hist = train_history.history['val_loss']
-            validation_losses.append(val_hist)
-
+            train_history = model.fit(x=train_wave, y=training_coef, validation_data=(test_wave, test_coef),
+                                      epochs=10, batch_size=32, shuffle=True, verbose=1)
             guess = model.predict(test_wave)
             guessed_coef.append(guess)
             residual = test_coef - guess
 
-
             # Check the RMS wavefront error for each case
-            wavefr = []
             _rms = []
             for k in range(N_test):
                 phase = np.dot(rbf_mat, residual[k])
-                # if k < 50:
-                #     wavefr.append(phase)
                 phase_f = phase[pupil_mask]
                 _rms.append(np.std(phase_f))
-            wavefronts.append(wavefr)
             rms.append(_rms)
 
-        plt.figure()
-        for i in range(N_waves):
-            plt.plot(validation_losses[i], label=list_waves[i])
-        plt.xlabel('Iterations')
-        plt.ylabel('Loss')
-        plt.legend(title='Channels')
+        return guessed_coef, rms0, rms
 
-        return validation_losses, guessed_coef, rms0, rms, wavefr0, wavefronts
+    def readout_noise_images(dataset, coef, RMS_READ, N_copies=3):
+        N_PSF, pix, _pix, N_chan = dataset.shape
+        N_act = coef.shape[-1]
+        new_data = np.empty((N_copies * N_PSF, pix, pix, N_chan))
+        new_coef = np.empty((N_copies * N_PSF, N_act))
+
+        for k in range(N_PSF):
+            if k %100 == 0:
+                print(k)
+            PSF = dataset[k].copy()
+            coef_copy = coef[k].copy()
+            for i in range(N_copies):
+                read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
+                new_data[N_copies * k + i] = PSF + read_out
+                new_coef[N_copies * k + i] = coef_copy
+
+        return new_data, new_coef
+
+    RMS_READ = 1./100
+    N_copies = 6
+    read_train_PSF, read_train_coef = readout_noise_images(training_PSF, training_coef, RMS_READ, N_copies)
+    read_test_PSF, read_test_coef = readout_noise_images(test_PSF, test_coef, RMS_READ, N_copies)
+
+    ### Check the performance on noisy data
+    guessed_coef, rms0, rms = test_models(PSF, read_train_PSF, read_test_PSF,
+                                          read_train_coef, read_test_coef)
+
+    ### Does it saturate because of the defocus range?
+    # We put a defocus in [nm] that affects the PSF at each wavelength different
+    # For very long wavelengths, the defocus makes almost no difference in intensity
+    # Could it be that at such point we do not gain from "diversity" but from error statistics?
+    # more samples of the readout noise...
+
+    k_train = 0
+    plot_waves = N_WAVES
+    f, axes = plt.subplots(plot_waves, 2)
+    for i in range(plot_waves):
+        ax = plt.subplot(plot_waves, 2, 2*i + 1)
+        PSF_nom = training_PSF[k_train, :,:,2*i]
+        img = ax.imshow(PSF_nom)
+        ax.set_title('Nominal PSF [Wave %.2f]' %waves_ratio[i])
+
+        ax = plt.subplot(plot_waves, 2, 2*i + 2)
+        PSF_foc = training_PSF[k_train, :,:,2*i+1]
+        img = ax.imshow(PSF_foc)
+        ax.set_title('Defocus PSF [Wave %.2f]' %waves_ratio[i])
+    plt.show()
+
+    waves_considered = 5
+    N_channels = 2*waves_considered
+    input_shape = (pix, pix, N_channels,)
+
+    model = Sequential()
+    model.add(Conv2D(64, kernel_size=(3, 3), strides=(1, 1),
+                     activation='relu',
+                     input_shape=input_shape))
+    # model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+    model.add(Conv2D(128, (3, 3), activation='relu'))
+    # model.add(MaxPooling2D(pool_size=(2, 2)))
+    # model.add(Conv2D(128, (3, 3), activation='relu'))
+    # model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Flatten())
+    model.add(Dense(N_act))
+    model.summary()
+
+    model = Sequential()
+    ks = 7
+    model.add(Conv2D(256, kernel_size=(ks, ks), strides=(1, 1),
+                     activation='relu',
+                     input_shape=input_shape))
+    model.add(Conv2D(128, (ks, ks), activation='relu'))
+
+    model.add(Flatten())
+    # model.add(Dense(2 * N_act))
+    model.add(Dense(N_act))
+
+    model.summary()
+
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    # train_history = model.fit(x=training_PSF[:,:,:,:2*waves_considered], y=training_coef,
+    #                           validation_data=(test_PSF[:,:,:,:2*waves_considered], test_coef),
+    #                           epochs=50, batch_size=32, shuffle=True, verbose=1)
+    train_history = model.fit(x=read_train_PSF[:,:,:,:2*waves_considered], y=read_train_coef,
+                              validation_data=(read_test_PSF[:,:,:,:2*waves_considered], read_test_coef),
+                              epochs=5, batch_size=32, shuffle=True, verbose=1)
+    loss_hist = train_history.history['loss']
+    val_hist = train_history.history['val_loss']
+
+
+    # guess = model.predict(test_PSF[:,:,:,:2*waves_considered])
+    # residual = test_coef - guess
+    guess = model.predict(read_test_PSF[:, :, :, :2 * waves_considered])
+    residual = read_test_coef - guess
+    print(np.mean(np.abs(residual)))
+
+    #### Hyperparameter Optim
+    k_sizes = [4, 5, 6, 7]
+    N_filters = [16, 32, 64]
+
+
+    for Nf1 in [128]:
+        for Nf2 in N_filters:
+            for ks in k_sizes:
+
+                model = Sequential()
+                model.add(Conv2D(Nf1, kernel_size=(ks, ks), strides=(1, 1),
+                                 activation='relu',
+                                 input_shape=input_shape))
+                model.add(Conv2D(Nf2, (ks, ks), activation='relu'))
+                model.add(Flatten())
+                model.add(Dense(N_act))
+                model.compile(optimizer='adam', loss='mean_squared_error')
+                train_history = model.fit(x=read_train_PSF[:, :, :, :2 * waves_considered], y=read_train_coef,
+                                          validation_data=(
+                                          read_test_PSF[:, :, :, :2 * waves_considered], read_test_coef),
+                                          epochs=5, batch_size=32, shuffle=True, verbose=0)
+                loss_hist = train_history.history['loss']
+                val_hist = train_history.history['val_loss']
+                print("\nHyperparams: %d Kernel Size | %d Filters 1 | %d Filters 2" % (ks, Nf1, Nf2))
+                print(val_hist[-1])
+                guess = model.predict(read_test_PSF[:, :, :, :2 * waves_considered])
+                residual = read_test_coef - guess
+                print(np.mean(np.abs(residual)))
+
+
+
 
     validation_losses, guessed_coef, rms0, rms, wavefr0, wavefronts = test_models(PSF, training_PSF, test_PSF,
                                                                              training_coef, test_coef)
@@ -432,9 +547,8 @@ if __name__ == "__main__":
     list_waves = list(np.arange(1, N_WAVES + 1))
 
     plot_waves = N_WAVES
-    # n_rows = plot_waves // 2
     n_columns = 4
-    n_rows = 4
+    n_rows = 3
     f, axes = plt.subplots(n_rows, n_columns)
     mus = []
     rmses = []
@@ -465,8 +579,7 @@ if __name__ == "__main__":
             if j == 0:
                 ax.get_yaxis().set_visible(True)
 
-    ax = plt.subplot(n_rows, n_columns, n_rows*n_columns)
-    # ax.scatter(list_waves, medians)
+    ax = plt.subplot(n_rows, n_columns, n_rows*n_columns-1)
     ax.errorbar(list_waves, mus, yerr=rmses, fmt='o')
     ax.set_xlabel('Waves considered')
     ax.set_ylabel(r'RMS Wavefront [$\lambda$]')
@@ -498,34 +611,7 @@ if __name__ == "__main__":
     plt.show()
 
 
-    """ What if we include noise in the training? """
 
-    def noise_images(dataset, coef, RMS_READ, N_copies=3):
-        N_PSF, pix, _pix, N_chan = dataset.shape
-        N_act = coef.shape[-1]
-        new_data = np.empty((N_copies * N_PSF, pix, pix, N_chan))
-        new_coef = np.empty((N_copies * N_PSF, N_act))
-
-        for k in range(N_PSF):
-            if k %100 == 0:
-                print(k)
-            PSF = dataset[k].copy()
-            coef_copy = coef[k].copy()
-            for i in range(N_copies):
-                read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
-                new_data[N_copies * k + i] = PSF + read_out
-                new_coef[N_copies * k + i] = coef_copy
-
-        return new_data, new_coef
-
-    RMS_READ = 1./100
-    N_copies = 6
-    read_train_PSF, read_train_coef = noise_images(training_PSF, training_coef, RMS_READ, N_copies)
-    read_test_PSF, read_test_coef = noise_images(test_PSF, test_coef, RMS_READ, N_copies)
-
-    ### Check the performance on noisy data
-    val_loss, guessed_coef, rms0, rms, wavefr0, wavefronts = test_models(PSF, read_train_PSF, read_test_PSF,
-                                                                         read_train_coef, read_test_coef)
 
     """ Good Question """
     ### Is the improvement because of HAVING EXTRA IMAGES
@@ -537,9 +623,9 @@ if __name__ == "__main__":
     input_shape = (pix, pix, N_channels,)
     print(input_shape)
     model = Sequential()
-    model.add(Conv2D(32, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+    model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
     model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(Conv2D(128, (3, 3), activation='relu'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     model.add(Flatten())
     model.add(Dense(N_act))
@@ -552,7 +638,7 @@ if __name__ == "__main__":
 
     train_history = model.fit(x=read_train_wave, y=read_train_coef,
                               validation_data=(read_test_wave, read_test_coef),
-                              epochs=20, batch_size=32, shuffle=True, verbose=1)
+                              epochs=10, batch_size=32, shuffle=True, verbose=1)
 
     guess_longwave = model.predict(read_test_wave)
     residual_longwave = read_test_coef - guess_longwave
