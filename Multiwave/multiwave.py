@@ -304,7 +304,7 @@ if __name__ == "__main__":
         np.save('training_PSF%d' % k, training_PSF)
         np.save('test_PSF%d' % k, test_PSF)
         np.save('training_coef%d' % k, training_coef)
-        np.save('training_coef%d' % k, test_coef)
+        np.save('test_coef%d' % k, test_coef)
 
     """ In the absence of noise, how many examples do we need? """
     # Just load 3 channels
