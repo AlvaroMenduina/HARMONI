@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
 from keras import models
-from keras.layers import Dense, Conv2D, AveragePooling2D, MaxPooling2D, Flatten, Activation, Dropout
+from keras.layers import Dense, Conv2D, BatchNormalization, MaxPooling2D, Flatten, Activation, Dropout
 from keras.models import Sequential
 from keras import backend as K
 from keras.backend.tensorflow_backend import tf
@@ -19,7 +19,7 @@ pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
-N_WAVES = 20
+N_WAVES = 5
 WAVE_N = 2.0
 
 " Actuators "
@@ -70,6 +70,7 @@ def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
                N_waves=N_WAVES, wave0=1.0, waveN=WAVE_N):
 
     waves_ratio = np.linspace(1., waveN / wave0, N_waves, endpoint=True)
+    alpha = 1/np.sqrt(np.log(100))
 
     matrices = [ ]
     for i, wave in enumerate(waves_ratio):
@@ -85,7 +86,7 @@ def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
         for k in range(N_act):
             xc, yc = cent[k][0], cent[k][1]
             r2 = (xx - xc) ** 2 + (yy - yc) ** 2
-            matrix[:, :, k] = pupil * np.exp(-r2 / (1. * delta) ** 2)
+            matrix[:, :, k] = pupil * np.exp(-r2 / (alpha * delta) ** 2)
 
         mat_flat = matrix[pupil]
         matrices.append([matrix, pupil, mat_flat])
@@ -298,38 +299,91 @@ if __name__ == "__main__":
     """ Generate a training set of CLEAN PSF images """
 
     N_train, N_test = 5000, 500
-    N_batches = 10
+    N_batches = 1
     for k in range(N_batches):
         training_PSF, test_PSF, training_coef, test_coef = generate_training_set(PSF, N_train, N_test)
-        np.save('training_PSF%d' % k, training_PSF)
-        np.save('test_PSF%d' % k, test_PSF)
-        np.save('training_coef%d' % k, training_coef)
-        np.save('test_coef%d' % k, test_coef)
+        np.save('ALPHAtraining_PSF%d' % k, training_PSF)
+        np.save('ALPHAtest_PSF%d' % k, test_PSF)
+        np.save('ALPHAtraining_coef%d' % k, training_coef)
+        np.save('ALPHAtest_coef%d' % k, test_coef)
 
     """ In the absence of noise, how many examples do we need? """
     # Just load 3 channels
-    load_waves = 3
-    training_PSF, test_PSF, training_coef, test_coef = [], [], [], []
-    for k in range(N_batches):
-        training_p = np.load('training_PSF%d.npy' % k)[:, :, :, :2*load_waves]
-        test_p = np.load('test_PSF%d.npy' % k)[:, :, :, :2*load_waves]
-        training_c = np.load('training_coef%d.npy' % k)
-        test_c = np.load('test_coef%d.npy' % k)
+    N_batches = 5
+    load_waves = 5
+    def load_dataset(N_batches, load_waves):
+        training_PSF, test_PSF, training_coef, test_coef = [], [], [], []
+        for k in range(N_batches):
+            print(k)
+            training_p = np.load('ALPHAtraining_PSF%d.npy' % k)[:, :, :, :2*load_waves]
+            test_p = np.load('ALPHAtest_PSF%d.npy' % k)[:, :, :, :2*load_waves]
+            training_c = np.load('ALPHAtraining_coef%d.npy' % k)
+            test_c = np.load('ALPHAtest_coef%d.npy' % k)
 
-        training_PSF.append(training_p)
-        test_PSF.append(test_p)
-        training_coef.append(training_c)
-        test_coef.append(test_c)
+            training_PSF.append(training_p)
+            test_PSF.append(test_p)
+            training_coef.append(training_c)
+            test_coef.append(test_c)
 
-    training_PSF = np.concatenate(training_PSF, axis=0)
-    test_PSF = np.concatenate(test_PSF, axis=0)
-    training_coef = np.concatenate(training_coef, axis=0)
-    test_coef = np.concatenate(test_coef, axis=0)
+        training_PSF = np.concatenate(training_PSF, axis=0)
+        test_PSF = np.concatenate(test_PSF, axis=0)
+        training_coef = np.concatenate(training_coef, axis=0)
+        test_coef = np.concatenate(test_coef, axis=0)
+        return training_PSF, test_PSF, training_coef, test_coef
+
+    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches, load_waves)
+
+    """ Is it even worth it to use multiwavelength """
+
+    ### Train with 3 channels
+    rms0, rms = [], []
+
+    for N_chan in [2, training_PSF.shape[-1], -2]:
+        input_shape = (pix, pix, 2,)
+        model = Sequential()
+        model.add(Conv2D(128, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+        model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+        model.add(Conv2D(64, (3, 3), activation='relu'))
+        model.add(MaxPooling2D(pool_size=(2, 2)))
+        model.add(Flatten())
+        model.add(Dense(N_act))
+        model.summary()
+        model.compile(optimizer='adam', loss='mean_squared_error')
+
+        train_history = model.fit(x=training_PSF[:,:,:,-2:], y=training_coef, validation_data=(test_PSF[:,:,:,-2:], test_coef),
+                                  epochs=25, batch_size=32, shuffle=True, verbose=1)
+
+        guess = model.predict(test_PSF[:,:,:,-2:])
+        residual = test_coef - guess
+
+        _rms0, _rms = [], []
+        rbf_mat = PSF.RBF_mat[0]
+        pupil_mask = PSF.pupil_masks[0]
+        for k in range(test_PSF.shape[0]):
+            phase = np.dot(rbf_mat, residual[k])
+            phase_f = phase[pupil_mask]
+            _rms.append(np.std(phase_f))
+            _rms0.append(np.std(np.dot(rbf_mat, test_coef[k])[pupil_mask]))
+        rms.append(_rms)
+
+    plt.figure()
+    plt.hist(_rms0, bins=20, histtype='step', label='Initial')
+    # plt.hist(rms[0], bins=20, histtype='step', label='1 Channel')
+    plt.hist(rms[1], bins=20, histtype='step', label='5 Channels')
+    plt.hist(rms[2], bins=20, histtype='step', label='Last Channel [Long]')
+    plt.xlim([0, 1.25])
+    plt.xlabel(r'RMS wavefront [$\lambda$]')
+    plt.legend()
+    plt.show()
+
+
 
     N_channels = training_PSF.shape[-1]
     input_shape = (pix, pix, N_channels,)
+    vals = []
     plt.figure()
-    for k in range(N_batches):
+    for k in range(training_PSF.shape[0] // 1000):
+        print(k)
         model = Sequential()
         model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
         model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
@@ -340,19 +394,56 @@ if __name__ == "__main__":
         model.summary()
         model.compile(optimizer='adam', loss='mean_squared_error')
         # Slice Channels
-        train_wave = training_PSF[k*N_train : (k+1)*N_train]
-        test_wave = test_PSF[k*N_test : (k+1)*N_test]
+        train_wave = training_PSF[:(k+1)*1000]
+        # test_wave = test_PSF[k*N_test : (k+1)*N_test]
+        train_c = training_coef[:(k+1)*1000]
+        # test_c = test_coef[k*N_test : (k+1)*N_test]
 
-        train_history = model.fit(x=train_wave, y=training_coef, validation_data=(test_wave, test_coef),
-                                  epochs=50, batch_size=32, shuffle=True, verbose=1)
+        train_history = model.fit(x=train_wave, y=train_c, validation_data=(test_PSF, test_coef),
+                                  epochs=25, batch_size=32, shuffle=True, verbose=1)
         val_hist = train_history.history['val_loss']
+        vals.append(np.mean(val_hist[-5:]))
         plt.plot(val_hist, label=k+1)
     plt.legend('Batches')
+    plt.show()
+
+    n_ex = np.arange(1, 26)
+    s = vals[0] / np.sqrt(n_ex)
+    plt.figure()
+    plt.plot(n_ex, vals)
+    plt.plot(n_ex, s)
+    plt.xlabel(r'x1000 training examples)')
+    plt.ylabel(r'Final validation loss')
     plt.show()
 
 
 
     """ What if we include noise in the training? """
+
+    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=5)
+
+    def readout_noise_images(dataset, coef, RMS_READ, N_copies=3):
+        N_PSF, pix, _pix, N_chan = dataset.shape
+        N_act = coef.shape[-1]
+        new_data = np.empty((N_copies * N_PSF, pix, pix, N_chan))
+        new_coef = np.empty((N_copies * N_PSF, N_act))
+
+        for k in range(N_PSF):
+            # if k %100 == 0:
+                # print(k)
+            PSF = dataset[k].copy()
+            coef_copy = coef[k].copy()
+            for i in range(N_copies):
+                read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
+                new_data[N_copies * k + i] = PSF + read_out
+                new_coef[N_copies * k + i] = coef_copy
+
+        return new_data, new_coef
+
+    RMS_READ = 1./100
+    N_copies = 3
+    read_train_PSF, read_train_coef = readout_noise_images(training_PSF, training_coef, RMS_READ, N_copies)
+    read_test_PSF, read_test_coef = readout_noise_images(test_PSF, test_coef, RMS_READ, N_copies)
 
     def test_models(PSF_model, training_PSF, test_PSF, training_coef, test_coef):
 
@@ -387,9 +478,11 @@ if __name__ == "__main__":
             input_shape = (pix, pix, N_channels,)
             model = Sequential()
             model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
-            model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+            # model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
             model.add(Conv2D(128, (3, 3), activation='relu'))
-            model.add(MaxPooling2D(pool_size=(2, 2)))
+            # model.add(MaxPooling2D(pool_size=(2, 2)))
+            model.add(Conv2D(32, (3, 3), activation='relu'))
+            model.add(Conv2D(8, (3, 3), activation='relu'))
             model.add(Flatten())
             model.add(Dense(N_act))
             model.summary()
@@ -414,32 +507,117 @@ if __name__ == "__main__":
 
         return guessed_coef, rms0, rms
 
-    def readout_noise_images(dataset, coef, RMS_READ, N_copies=3):
-        N_PSF, pix, _pix, N_chan = dataset.shape
-        N_act = coef.shape[-1]
-        new_data = np.empty((N_copies * N_PSF, pix, pix, N_chan))
-        new_coef = np.empty((N_copies * N_PSF, N_act))
+    def batch_noise_testing(PSF_model, training_PSF, test_PSF, training_coef, test_coef, N_copies=3):
 
-        for k in range(N_PSF):
-            if k %100 == 0:
-                print(k)
-            PSF = dataset[k].copy()
-            coef_copy = coef[k].copy()
-            for i in range(N_copies):
-                read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
-                new_data[N_copies * k + i] = PSF + read_out
-                new_coef[N_copies * k + i] = coef_copy
+        N_iter = 10     # How many times to create a new instance of Noisy data
+        N_waves = training_PSF.shape[-1] // 2
+        list_waves = list(np.arange(1, N_waves + 1))
+        rms0, rms = [], []
+        rbf_mat = PSF_model.RBF_mat[0]
+        pupil_mask = PSF_model.pupil_masks[0]
+        for waves in list_waves:
+            print("\nConsidering %d Wavelengths" %waves)
 
-        return new_data, new_coef
+            N_channels = 2 * waves
+            input_shape = (pix, pix, N_channels,)
+            model = Sequential()
+            model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+            model.add(Dropout(0.15))
+            # model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+            model.add(Conv2D(128, (3, 3), activation='relu'))
+            model.add(Dropout(0.15))
+            # model.add(MaxPooling2D(pool_size=(2, 2)))
+            model.add(Conv2D(32, (3, 3), activation='relu'))
+            model.add(Dropout(0.15))
+            model.add(Conv2D(8, (3, 3), activation='relu'))
+            model.add(Dropout(0.15))
+            model.add(Flatten())
+            model.add(Dropout(0.15))
+            model.add(Dense(N_act))
+            model.summary()
+            model.compile(optimizer='adam', loss='mean_squared_error')
+            # Slice Channels
+            train_wave = training_PSF[:, :, :, :N_channels]
+            test_wave = test_PSF[:, :, :, :N_channels]
 
-    RMS_READ = 1./100
-    N_copies = 6
-    read_train_PSF, read_train_coef = readout_noise_images(training_PSF, training_coef, RMS_READ, N_copies)
-    read_test_PSF, read_test_coef = readout_noise_images(test_PSF, test_coef, RMS_READ, N_copies)
+            for k in range(N_iter):
+                ### Include Noise
+                read_train_PSF, read_train_coef = readout_noise_images(train_wave, training_coef, RMS_READ, N_copies)
+                read_test_PSF, read_test_coef = readout_noise_images(test_wave, test_coef, RMS_READ, N_copies)
+
+                train_history = model.fit(x=read_train_PSF, y=read_train_coef, validation_data=(read_test_PSF, read_test_coef),
+                                          epochs=2, batch_size=32, shuffle=True, verbose=1)
+
+            guess = model.predict(read_test_PSF)
+            guessed_coef.append(guess)
+            residual = read_test_coef - guess
+
+
+            _rms, _rms0 = [], []
+            for k in range(read_test_PSF.shape[0]):
+                phase = np.dot(rbf_mat, residual[k])
+                phase_f = phase[pupil_mask]
+                phase0 = np.dot(rbf_mat, read_test_coef[k])
+                phase0_f = phase0[pupil_mask]
+                _rms.append(np.std(phase_f))
+                _rms0.append(np.std(phase0_f))
+            rms.append(_rms)
+            rms0.append(_rms0)
+
+        return guessed_coef, rms0, rms
+
+    ### Batch train
+    _gc, rms0_batch, rms_batch = batch_noise_testing(PSF, training_PSF, test_PSF, training_coef, test_coef, N_copies=3)
 
     ### Check the performance on noisy data
     guessed_coef, rms0, rms = test_models(PSF, read_train_PSF, read_test_PSF,
                                           read_train_coef, read_test_coef)
+
+    n_wave = training_PSF.shape[-1] // 2
+    list_waves = list(np.arange(1, n_wave + 1))
+
+    plot_waves = n_wave
+    n_columns = 3
+    n_rows = 2
+    f, axes = plt.subplots(n_rows, n_columns)
+    mus = []
+    rmses = []
+    for i in range(n_rows):
+        for j in range(n_columns):
+            k = n_columns * i + j
+            if k >= plot_waves:
+                break
+            # rms_wave = rms[k]
+            rms_wave = rms_batch[k]
+            avg_rms = np.mean(rms_wave)
+            med_rms = np.median(rms_wave)
+            std_rms = np.std(rms_wave)
+            mus.append(med_rms)
+            rmses.append(std_rms)
+            print(k)
+            ax = plt.subplot(n_rows, n_columns, k + 1)
+            ax.hist(rms0_batch[k], bins=20, histtype='step')
+            ax.hist(rms_wave, bins=20, histtype='step')
+            ax.axvline(med_rms, linestyle='--', color='black')
+            ax.set_ylim([0, 1250])
+            ax.set_title(r'Channels %d | WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
+            ax.set_xlim([0, 1.25])
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+            if i == n_rows - 1:
+                ax.get_xaxis().set_visible(True)
+                ax.set_xlabel(r'RMS Wavefront [$\lambda$]')
+            if j == 0:
+                ax.get_yaxis().set_visible(True)
+
+    ax = plt.subplot(n_rows, n_columns, n_rows*n_columns)
+    ax.errorbar(list_waves, mus, yerr=rmses, fmt='o')
+    ax.set_xlabel('Waves considered')
+    ax.set_ylabel(r'RMS Wavefront [$\lambda$]')
+    ax.set_xticks(list_waves)
+    plt.show()
+
+
 
     ### Does it saturate because of the defocus range?
     # We put a defocus in [nm] that affects the PSF at each wavelength different
@@ -544,47 +722,7 @@ if __name__ == "__main__":
     validation_losses, guessed_coef, rms0, rms, wavefr0, wavefronts = test_models(PSF, training_PSF, test_PSF,
                                                                              training_coef, test_coef)
 
-    list_waves = list(np.arange(1, N_WAVES + 1))
 
-    plot_waves = N_WAVES
-    n_columns = 4
-    n_rows = 3
-    f, axes = plt.subplots(n_rows, n_columns)
-    mus = []
-    rmses = []
-    for i in range(n_rows):
-        for j in range(n_columns):
-            k = n_columns * i + j
-            if k >= plot_waves:
-                break
-            rms_wave = rms[k]
-            avg_rms = np.mean(rms_wave)
-            med_rms = np.median(rms_wave)
-            std_rms = np.std(rms_wave)
-            mus.append(med_rms)
-            rmses.append(std_rms)
-            print(k)
-            ax = plt.subplot(n_rows, n_columns, k + 1)
-            ax.hist(rms0, histtype='step')
-            ax.hist(rms_wave, histtype='step')
-            ax.axvline(med_rms, linestyle='--', color='black')
-            ax.set_ylim([0, 1250])
-            ax.set_title(r'Channels %d | WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
-            ax.set_xlim([0, 1.25])
-            ax.get_xaxis().set_visible(False)
-            ax.get_yaxis().set_visible(False)
-            if i == n_rows - 1:
-                ax.get_xaxis().set_visible(True)
-                ax.set_xlabel(r'RMS Wavefront [$\lambda$]')
-            if j == 0:
-                ax.get_yaxis().set_visible(True)
-
-    ax = plt.subplot(n_rows, n_columns, n_rows*n_columns-1)
-    ax.errorbar(list_waves, mus, yerr=rmses, fmt='o')
-    ax.set_xlabel('Waves considered')
-    ax.set_ylabel(r'RMS Wavefront [$\lambda$]')
-    ax.set_xticks(list_waves)
-    plt.show()
 
     k_phase = 5
     plot_waves = N_WAVES
