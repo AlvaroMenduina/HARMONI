@@ -1,5 +1,4 @@
-
-
+from __future__ import print_function  # for Python2
 import os
 import numpy as np
 from numpy.fft import fft2, fftshift
@@ -19,8 +18,14 @@ pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
-N_WAVES = 5
+N_WAVES = 10
 WAVE_N = 2.0
+
+### Super useful code to display variables and their sizes (helps you clear the RAM)
+import sys
+
+for var, obj in locals().items():
+    print(var, sys.getsizeof(obj))
 
 " Actuators "
 
@@ -70,7 +75,8 @@ def rbf_matrix(centres, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
                N_waves=N_WAVES, wave0=1.0, waveN=WAVE_N):
 
     waves_ratio = np.linspace(1., waveN / wave0, N_waves, endpoint=True)
-    alpha = 1/np.sqrt(np.log(100))
+    # alpha = 1/np.sqrt(np.log(100/30))
+    alpha = 1.
 
     matrices = [ ]
     for i, wave in enumerate(waves_ratio):
@@ -164,19 +170,33 @@ class PointSpreadFunction(object):
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
 
-def generate_training_set(PSF_model, N_train=1500, N_test=500):
+def generate_training_set(PSF_model, N_train=1500, N_test=500, foc=1.0):
 
     N_act = PSF_model.N_act
     N_samples = N_train + N_test
-    coef = np.random.uniform(low=-Z, high=Z, size=(N_samples, N_act))
+    # coef = np.random.uniform(low=-Z, high=Z, size=(N_samples, N_act))
+    # training_coef, test_coef
+    coef = np.concatenate([np.load('training_coef.npy'),
+                           np.load('test_coef.npy')], axis=0)
+    print(coef.shape)
 
     # defocus = np.zeros(N_zern)
     # defocus[1] = focus
     # FIXME! Watch out when using the ACTUATOR MODE
     # defocus = np.random.uniform(low=-1.25, high=1.25, size=N_act)
     # np.save('defocus', defocus)
-    defocus = np.load('defocus.npy')
+    defocus = foc * np.load('defocus.npy')
     dataset = np.empty((N_samples, pix, pix, 2*N_WAVES))
+
+    foc_phase = np.dot(PSF_model.RBF_mat[0], defocus)
+    std_foc = np.std(foc_phase[PSF_model.pupil_masks[0]])
+    cfoc = max(-np.min(foc_phase), np.max(foc_phase))
+
+    plt.figure()
+    plt.imshow(foc_phase, cmap='bwr')
+    plt.clim(-cfoc, cfoc)
+    plt.title(r'RMS %.3f $\lambda$' % std_foc)
+    plt.colorbar()
 
     for i in range(N_samples):
         for wave_idx in range(N_WAVES):
@@ -207,6 +227,16 @@ if __name__ == "__main__":
     N_actuators = 20
     centers = actuator_centres(N_actuators, radial=False)
     N_act = len(centers[0][0])
+
+    ### Compute Distance Matrix
+    # Similar to a Covariance matrix on the neighbour actuator distance
+    c0, delta0 = centers[0]
+    dist_mat = np.empty((N_act, N_act))
+    for i in range(N_act):
+        xi, yi = c0[i]
+        for j in range(N_act):
+            xj, yj = c0[j]
+            dist_mat[i, j] = np.sqrt((xi - xj)**2 + (yi - yj)**2)
 
     for i, wave_r in enumerate(waves_ratio):
         fig = plt.figure()
@@ -315,10 +345,10 @@ if __name__ == "__main__":
         training_PSF, test_PSF, training_coef, test_coef = [], [], [], []
         for k in range(N_batches):
             print(k)
-            training_p = np.load('ALPHAtraining_PSF%d.npy' % k)[:, :, :, :2*load_waves]
-            test_p = np.load('ALPHAtest_PSF%d.npy' % k)[:, :, :, :2*load_waves]
-            training_c = np.load('ALPHAtraining_coef%d.npy' % k)
-            test_c = np.load('ALPHAtest_coef%d.npy' % k)
+            training_p = np.load('training_PSF%d.npy' % k)[:, :, :, :2*load_waves]
+            test_p = np.load('test_PSF%d.npy' % k)[:, :, :, :2*load_waves]
+            training_c = np.load('training_coef%d.npy' % k)
+            test_c = np.load('test_coef%d.npy' % k)
 
             training_PSF.append(training_p)
             test_PSF.append(test_p)
@@ -331,13 +361,192 @@ if __name__ == "__main__":
         test_coef = np.concatenate(test_coef, axis=0)
         return training_PSF, test_PSF, training_coef, test_coef
 
-    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches, load_waves)
+    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=N_WAVES)
+
+    """ Test the impact of actuator Cross-Talk """
+
+    input_shape = (pix, pix, 2*N_WAVES,)
+    model = Sequential()
+    model.add(Conv2D(128, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+    model.add(Conv2D(64, (3, 3), activation='relu'))
+    model.add(MaxPooling2D(pool_size=(2, 2)))
+    model.add(Flatten())
+    model.add(Dense(N_act))
+    model.summary()
+    model.compile(optimizer='adam', loss='mean_squared_error')
+
+    train_history = model.fit(x=training_PSF, y=training_coef,
+                              validation_data=(test_PSF, test_coef),
+                              epochs=25, batch_size=32, shuffle=True, verbose=1)
+
+    guess = model.predict(test_PSF)
+    residual = test_coef - guess
+    print(norm(residual))
+
+    """
+    SHAP VALUES
+    """
+
+    model = Sequential()
+    model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+    model.add(Conv2D(128, (3, 3), activation='relu'))
+    model.add(Conv2D(32, (3, 3), activation='relu'))
+    model.add(Conv2D(8, (3, 3), activation='relu'))
+    model.add(Flatten())
+    model.add(Dense(N_act))
+    model.summary()
+    model.compile(optimizer='adam', loss='mean_squared_error')
+
+    train_history = model.fit(x=training_PSF, y=training_coef,
+                              validation_data=(test_PSF, test_coef),
+                              epochs=25, batch_size=32, shuffle=True, verbose=1)
+
+    import shap
+    background = training_PSF[np.random.choice(training_PSF.shape[0], 200, replace=False)]
+    e = shap.DeepExplainer(model, background)
+
+    N_cases = 150
+    test_shap = test_PSF[:N_cases]
+    test_shap_coef = test_coef[:N_cases]
+    shap_values = e.shap_values(test_shap)
+    n_shap = len(shap_values)
+
+    def generate_pixel_ids(pix):
+        """ Generate Labels for each pixel
+        according to their (i,j)
+        """
+
+        x = list(range(pix)) - pix//2*np.ones(pix)
+        xx, yy = np.meshgrid(x, x)
+        xid = xx.reshape((pix * pix))
+        yid = yy.reshape((pix * pix))
+
+        labels = ["(%d, %d)" % (x, y) for (x, y) in zip(xid, yid)]
+        return labels
+
+    pix_label = generate_pixel_ids(pix)
+
+    ### Dot plot
+    # Select only the last channel
+    shap_val_chan = [x[:,:,:,-1].reshape((N_cases, pix*pix)) for x in shap_values]
+    features_chan = test_shap[:,:,:,-1].reshape((N_cases, pix*pix))
+
+    # Select which actuator
+    j_act = -1
+    shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
+                      feature_names=pix_label)
+    shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
+                      feature_names=pix_label, plot_type='bar', max_display=50)
+
+    act_coef = np.zeros(N_act)
+    defocus = np.load('defocus.npy')
+    P0, _s0 = PSF.compute_PSF(0*act_coef, wave_idx=0)
+
+    act_coef[j_act] = 1.0
+    P, _s = PSF.compute_PSF(act_coef, wave_idx=0)
+    plt.figure()
+    plt.imshow(P - P0, cmap='bwr', origin='lower')
+    plt.colorbar()
+    plt.title('Differential PSF | Actuator #%d' %j_act)
+    plt.show()
+
+    
+    j_act = -1
+    i_exa = 1
+    print(test_shap_coef[i_exa, j_act])
+    cmap = 'hot'
+
+    for k in range(10):
+        chan = test_shap[i_exa,:,:,2*k]
+        shap_chan = shap_values[j_act][i_exa, :, :, 2*k]
+        smax = max(-np.min(shap_chan), np.max(shap_chan))
+
+        chan_foc = test_shap[i_exa,:,:,2*k+1]
+        shap_chan_foc = shap_values[j_act][i_exa, :, :, 2*k+1]
+        smax_foc = max(-np.min(shap_chan_foc), np.max(shap_chan_foc))
+
+        maxmax = max(smax, smax_foc)
+
+        f, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3)
+        im1 = ax1.imshow(chan, cmap=cmap)
+        plt.colorbar(im1, ax=ax1)
+        ax1.set_title(k)
+
+        im2 = ax2.imshow(np.log10(chan), cmap=cmap)
+        plt.colorbar(im2, ax=ax2)
+
+        im3 = ax3.imshow(shap_chan, cmap='bwr')
+        im3.set_clim(-maxmax, maxmax)
+        plt.colorbar(im3, ax=ax3)
+
+        # --------
+
+        im4 = ax4.imshow(chan_foc, cmap=cmap)
+        plt.colorbar(im4, ax=ax4)
+
+        im5 = ax5.imshow(np.log10(chan_foc), cmap=cmap)
+        plt.colorbar(im5, ax=ax5)
+
+        im6 = ax6.imshow(shap_chan_foc, cmap='bwr')
+        im6.set_clim(-maxmax, maxmax)
+        plt.colorbar(im6, ax=ax6)
+
+    plt.show()
+
+
+
+
+    shap.image_plot(shap_values, -test_PSF[1:5])
+
+
+
+
+    def percent_mat(residual):
+        mat = np.empty((N_act, N_act))
+        for i in range(5):
+            ri = residual[:, i]
+            for j in np.arange(i+1, 5):
+                rj = residual[:, j]
+                ratio = rj / ri
+                plt.scatter(ri, rj, s=3)
+                plt.show()
+    plt.ylim([-1, 1])
+    percent_mat(residual)
+    plt.show()
+
+    cov_mat = np.cov(residual.T)
+    covm = max(-np.min(cov_mat), np.max(cov_mat))
+
+    plt.figure()
+    plt.imshow(cov_mat, cmap='bwr')
+    plt.clim(-covm, covm)
+    plt.colorbar()
+    plt.xlabel('Actuator')
+    plt.ylabel('Actuator')
+    plt.show()
+
+    plt.figure()
+    plt.imshow(dist_mat, cmap='Reds')
+    plt.colorbar()
+    plt.show()
+
+    plt.figure()
+    plt.grid(True)
+    # plt.axvline(delta0, 0.5, 1, color='black', linestyle='--')
+    plt.scatter(dist_mat.flatten(), cov_mat.flatten(), s=5)
+    # plt.axhline(0, color='black', linestyle='--')
+
+    plt.ylim([-1.1*covm, 1.1*covm])
+    plt.xlabel(r'Actuator distance [1 / D]')
+    plt.show()
 
     """ Is it even worth it to use multiwavelength """
 
     ### Train with 3 channels
     rms0, rms = [], []
 
+    # for N_chan in [2, training_PSF.shape[-1], -2]:
     for N_chan in [2, training_PSF.shape[-1], -2]:
         input_shape = (pix, pix, 2,)
         model = Sequential()
@@ -420,7 +629,7 @@ if __name__ == "__main__":
 
     """ What if we include noise in the training? """
 
-    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=5)
+    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=20)
 
     def readout_noise_images(dataset, coef, RMS_READ, N_copies=3):
         N_PSF, pix, _pix, N_chan = dataset.shape
@@ -437,13 +646,65 @@ if __name__ == "__main__":
                 read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
                 new_data[N_copies * k + i] = PSF + read_out
                 new_coef[N_copies * k + i] = coef_copy
-
+        ### Remove clean PSF to save memory
+        del dataset
         return new_data, new_coef
 
     RMS_READ = 1./100
     N_copies = 3
     read_train_PSF, read_train_coef = readout_noise_images(training_PSF, training_coef, RMS_READ, N_copies)
     read_test_PSF, read_test_coef = readout_noise_images(test_PSF, test_coef, RMS_READ, N_copies)
+
+    def select_waves(train_dataset, test_dataset, M_waves=2):
+        """
+        Out of datacubes that cover [lambda_1, ..., lambda_N]
+        with a total of N waves
+        slice the waves to get a certain number of Wavelengths (M_waves)
+        covering that range
+
+        The problem is that in the datacubes, we organize the channels as
+        [lambda_1 (nominal), lambda_1 (defocus), ..., lambda_j (nom), lambda_j (foc), ...]
+        which makes it harder than slicing like [wave1 : waveN : n]
+        :param train_dataset:
+        :param test_dataset:
+        :return:
+        """
+        if M_waves % 2 != 0:
+            raise AssertionError('M_waves should be even')
+
+        print("\nSelecting %d wavelengths" % M_waves)
+        data_list = []
+        for data in [train_dataset, test_dataset]:
+
+            # If we want 4 waves we do: Lambda_1, Lambda_2 & Lambda_(N-1), Lambda_N
+            first_chunk = data[:, :, :, :M_waves]
+            last_chunck = data[:, :, :, -M_waves:]
+            new_data = np.concatenate([first_chunk, last_chunck], axis=-1)
+            print(new_data.shape)
+            data_list.append(new_data)
+
+        return data_list
+
+    select_waves(read_train_PSF, read_test_PSF, M_waves=4)
+
+    def select_specific_range(train_dataset, test_dataset, which_range):
+        print("\nSelecting ", which_range)
+        data_list = []
+        for data in [train_dataset, test_dataset]:
+            new_data = []
+            for k in which_range:
+                print("\nWavelength: ", k)
+                chunk = data[:, :, :, k:k+2]
+                print(chunk.shape)
+                new_data.append(chunk)
+            new_data = np.concatenate(new_data, axis=-1)
+            print(new_data.shape)
+            data_list.append(new_data)
+
+        return data_list
+
+    _a, _b = select_specific_range(read_train_PSF, read_test_PSF, [0, 5, 7, 9])
+
 
     def test_models(PSF_model, training_PSF, test_PSF, training_coef, test_coef):
 
@@ -471,10 +732,16 @@ if __name__ == "__main__":
             rms0.append(np.std(phase0_f))
         guessed_coef = []
 
-        for waves in list_waves:
-            print("\nConsidering %d Wavelengths" %waves)
+        # for waves in list_waves:
+        # for waves in [2, 4, 6, 8, 10, 16, 20]:
+        for waves in [[0, 1, 2, 3, 4],
+                      [0, 2, 4, 6, 9],
+                      [0, 4, 7, 10, 14],
+                      [0, 5, 9, 14, 19]]:
+            # print("\nConsidering %d Wavelengths" %waves)
 
-            N_channels = 2 * waves
+            # N_channels = 2 * waves
+            N_channels = 2 * 5
             input_shape = (pix, pix, N_channels,)
             model = Sequential()
             model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
@@ -488,8 +755,12 @@ if __name__ == "__main__":
             model.summary()
             model.compile(optimizer='adam', loss='mean_squared_error')
             # Slice Channels
-            train_wave = training_PSF[:, :, :, :N_channels]
-            test_wave = test_PSF[:, :, :, :N_channels]
+
+
+            # train_wave = training_PSF[:, :, :, :N_channels]
+            # test_wave = test_PSF[:, :, :, :N_channels]
+            # train_wave, test_wave = select_waves(training_PSF, test_PSF, M_waves=waves)
+            train_wave, test_wave = select_specific_range(training_PSF, test_PSF, which_range=waves)
 
             train_history = model.fit(x=train_wave, y=training_coef, validation_data=(test_wave, test_coef),
                                       epochs=10, batch_size=32, shuffle=True, verbose=1)
@@ -574,10 +845,14 @@ if __name__ == "__main__":
                                           read_train_coef, read_test_coef)
 
     n_wave = training_PSF.shape[-1] // 2
-    list_waves = list(np.arange(1, n_wave + 1))
+    # list_waves = list(np.arange(1, n_wave + 1))
+    list_waves = [2, 4, 6, 8, 10, 16, 20]
 
-    plot_waves = n_wave
-    n_columns = 3
+    # plot_waves = n_wave
+    # plot_waves = len(list_waves)
+    list_waves = [1.875, 2.250, 2.625, 3.00]
+    plot_waves = 4
+    n_columns = 2
     n_rows = 2
     f, axes = plt.subplots(n_rows, n_columns)
     mus = []
@@ -587,8 +862,8 @@ if __name__ == "__main__":
             k = n_columns * i + j
             if k >= plot_waves:
                 break
-            # rms_wave = rms[k]
-            rms_wave = rms_batch[k]
+            rms_wave = rms[k]
+            # rms_wave = rms_batch[k]
             avg_rms = np.mean(rms_wave)
             med_rms = np.median(rms_wave)
             std_rms = np.std(rms_wave)
@@ -596,11 +871,12 @@ if __name__ == "__main__":
             rmses.append(std_rms)
             print(k)
             ax = plt.subplot(n_rows, n_columns, k + 1)
-            ax.hist(rms0_batch[k], bins=20, histtype='step')
-            ax.hist(rms_wave, bins=20, histtype='step')
+            ax.hist(rms0, bins=20, color='lightgreen')
+            ax.hist(rms_wave, bins=20, color='darkturquoise')
             ax.axvline(med_rms, linestyle='--', color='black')
-            ax.set_ylim([0, 1250])
-            ax.set_title(r'Channels %d | WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
+            ax.set_ylim([0, 700])
+            # ax.set_title(r'Channels %d | WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
+            ax.set_title(r'$\lambda$ range 1.50-%.3f $\mu m$ | WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
             ax.set_xlim([0, 1.25])
             ax.get_xaxis().set_visible(False)
             ax.get_yaxis().set_visible(False)
@@ -611,10 +887,12 @@ if __name__ == "__main__":
                 ax.get_yaxis().set_visible(True)
 
     ax = plt.subplot(n_rows, n_columns, n_rows*n_columns)
+    ax = plt.subplot(1, 1, 1)
     ax.errorbar(list_waves, mus, yerr=rmses, fmt='o')
     ax.set_xlabel('Waves considered')
-    ax.set_ylabel(r'RMS Wavefront [$\lambda$]')
+    ax.set_title(r'RMS Wavefront [$\lambda$]')
     ax.set_xticks(list_waves)
+    # ax.set_ylim([0, 0.40])
     plt.show()
 
 
@@ -624,6 +902,159 @@ if __name__ == "__main__":
     # For very long wavelengths, the defocus makes almost no difference in intensity
     # Could it be that at such point we do not gain from "diversity" but from error statistics?
     # more samples of the readout noise...
+
+    """ Impact of Defocus range """
+
+    " (1) Show how the defocus affects the PSF "
+
+    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=N_WAVES)
+
+    k_train = 2
+    f, axes = plt.subplots(2, 3)
+
+    for i, k in enumerate([0, -2]):
+
+        PSF_nom = training_PSF[k_train, :, :, k]
+        PSF_foc = training_PSF[k_train, :, :, k+1]
+        res = PSF_nom - PSF_foc
+        rm = max(-np.min(res), np.max(res))
+
+        ax = plt.subplot(2, 3, 3*i + 1)
+        img = ax.imshow(PSF_nom)
+        ax.set_title('Nominal PSF')
+        plt.colorbar(img)
+
+        ax = plt.subplot(2, 3, 3*i + 2)
+        img = ax.imshow(PSF_foc)
+        ax.set_title('Defocus PSF')
+        plt.colorbar(img)
+
+        ax = plt.subplot(2, 3, 3*i + 3)
+        img = ax.imshow(res, cmap='bwr')
+        ax.set_title('Difference [Nominal - Defocus]')
+        plt.colorbar(img)
+        img.set_clim(-rm, rm)
+
+    plt.show()
+
+
+
+    def test_defocus(PSF_model):
+
+
+        # Evaluate the Initial RMS and Wavefronts
+        rbf_mat = PSF_model.RBF_mat[0]
+        pupil_mask = PSF_model.pupil_masks[0]
+        rms = []
+        guessed_coef = []
+        for focus in [1.0, 1.25, 1.5, 1.75, 2.0]:
+            print("\nTesting with a Defocus of %.2f" %focus)
+            training_PSF, test_PSF, training_coef, test_coef = generate_training_set(PSF_model, 100, 100, foc=focus)
+            read_train_PSF, read_train_coef = readout_noise_images(training_PSF, training_coef, RMS_READ, N_copies=3)
+            N_channels = training_PSF.shape[-1]
+            del training_PSF
+            del training_coef
+            read_test_PSF, read_test_coef = readout_noise_images(test_PSF, test_coef, RMS_READ, N_copies=3)
+            del test_PSF
+            del test_coef
+
+            # print("\nConsidering %d Wavelengths" %waves)
+
+            # N_channels = 2 * waves
+
+            input_shape = (pix, pix, N_channels,)
+            print(input_shape)
+            model = Sequential()
+            model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+            # model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
+            model.add(Conv2D(128, (3, 3), activation='relu'))
+            # model.add(MaxPooling2D(pool_size=(2, 2)))
+            model.add(Conv2D(32, (3, 3), activation='relu'))
+            model.add(Conv2D(8, (3, 3), activation='relu'))
+            model.add(Flatten())
+            model.add(Dense(N_act))
+            model.summary()
+            model.compile(optimizer='adam', loss='mean_squared_error')
+
+            train_history = model.fit(x=read_train_PSF, y=read_train_coef, validation_data=(read_test_PSF, read_test_coef),
+                                      epochs=10, batch_size=32, shuffle=True, verbose=1)
+            guess = model.predict(read_test_PSF)
+            guessed_coef.append(guess)
+            residual = read_test_coef - guess
+
+            if focus == 1.0:
+                rms0 = []
+                for k in range(read_test_PSF.shape[0]):
+                    phase0 = np.dot(rbf_mat, read_test_coef[k])
+                    phase0_f = phase0[pupil_mask]
+                    rms0.append(np.std(phase0_f))
+
+            # Check the RMS wavefront error for each case
+            _rms = []
+            for k in range(read_test_PSF.shape[0]):
+                phase = np.dot(rbf_mat, residual[k])
+                phase_f = phase[pupil_mask]
+                _rms.append(np.std(phase_f))
+            rms.append(_rms)
+
+        return guessed_coef, rms0, rms
+
+    guessed_coef, rms0_focus, rms_focus = test_defocus(PSF)
+
+    import shap
+
+    shap_values = shap.TreeExplainer(model).shap_values(read_train_PSF)
+
+    list_focus = [1.0, 1.25, 1.5, 1.75, 2.0]
+    plot_waves = len(list_focus)
+    n_columns = 3
+    n_rows = 2
+    f, axes = plt.subplots(n_rows, n_columns)
+    mus = []
+    rmses = []
+    for i in range(n_rows):
+        for j in range(n_columns):
+            k = n_columns * i + j
+            if k >= plot_waves:
+                break
+            rms_wave = rms[k]
+            # rms_wave = rms_batch[k]
+            avg_rms = np.mean(rms_wave)
+            med_rms = np.median(rms_wave)
+            std_rms = np.std(rms_wave)
+            mus.append(med_rms)
+            rmses.append(std_rms)
+            print(k)
+            ax = plt.subplot(n_rows, n_columns, k + 1)
+            ax.hist(rms0, bins=20, color='lightgreen')
+            ax.hist(rms_wave, bins=20, color='darkturquoise')
+            ax.axvline(med_rms, linestyle='--', color='black')
+            # ax.set_ylim([0, 700])
+            # ax.set_title(r'Channels %d | WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
+            ax.set_title(r'$\lambda$ range 1.50-%.3f $\mu m$ | WFE %.3f ($\sigma$=%.3f)' % (list_waves[k], avg_rms, std_rms))
+            ax.set_xlim([0, 1.25])
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+            if i == n_rows - 1:
+                ax.get_xaxis().set_visible(True)
+                ax.set_xlabel(r'RMS Wavefront [$\lambda$]')
+            if j == 0:
+                ax.get_yaxis().set_visible(True)
+
+    ax = plt.subplot(n_rows, n_columns, n_rows*n_columns)
+    ax = plt.subplot(1, 1, 1)
+    ax.errorbar(list_waves, mus, yerr=rmses, fmt='o')
+    ax.set_xlabel('Waves considered')
+    ax.set_title(r'RMS Wavefront [$\lambda$]')
+    ax.set_xticks(list_waves)
+    # ax.set_ylim([0, 0.40])
+    plt.show()
+
+
+
+
+    # =------------------------------------------
+
 
     k_train = 0
     plot_waves = N_WAVES
