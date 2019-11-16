@@ -398,17 +398,17 @@ if __name__ == "__main__":
     model.summary()
     model.compile(optimizer='adam', loss='mean_squared_error')
 
-    train_history = model.fit(x=training_PSF, y=training_coef,
-                              validation_data=(test_PSF, test_coef),
+    train_history = model.fit(x=read_train_PSF, y=read_train_coef,
+                              validation_data=(read_test_PSF, read_test_coef),
                               epochs=25, batch_size=32, shuffle=True, verbose=1)
 
     import shap
-    background = training_PSF[np.random.choice(training_PSF.shape[0], 200, replace=False)]
+    background = read_train_PSF[np.random.choice(read_train_PSF.shape[0], 150, replace=False)]
     e = shap.DeepExplainer(model, background)
 
     N_cases = 150
-    test_shap = test_PSF[:N_cases]
-    test_shap_coef = test_coef[:N_cases]
+    test_shap = read_test_PSF[:N_cases]
+    test_shap_coef = read_test_coef[:N_cases]
     shap_values = e.shap_values(test_shap)
     n_shap = len(shap_values)
 
@@ -417,7 +417,7 @@ if __name__ == "__main__":
         according to their (i,j)
         """
 
-        x = list(range(pix)) - pix//2*np.ones(pix)
+        x = list(range(pix))
         xx, yy = np.meshgrid(x, x)
         xid = xx.reshape((pix * pix))
         yid = yy.reshape((pix * pix))
@@ -429,35 +429,46 @@ if __name__ == "__main__":
 
     ### Dot plot
     # Select only the last channel
-    shap_val_chan = [x[:,:,:,-1].reshape((N_cases, pix*pix)) for x in shap_values]
-    features_chan = test_shap[:,:,:,-1].reshape((N_cases, pix*pix))
+    shap_val_chan = [x[:,:,:,-2].reshape((N_cases, pix*pix)) for x in shap_values]
+    features_chan = test_shap[:,:,:,-2].reshape((N_cases, pix*pix))
 
     # Select which actuator
-    j_act = -1
+    j_act = 0
     shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
                       feature_names=pix_label)
     shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
                       feature_names=pix_label, plot_type='bar', max_display=50)
 
+    # Dependence plot
+    for k in range(10):
+        shap.dependence_plot(ind=pix*pix//2 + 10+k, shap_values=shap_val_chan[0], features=features_chan,
+                             feature_names=pix_label)
+
     act_coef = np.zeros(N_act)
     defocus = np.load('defocus.npy')
-    P0, _s0 = PSF.compute_PSF(0*act_coef, wave_idx=0)
+    P0, _s0 = PSF.compute_PSF(0*act_coef, wave_idx=9)
 
     act_coef[j_act] = 1.0
-    P, _s = PSF.compute_PSF(act_coef, wave_idx=0)
+    P, _s = PSF.compute_PSF(act_coef, wave_idx=9)
     plt.figure()
     plt.imshow(P - P0, cmap='bwr', origin='lower')
     plt.colorbar()
     plt.title('Differential PSF | Actuator #%d' %j_act)
+    plt.xlabel('X pixel')
+    plt.ylabel('Y pixel')
     plt.show()
 
-    
-    j_act = -1
-    i_exa = 1
+    ##
+    # shap.dependence_plot
+    ##
+
+
+    j_act = 0
+    i_exa = 10
     print(test_shap_coef[i_exa, j_act])
     cmap = 'hot'
 
-    for k in range(10):
+    for k in np.arange(8, 10):
         chan = test_shap[i_exa,:,:,2*k]
         shap_chan = shap_values[j_act][i_exa, :, :, 2*k]
         smax = max(-np.min(shap_chan), np.max(shap_chan))
@@ -473,7 +484,7 @@ if __name__ == "__main__":
         plt.colorbar(im1, ax=ax1)
         ax1.set_title(k)
 
-        im2 = ax2.imshow(np.log10(chan), cmap=cmap)
+        im2 = ax2.imshow(np.log10(np.abs(chan)), cmap=cmap)
         plt.colorbar(im2, ax=ax2)
 
         im3 = ax3.imshow(shap_chan, cmap='bwr')
@@ -485,7 +496,7 @@ if __name__ == "__main__":
         im4 = ax4.imshow(chan_foc, cmap=cmap)
         plt.colorbar(im4, ax=ax4)
 
-        im5 = ax5.imshow(np.log10(chan_foc), cmap=cmap)
+        im5 = ax5.imshow(np.log10(np.abs(chan_foc)), cmap=cmap)
         plt.colorbar(im5, ax=ax5)
 
         im6 = ax6.imshow(shap_chan_foc, cmap='bwr')
