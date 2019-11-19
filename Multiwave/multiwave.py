@@ -1,4 +1,5 @@
 from __future__ import print_function  # for Python2
+
 import os
 import numpy as np
 from numpy.fft import fft2, fftshift
@@ -21,11 +22,11 @@ RHO_OBSC = 0.15
 N_WAVES = 10
 WAVE_N = 2.0
 
-### Super useful code to display variables and their sizes (helps you clear the RAM)
-import sys
-
-for var, obj in locals().items():
-    print(var, sys.getsizeof(obj))
+# ### Super useful code to display variables and their sizes (helps you clear the RAM)
+# import sys
+#
+# for var, obj in locals().items():
+#     print(var, sys.getsizeof(obj))
 
 " Actuators "
 
@@ -387,7 +388,7 @@ if __name__ == "__main__":
     """
     SHAP VALUES
     """
-
+    input_shape = (pix, pix, 2 * N_WAVES,)
     model = Sequential()
     model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
     model.add(Conv2D(128, (3, 3), activation='relu'))
@@ -403,13 +404,14 @@ if __name__ == "__main__":
                               epochs=25, batch_size=32, shuffle=True, verbose=1)
 
     import shap
-    background = read_train_PSF[np.random.choice(read_train_PSF.shape[0], 150, replace=False)]
+    background = training_PSF[np.random.choice(training_PSF.shape[0], 150, replace=False)]
     e = shap.DeepExplainer(model, background)
 
-    N_cases = 150
-    test_shap = read_test_PSF[:N_cases]
-    test_shap_coef = read_test_coef[:N_cases]
+    N_cases = 250
+    test_shap = test_PSF[:N_cases]
+    test_shap_coef = test_PSF[:N_cases]
     shap_values = e.shap_values(test_shap)
+    np.save('shap', shap_values)
     n_shap = len(shap_values)
 
     def generate_pixel_ids(pix):
@@ -437,12 +439,19 @@ if __name__ == "__main__":
     shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
                       feature_names=pix_label)
     shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
-                      feature_names=pix_label, plot_type='bar', max_display=50)
+                      feature_names=pix_label, plot_type='bar')
+
+    shap.summary_plot(shap_values=shap_val_chan, features=features_chan,
+                      feature_names=pix_label, plot_type='bar')
 
     # Dependence plot
-    for k in range(10):
-        shap.dependence_plot(ind=pix*pix//2 + 10+k, shap_values=shap_val_chan[0], features=features_chan,
-                             feature_names=pix_label)
+    for k in range(3*pix):
+        f, ax = plt.subplots(figsize=(10, 10))
+        ind = pix*pix//2 - pix + k
+        shap.dependence_plot(ind=ind, shap_values=shap_val_chan[j_act], features=features_chan,
+                             feature_names=pix_label, ax=ax)
+        f.savefig(pix_label[ind])
+        plt.close(f)
 
     act_coef = np.zeros(N_act)
     defocus = np.load('defocus.npy')
@@ -463,45 +472,53 @@ if __name__ == "__main__":
     ##
 
 
-    j_act = 0
-    i_exa = 10
-    print(test_shap_coef[i_exa, j_act])
+    j_act = 2
+    i_exa = 2
+    # print(test_shap_coef[i_exa, j_act])
     cmap = 'hot'
 
-    for k in np.arange(8, 10):
-        chan = test_shap[i_exa,:,:,2*k]
-        shap_chan = shap_values[j_act][i_exa, :, :, 2*k]
-        smax = max(-np.min(shap_chan), np.max(shap_chan))
+    # for k in np.arange(8, 10):
 
-        chan_foc = test_shap[i_exa,:,:,2*k+1]
-        shap_chan_foc = shap_values[j_act][i_exa, :, :, 2*k+1]
-        smax_foc = max(-np.min(shap_chan_foc), np.max(shap_chan_foc))
 
-        maxmax = max(smax, smax_foc)
+    k = -1
+    chan = test_shap[i_exa,:,:,2*k]
+    shap_chan = shap_values[j_act][i_exa, :, :, 2*k]
+    smax = max(-np.min(shap_chan), np.max(shap_chan))
 
-        f, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3)
-        im1 = ax1.imshow(chan, cmap=cmap)
-        plt.colorbar(im1, ax=ax1)
-        ax1.set_title(k)
+    chan_foc = test_shap[i_exa,:,:,2*k+1]
+    shap_chan_foc = shap_values[j_act][i_exa, :, :, 2*k+1]
+    smax_foc = max(-np.min(shap_chan_foc), np.max(shap_chan_foc))
 
-        im2 = ax2.imshow(np.log10(np.abs(chan)), cmap=cmap)
-        plt.colorbar(im2, ax=ax2)
+    maxmax = max(smax, smax_foc)
 
-        im3 = ax3.imshow(shap_chan, cmap='bwr')
-        im3.set_clim(-maxmax, maxmax)
-        plt.colorbar(im3, ax=ax3)
+    f, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3)
+    im1 = ax1.imshow(chan, cmap=cmap)
+    plt.colorbar(im1, ax=ax1)
+    ax1.set_title(r'Nominal PSF')
 
-        # --------
+    im2 = ax2.imshow(np.log10(np.abs(chan)), cmap=cmap)
+    plt.colorbar(im2, ax=ax2)
+    ax2.set_title(r'Nominal PSF [log10]')
 
-        im4 = ax4.imshow(chan_foc, cmap=cmap)
-        plt.colorbar(im4, ax=ax4)
+    im3 = ax3.imshow(shap_chan, cmap='bwr')
+    im3.set_clim(-smax, smax)
+    ax3.set_title(r'SHAP map [Actuator #%d]' %j_act)
+    plt.colorbar(im3, ax=ax3)
 
-        im5 = ax5.imshow(np.log10(np.abs(chan_foc)), cmap=cmap)
-        plt.colorbar(im5, ax=ax5)
+    # --------
 
-        im6 = ax6.imshow(shap_chan_foc, cmap='bwr')
-        im6.set_clim(-maxmax, maxmax)
-        plt.colorbar(im6, ax=ax6)
+    im4 = ax4.imshow(chan_foc, cmap=cmap)
+    ax4.set_title(r'Defocused PSF')
+    plt.colorbar(im4, ax=ax4)
+
+    im5 = ax5.imshow(np.log10(np.abs(chan_foc)), cmap=cmap)
+    ax5.set_title(r'Defocused PSF [log10]')
+    plt.colorbar(im5, ax=ax5)
+
+    im6 = ax6.imshow(shap_chan_foc, cmap='bwr')
+    im6.set_clim(-smax_foc, smax_foc)
+    ax6.set_title(r'SHAP map [Actuator #%d]' %j_act)
+    plt.colorbar(im6, ax=ax6)
 
     plt.show()
 
@@ -640,7 +657,7 @@ if __name__ == "__main__":
 
     """ What if we include noise in the training? """
 
-    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=20)
+    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=10)
 
     def readout_noise_images(dataset, coef, RMS_READ, N_copies=3):
         N_PSF, pix, _pix, N_chan = dataset.shape
