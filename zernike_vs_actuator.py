@@ -371,7 +371,7 @@ if __name__ == "__main__":
 
     """ Generate the TRAINING sets """
 
-    defocus_strength = 1.0
+    defocus_strength = 1.5
     def generate_training_set(PSF_zernike, PSF_actuator, N_train=1500, N_test=500):
 
         start = time.time()
@@ -391,8 +391,8 @@ if __name__ == "__main__":
         for k in range(N_samples):
             if k % 100 == 0:
                 print(k)
-            dataset[:,:,:,0], _s = PSF_zernike.compute_PSF(coef_zern[k])
-            dataset[:,:,:,1], _s0 = PSF_zernike.compute_PSF(coef_zern[k] + defocus)
+            dataset[k,:,:,0], _s = PSF_zernike.compute_PSF(coef_zern[k])
+            dataset[k,:,:,1], _s0 = PSF_zernike.compute_PSF(coef_zern[k] + defocus)
 
         end = time.time()
         dt = end - start
@@ -431,7 +431,6 @@ if __name__ == "__main__":
     residual_zern = test_zern - guess_zern
     norm_zern = np.mean(norm(residual_zern, axis=-1)) / N_zern
 
-
     ### Train Actuator Model
 
     model = Sequential()
@@ -451,6 +450,67 @@ if __name__ == "__main__":
     guess_actu = model.predict(test_PSF)
     residual_zern = test_actu - guess_actu
     norm_actu = np.mean(norm(residual_zern, axis=-1)) / N_act
+
+    print("\nWhich Model is better?")
+    print("Average residual error: Mean(Norm(residual) / N_component)")
+    print("Zernike: %.4f" %norm_zern)
+    print("Actuators: %.4f" %norm_actu)
+
+    """ Evaluate the RMS wavefront error after calibration """
+
+    # In absolute terms
+    RMS0, RMS_zern, RMS_actu = [], [], []
+    for k in range(N_test):
+
+        true_wave = np.dot(PSF_zernike.RBF_mat, test_zern[k])
+        rms0 = np.std(true_wave[pupil])
+        RMS0.append(rms0)
+        corr_zern = np.dot(PSF_zernike.RBF_mat, guess_zern[k])
+        corr_actu = np.dot(PSF_actuator.RBF_mat, guess_actu[k])
+
+        res_zern = true_wave - corr_zern
+        rms_zern = np.std(res_zern[pupil])
+        RMS_zern.append(rms_zern)
+        res_actu = true_wave - corr_actu
+        rms_actu = np.std(res_actu[pupil])
+        RMS_actu.append(rms_actu)
+
+        impr_zern = 1 - rms_zern / rms0
+        impr_actu = 1 - rms_actu / rms0
+
+        if k < 10:
+            mapp = 'bwr'
+            m = min(np.min(true_wave), -np.max(true_wave))
+            f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+            ax1 = plt.subplot(1, 3, 1)
+            img1 = ax1.imshow(true_wave, cmap=mapp)
+            ax1.set_title(r'True Wavefront ($\sigma=%.3f \lambda$)' %rms0)
+            img1.set_clim(m, -m)
+            plt.colorbar(img1, ax=ax1, orientation='horizontal')
+
+            ax2 = plt.subplot(1, 3, 2)
+            img2 = ax2.imshow(res_zern, cmap=mapp)
+            ax2.set_title('Residual ML [Zernike Model] ($\sigma=%.3f \lambda$)' %rms_zern)
+            img2.set_clim(m, -m)
+            plt.colorbar(img2, ax=ax2, orientation='horizontal')
+
+            ax3 = plt.subplot(1, 3, 3)
+            img3 = ax3.imshow(res_actu, cmap=mapp)
+            ax3.set_title('Residual ML [Actuator Model] ($\sigma=%.3f \lambda$)' %rms_actu)
+            # m = min(np.min(residual), -np.max(residual))
+            img3.set_clim(m, -m)
+            plt.colorbar(img3, ax=ax3, orientation='horizontal')
+    plt.show()
+
+    plt.figure()
+    plt.hist(RMS0, bins=20, histtype='step', label='Initial')
+    plt.hist(RMS_zern, bins=20, histtype='step', label='Zernike Model')
+    plt.hist(RMS_actu, bins=20, histtype='step', label='Actuator Model')
+    plt.legend()
+    plt.show()
+
+
+
 
 
 
