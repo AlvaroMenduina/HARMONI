@@ -406,10 +406,11 @@ if __name__ == "__main__":
     import shap
     background = training_PSF[np.random.choice(training_PSF.shape[0], 150, replace=False)]
     e = shap.DeepExplainer(model, background)
+    shap_interaction_values = e.shap_interaction_values(background)
 
     N_cases = 250
     test_shap = test_PSF[:N_cases]
-    test_shap_coef = test_PSF[:N_cases]
+    test_shap_coef = test_coef[:N_cases]
     shap_values = e.shap_values(test_shap)
     np.save('shap', shap_values)
     n_shap = len(shap_values)
@@ -449,7 +450,7 @@ if __name__ == "__main__":
         f, ax = plt.subplots(figsize=(10, 10))
         ind = pix*pix//2 - pix + k
         shap.dependence_plot(ind=ind, shap_values=shap_val_chan[j_act], features=features_chan,
-                             feature_names=pix_label, ax=ax)
+                             xmin=-3/100, xmax=0.5,feature_names=pix_label, ax=ax)
         f.savefig(pix_label[ind])
         plt.close(f)
 
@@ -472,60 +473,115 @@ if __name__ == "__main__":
     ##
 
 
-    j_act = 2
-    i_exa = 2
-    # print(test_shap_coef[i_exa, j_act])
-    cmap = 'hot'
+    j_act = 15
+    for i_exa in range(10):
+        # i_exa = 1
+        # print(test_shap_coef[i_exa, j_act])
+        cmap = 'hot'
 
-    # for k in np.arange(8, 10):
+        k = -1
+        chan = test_shap[i_exa,:,:,2*k]
+        coef = test_shap_coef[i_exa, j_act]
 
+        shap_chan = shap_values[j_act][i_exa, :, :, 2*k]
+        print(coef)
+        smax = max(-np.min(shap_chan), np.max(shap_chan))
 
-    k = -1
-    chan = test_shap[i_exa,:,:,2*k]
-    shap_chan = shap_values[j_act][i_exa, :, :, 2*k]
-    smax = max(-np.min(shap_chan), np.max(shap_chan))
+        chan_foc = test_shap[i_exa,:,:,2*k+1]
+        shap_chan_foc = shap_values[j_act][i_exa, :, :, 2*k+1]
+        smax_foc = max(-np.min(shap_chan_foc), np.max(shap_chan_foc))
 
-    chan_foc = test_shap[i_exa,:,:,2*k+1]
-    shap_chan_foc = shap_values[j_act][i_exa, :, :, 2*k+1]
-    smax_foc = max(-np.min(shap_chan_foc), np.max(shap_chan_foc))
+        maxmax = max(smax, smax_foc)
 
-    maxmax = max(smax, smax_foc)
+        f, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3)
+        im1 = ax1.imshow(chan, cmap=cmap)
+        plt.colorbar(im1, ax=ax1)
+        ax1.set_title(r'Nominal PSF')
 
-    f, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3)
-    im1 = ax1.imshow(chan, cmap=cmap)
-    plt.colorbar(im1, ax=ax1)
-    ax1.set_title(r'Nominal PSF')
+        im2 = ax2.imshow(np.log10(np.abs(chan)), cmap=cmap)
+        plt.colorbar(im2, ax=ax2)
+        ax2.set_title(r'Nominal PSF [log10]')
 
-    im2 = ax2.imshow(np.log10(np.abs(chan)), cmap=cmap)
-    plt.colorbar(im2, ax=ax2)
-    ax2.set_title(r'Nominal PSF [log10]')
+        im3 = ax3.imshow(shap_chan, cmap='bwr')
+        im3.set_clim(-smax, smax)
+        ax3.set_title(r'SHAP map [Actuator #%d]' %j_act)
+        plt.colorbar(im3, ax=ax3)
 
-    im3 = ax3.imshow(shap_chan, cmap='bwr')
-    im3.set_clim(-smax, smax)
-    ax3.set_title(r'SHAP map [Actuator #%d]' %j_act)
-    plt.colorbar(im3, ax=ax3)
+        # --------
 
-    # --------
+        im4 = ax4.imshow(chan_foc, cmap=cmap)
+        ax4.set_title(r'Defocused PSF')
+        plt.colorbar(im4, ax=ax4)
 
-    im4 = ax4.imshow(chan_foc, cmap=cmap)
-    ax4.set_title(r'Defocused PSF')
-    plt.colorbar(im4, ax=ax4)
+        im5 = ax5.imshow(np.log10(np.abs(chan_foc)), cmap=cmap)
+        ax5.set_title(r'Defocused PSF [log10]')
+        plt.colorbar(im5, ax=ax5)
 
-    im5 = ax5.imshow(np.log10(np.abs(chan_foc)), cmap=cmap)
-    ax5.set_title(r'Defocused PSF [log10]')
-    plt.colorbar(im5, ax=ax5)
-
-    im6 = ax6.imshow(shap_chan_foc, cmap='bwr')
-    im6.set_clim(-smax_foc, smax_foc)
-    ax6.set_title(r'SHAP map [Actuator #%d]' %j_act)
-    plt.colorbar(im6, ax=ax6)
+        im6 = ax6.imshow(shap_chan_foc, cmap='bwr')
+        im6.set_clim(-smax_foc, smax_foc)
+        ax6.set_title(r'SHAP map [Actuator #%d]' %j_act)
+        plt.colorbar(im6, ax=ax6)
 
     plt.show()
 
+    ###
+    i_exa = 3
+
+    cmap = 'hot'
+    f, (ax1, ax2) = plt.subplots(1, 2)
+
+    chan = test_shap[i_exa, :, :, -2]
+    im4 = ax1.imshow(chan, cmap=cmap)
+    ax1.set_title(r'Nominal PSF')
+
+    im5 = ax2.imshow(np.log10(np.abs(chan)), cmap=cmap)
+    ax2.set_title(r'Nominal PSF [log10]')
 
 
+    f, (ax1, ax2) = plt.subplots(1, 2)
+
+    chan_foc = test_shap[i_exa, :, :, -1]
+    im4 = ax1.imshow(chan_foc, cmap=cmap)
+    ax1.set_title(r'Defocused PSF')
+
+    im5 = ax2.imshow(np.log10(np.abs(chan_foc)), cmap=cmap)
+    ax2.set_title(r'Defocused PSF [log10]')
+
+
+
+    n_rows = 5
+    n_columns = 8
+    f, axes = plt.subplots(n_rows, n_columns)
+    for i in range(n_rows):
+        for j in range(n_columns):
+            k = n_columns * i + j
+            shap_chan = shap_values[k][i_exa, :, :, -1]
+            smax = max(-np.min(shap_chan), np.max(shap_chan))
+
+            ax = plt.subplot(n_rows, n_columns, k + 1)
+            im3 = ax.imshow(shap_chan, cmap='bwr')
+            im3.set_clim(-smax, smax)
+            # ax.set_title(r'SHAP map [Actuator #%d]' % k)
+            # plt.colorbar(im3, ax=ax)
+            ax.get_xaxis().set_visible(False)
+            ax.get_yaxis().set_visible(False)
+    plt.show()
+
+    shap.decision_plot(e.expected_value[0], shap_val_chan[0][:25], features_chan[:25],
+                       feature_order='hclust',
+                       feature_display_range=slice(None, -900, -1),
+                       ignore_warnings=True)
 
     shap.image_plot(shap_values, -test_PSF[1:5])
+
+    row_index = 1
+    shap.multioutput_decision_plot(list(e.expected_value), shap_val_chan,
+                                   row_index=row_index,
+                                   feature_names=pix_label,
+                                   legend_labels=['Act %d' %x for x in range(N_act)],
+                                   legend_location='lower right',
+                                   feature_display_range=slice(None, -900, -1),
+                                   ignore_warnings=True)
 
 
 
