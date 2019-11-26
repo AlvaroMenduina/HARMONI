@@ -26,8 +26,8 @@ from numpy.linalg import norm as norm
 # PARAMETERS
 Z = 0.75                    # Strength of the aberrations -> relates to the Strehl ratio
 pix = 30                    # Pixels to crop the PSF
-N_PIX = 256                 # Pixels for the Fourier arrays
-RHO_APER = 0.5              # Size of the aperture relative to the physical size of the Fourier arrays
+N_PIX = 1024                 # Pixels for the Fourier arrays
+RHO_APER = 0.5             # Size of the aperture relative to the physical size of the Fourier arrays
 RHO_OBSC = 0.15             # Central obscuration
 
 
@@ -73,7 +73,7 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=T
     :return: [act (list of actuator centres), delta (actuator separation)], max_freq (max spatial frequency we sense)
     """
 
-    x0 = np.linspace(-1., 1., N_actuators, endpoint=True)
+    x0 = np.linspace(-4., 4., N_actuators, endpoint=True)
     delta = x0[1] - x0[0]
     N_in_D = 2*RHO_APER/delta
     print('%.2f actuators in D' %N_in_D)
@@ -141,7 +141,7 @@ def actuator_matrix(centres, alpha_pc=1, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     cent, delta = centres
     N_act = len(cent)
     matrix = np.empty((N_PIX, N_PIX, N_act))
-    x0 = np.linspace(-1., 1., N_PIX, endpoint=True)
+    x0 = np.linspace(-4., 4., N_PIX, endpoint=True)
     xx, yy = np.meshgrid(x0, x0)
     rho = np.sqrt(xx ** 2 + yy ** 2)
     pupil = (rho <= rho_aper) & (rho >= rho_obsc)
@@ -350,7 +350,7 @@ if __name__ == "__main__":
 
     """ (1) Define the ACTUATOR model for the WAVEFRONT """
 
-    N_actuators = 25
+    N_actuators = 25 * 2
     centers, MAX_FREQ = actuator_centres(N_actuators)
     N_act = len(centers[0])
     plot_actuators(centers)
@@ -376,13 +376,13 @@ if __name__ == "__main__":
     """ (2) Define the ZERNIKE model for the WAVEFRONT """
 
     N_zern = 50
-    x = np.linspace(-1, 1, N_PIX, endpoint=True)
+    x = np.linspace(-4, 4, N_PIX, endpoint=True)
     xx, yy = np.meshgrid(x, x)
     rho, theta = np.sqrt(xx ** 2 + yy ** 2), np.arctan2(xx, yy)
 
     rho, theta = rho[pupil], theta[pupil]
     zernike = zern.ZernikeNaive(mask=pupil)
-    _phase = zernike(coef=np.zeros(N_zern), rho=rho / (1.15*RHO_APER), theta=theta, normalize_noll=False,
+    _phase = zernike(coef=np.zeros(N_zern), rho=rho / (RHO_APER), theta=theta, normalize_noll=False,
                      mode='Jacobi', print_option='Silent')
     H_flat = zernike.model_matrix[:, 3:]
     H_matrix = zern.invert_model_matrix(H_flat, pupil)
@@ -397,7 +397,7 @@ if __name__ == "__main__":
     fit = Zernike_fit(PSF_zernike, PSF_actuator)
     rand_zern = np.random.uniform(low=-1, high=1, size=(1, N_zern))
     fit_actu = fit.fit_zernike_wave_to_actuators(rand_zern, plot=True).T
-    rand_actu = np.random.uniform(low=-1, high=1, size=(1, N_act))
+    rand_actu = 2*np.random.uniform(low=-1, high=1, size=(1, N_act))
     back_zern = fit.fit_actuator_wave_to_zernikes(rand_actu, plot=True)
     plt.show()
 
@@ -539,7 +539,6 @@ if __name__ == "__main__":
     print("Average residual error: Mean(Norm(residual) / N_component)")
     print("Zernike: %.4f" %norm_zern)
     print("Actuators: %.4f" %norm_actu)
-
 
     ### ============================================================================================================ ###
     #                                            PERFOMANCE checks
@@ -745,7 +744,7 @@ if __name__ == "__main__":
                coef_actu[:N_train], coef_actu[N_train:]
 
 
-    N_train, N_test = 15000, 1000
+    N_train, N_test = 30000, 1000
 
     train_PSF2, test_PSF2, train_zern2, \
     test_zern2, train_actu2, test_actu2 = generate_training_set_actuator(PSF_zernike, PSF_actuator, N_train, N_test)
@@ -775,6 +774,198 @@ if __name__ == "__main__":
 
     relative_performance(PSF_zernike, PSF_actuator, residual_zern2, residual_actu2)
     absolute_performance(PSF_zernike, PSF_actuator, test_actu2, guess_zern2, guess_actu2, 'actuator')
+
+    ### IMPACT OF THE NUMBER OF ZERNIKES
+
+    defocus_strength = 1.5
+    def training_zern(PSF_zernike, N_train=1500, N_test=500):
+
+        start = time.time()
+
+        N_samples = N_train + N_test
+        N_zern = PSF_zernike.RBF_mat.shape[-1]
+        dataset = np.empty((N_samples, pix, pix, 2))
+
+        # Zernike Coefficient
+        coef_zern = ZZ * np.random.uniform(low=-1, high=1, size=(N_samples, N_zern))
+        defocus = np.zeros(N_zern)
+        defocus[1] = defocus_strength
+
+        for k in range(N_samples):
+            if k % 100 == 0:
+                print(k)
+            dataset[k, :, :, 0], _s = PSF_zernike.compute_PSF(coef_zern[k])
+            dataset[k, :, :, 1], _s0 = PSF_zernike.compute_PSF(coef_zern[k] + defocus)
+
+        end = time.time()
+        dt = end - start
+        print("\n%d examples created in %.3f sec" % (N_samples, dt))
+        print("\n%.3f sec/example" % (dt / N_samples))
+
+        return dataset[:N_train], dataset[N_train:], coef_zern[:N_train], coef_zern[N_train:]
+
+
+    Z = 2.0
+    NN = []
+    models = []
+    tests_im, tests_co = [], []
+    for N in [25, 50, 75, 100, 150]:
+        N_zern = N
+        x = np.linspace(-1, 1, N_PIX, endpoint=True)
+        xx, yy = np.meshgrid(x, x)
+        rho, theta = np.sqrt(xx ** 2 + yy ** 2), np.arctan2(xx, yy)
+
+        rho, theta = rho[pupil], theta[pupil]
+        zernike = zern.ZernikeNaive(mask=pupil)
+        _phase = zernike(coef=np.zeros(N_zern), rho=rho / (1.*RHO_APER), theta=theta, normalize_noll=False,
+                         mode='Jacobi', print_option='Silent')
+        H_flat = zernike.model_matrix[:, 3:]
+        H_matrix = zern.invert_model_matrix(H_flat, pupil)
+        N_zern = H_matrix.shape[-1]
+        NN.append(N_zern)
+
+        PSF_zernike = PointSpreadFunctionFast([H_matrix, pupil, H_flat])
+        ZZ = Z / np.sqrt(np.sqrt(N_zern))
+
+        rand_zern = ZZ * np.random.uniform(low=-1, high=1, size=(N_zern))
+        im, s = PSF_zernike.compute_PSF(rand_zern)
+
+        plt.figure()
+        plt.imshow(im)
+        plt.colorbar()
+        plt.title(N_zern)
+
+        ###
+        N_train, N_test = 15000, 500
+
+        train_PSF, test_PSF, train_zern, test_zern = training_zern(PSF_zernike, N_train, N_test)
+
+        ### ZERNIKE model
+        zern_model = create_model("ZERNIKE", N_output=N_zern)
+
+        train_history_zern = zern_model.fit(x=train_PSF, y=train_zern, validation_data=(test_PSF, test_zern),
+                                            epochs=50, batch_size=32, shuffle=True, verbose=1)
+        guess_zern = zern_model.predict(test_PSF)
+        residual_zern = test_zern - guess_zern
+        norm_zern = np.mean(norm(residual_zern, axis=-1)) / N_zern
+
+        models.append(zern_model)
+        tests_im.append(test_PSF)
+        tests_co.append(test_zern)
+
+    """ Some Fourier Thoughts on why the Actuators are a better model than Zernike """
+
+    H_act = PSF_actuator.RBF_mat
+    actu_rand = 1.5*np.random.uniform(-1, 1, size=(N_act))
+    phi0_actu = np.dot(H_act, actu_rand)
+
+    for k in np.arange(25, 44):
+        one_actu = np.zeros(N_act)
+        eps = 1e-3
+        one_actu[k] = eps
+        phi_actu = phi0_actu + np.dot(H_act, one_actu)
+
+        P_actu0 = pupil * np.exp(1j * phi0_actu)
+        P_actu = pupil * np.exp(1j * phi_actu)
+
+        Fp_actu0 = fftshift(fft2(P_actu0))
+        Fp_actu = fftshift(fft2(P_actu))
+
+        Im_actu0 = np.real(Fp_actu0 * np.conj(Fp_actu0))
+        peak_actu = Im_actu0.max()
+        Im_actu0 /= peak_actu
+        Im_actu = np.real(Fp_actu * np.conj(Fp_actu))
+        Im_actu /= peak_actu
+
+        delta_actu = 100*(Im_actu - Im_actu0)
+        dmin = min(np.min(delta_actu), -np.max(delta_actu))
+
+        p = 75
+        d_actu = delta_actu[N_PIX//2 - p:N_PIX//2 + p, N_PIX//2 - p:N_PIX//2 + p]
+        plt.figure()
+        # plt.imshow(np.log10(np.abs(d_actu)), cmap='RdBu')
+        plt.imshow(d_actu, cmap='RdBu')
+        plt.clim(dmin, -dmin)
+        plt.colorbar()
+        plt.title('Actuator %d' % k)
+        # plt.show()
+
+        H_zern = PSF_zernike.RBF_mat
+        zern_rand = 1.5*np.random.uniform(-1, 1, size=(N_zern))
+        # phi0_zern = np.dot(H_zern, zern_rand)
+        phi0_zern = phi0_actu
+        one_zern = np.zeros(N_zern)
+        eps = 1e-3
+        one_zern[k] = eps
+        phi_zern = phi0_zern + np.dot(H_zern, one_zern)
+
+        P_zern0 = pupil * np.exp(1j * phi0_zern)
+        P_zern = pupil * np.exp(1j * phi_zern)
+
+        FP_zern0 = fftshift(fft2(P_zern0))
+        FP_zern = fftshift(fft2(P_zern))
+
+        Im_zern0 = np.real(FP_zern0 * np.conj(FP_zern0))
+        peak_zern = Im_zern0.max()
+        Im_zern0 /= peak_zern
+        Im_zern = np.real(FP_zern * np.conj(FP_zern))
+        Im_zern /= peak_zern
+
+        delta_zern = 100*(Im_zern - Im_zern0)
+        dmin = min(np.min(delta_zern), -np.max(delta_zern))
+
+        d_zern = delta_zern[N_PIX//2 - p:N_PIX//2 + p, N_PIX//2 - p:N_PIX//2 + p]
+        plt.figure()
+        plt.imshow(d_zern, cmap='RdBu')
+        # plt.imshow(np.log10(np.abs(d_zern)), cmap='RdBu')
+        plt.clim(dmin, -dmin)
+        plt.colorbar()
+        plt.title('Zernike %d' % k)
+    plt.show()
+
+    ####
+
+    Fpi = fftshift(fft2(pupil, norm='ortho'))
+
+    F_e = fftshift(fft2(pupil * np.exp(1j * phi0_actu), norm='ortho'))
+
+    f_actu = H_act[:,:, 2]
+    f_zern = H_zern[:,:, 1]
+
+    F_actu = fftshift(fft2(f_actu, norm='ortho'))
+    F_zern = fftshift(fft2(f_zern, norm='ortho'))
+
+    F_fe_actu = fftshift(fft2(f_actu * np.exp(1j * phi0_actu), norm='ortho'))
+    F_fe_zern = fftshift(fft2(f_zern * np.exp(1j * phi0_actu), norm='ortho'))
+
+    plt.figure()
+    plt.imshow(np.abs(np.imag(F_fe_actu)), cmap='Reds')
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(np.abs(np.imag(F_fe_zern)), cmap='Reds')
+    plt.colorbar()
+    plt.show()
+
+    plt.figure()
+    plt.imshow(np.abs(F_e), cmap='Reds')
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(np.abs((F_actu)), cmap='Reds')
+    plt.colorbar()
+    plt.figure()
+    plt.imshow(np.abs((F_zern)), cmap='Reds')
+    plt.colorbar()
+    plt.show()
+
+
+
+
+
+
+
+
 
 
 
