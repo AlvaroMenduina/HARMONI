@@ -423,6 +423,10 @@ if __name__ == "__main__":
         print("Uncertainty: %.3f" % np.mean(uncertainty_per_act))
         print(uncertainty_per_act[:n_act])
 
+    # ================================================================================================================ #
+
+    """ Analyze the errors in the predictions """
+
 
     def draw_actuator_commands(commands, centers):
         """
@@ -447,7 +451,8 @@ if __name__ == "__main__":
     plt.show()
 
     ### Try to fit a Gaussian to the Dropout predictions
-    from scipy.stats import norm, normaltest
+    from scipy.stats import norm as gaussian
+    from scipy.stats import normaltest
     from matplotlib import cm
     # colors = ['red', 'blue', 'black', 'green', 'pink']
     N_show = 10
@@ -464,7 +469,7 @@ if __name__ == "__main__":
         # print(p_value)
 
         # Fit a Gaussian profile
-        mean, std = norm.fit(predictions)
+        mean, std = gaussian.fit(predictions)
 
         # True value
         true_value = test_coef[i_ex, k_act]
@@ -482,7 +487,7 @@ if __name__ == "__main__":
 
     N_samples = result.shape[0]
     N_examples = 150
-    k_act = 0
+    k_act = 1
     plt.figure()
     _x = np.linspace(-2, 2, 50)
     plt.plot(_x, _x, linestyle='--', color='black')
@@ -498,6 +503,49 @@ if __name__ == "__main__":
     plt.xlim([-2, 2])
     plt.ylim([-2, 2])
     plt.show()
+
+    # ================================================================================================================ #
+    #                                                Ensemble Approach                                                 #
+    # ================================================================================================================ #
+
+    N_models = 10
+    keep_rate = 0.90
+
+    # Train a Single Model to
+    one_model = create_model_dropout(waves=N_WAVES, keep_rate=keep_rate)
+    train_history = one_model.fit(x=training_PSF, y=training_coef,
+                                      validation_data=(test_PSF, test_coef),
+                                      epochs=30, batch_size=32, shuffle=True, verbose=1)
+
+    one_guess = one_model.predict(test_PSF)
+    one_residual = test_coef - one_guess
+    print(norm(one_residual))
+
+    print("\nModel with Dropout: %.2f" % keep_rate)
+    print("After training:")
+    print("Norm of residuals: %.2f" % norm(one_residual))
+
+    ### Train N_models
+    list_models = []
+    list_guesses, list_uncertain = [], []
+    for k in range(N_models):
+        _model = create_model_dropout(waves=N_WAVES, keep_rate=keep_rate)
+        train_history = _model.fit(x=training_PSF, y=training_coef,
+                                      validation_data=(test_PSF, test_coef),
+                                      epochs=30, batch_size=32, shuffle=True, verbose=1)
+        list_models.append(_model)
+        # Combine the guesses
+        f = K.function([_model.layers[0].input, K.learning_phase()],
+                       [_model.layers[-1].output])
+        # Use the Uncertain predictions
+        result, avg_pred, unc = predict_with_uncertainty(f, test_PSF[:500], N_classes=N_act, N_samples=500)
+        list_guesses.append(avg_pred)
+        list_uncertain.append(unc)
+
+    many_guesses = np.mean(np.concatenate(list_guesses, axis=0), axis=0)
+    many_residual = test_coef - many_guesses
+
+
 
     # ================================================================================================================ #
     #                                      SHAP Values - Model Interpretability                                        #
