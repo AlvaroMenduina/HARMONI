@@ -14,7 +14,7 @@ from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
-Z = 1.5                    # Strength of the aberrations
+Z = 1.75                    # Strength of the aberrations
 pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
@@ -159,14 +159,14 @@ class PointSpreadFunction(object):
             pass
         return image, strehl
 
-    def plot_PSF(self, coef, wave_idx):
+    def plot_PSF(self, coef, wave_idx, cmap='hot'):
         """
         Plot an image of the PSF
         """
         PSF, strehl = self.compute_PSF(coef, wave_idx)
 
         plt.figure()
-        plt.imshow(PSF)
+        plt.imshow(PSF, cmap=cmap)
         plt.title('Strehl: %.3f' %strehl)
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
@@ -175,10 +175,10 @@ def generate_training_set(PSF_model, N_train=1500, N_test=500, foc=1.0):
 
     N_act = PSF_model.N_act
     N_samples = N_train + N_test
-    # coef = np.random.uniform(low=-Z, high=Z, size=(N_samples, N_act))
+    coef = np.random.uniform(low=-Z, high=Z, size=(N_samples, N_act))
     # training_coef, test_coef
-    coef = np.concatenate([np.load('training_coef.npy'),
-                           np.load('test_coef.npy')], axis=0)
+    # coef = np.concatenate([np.load('training_coef.npy'),
+    #                        np.load('test_coef.npy')], axis=0)
     print(coef.shape)
 
     # defocus = np.zeros(N_zern)
@@ -270,13 +270,13 @@ if __name__ == "__main__":
     phaseN = np.dot(rbf_matrices[1][0], c_act)
 
     plt.figure()
-    plt.imshow(phase0)
+    plt.imshow(phase0, cmap='RdBu')
     plt.colorbar()
 
     plt.figure()
-    plt.imshow(phaseN)
+    plt.imshow(phaseN, cmap='RdBu')
     plt.colorbar()
-    # plt.show()
+    plt.show()
 
     PSF = PointSpreadFunction(rbf_matrices)
 
@@ -286,62 +286,18 @@ if __name__ == "__main__":
     plt.show()
 
     # ================================================================================================================ #
-    # """ Could the Multiwavelength information be useful for calibration? """
-    # ### The Answer is OF COURSE NOT
-    # coeff_degen = np.zeros(N_act)
-    # k_act = 25
-    # coeff_degen[k_act] = 15
-    # coeff_degen[-k_act] = 15
-    # phase_degen = np.dot(rbf_matrices[0][0], coeff_degen)
-    #
-    # plt.figure()
-    # plt.imshow(phase_degen)
-    # plt.colorbar()
-    # plt.show()
-    # for wave_idx in range(N_WAVES):
-    #     p_plus, _s = PSF.compute_PSF(coeff_degen, wave_idx)
-    #     coeff_degen[-1] *= -1
-    #     p_minus, _s = PSF.compute_PSF(coeff_degen, wave_idx)
-    #
-    #     mapp = 'viridis'
-    #
-    #     f, (ax1, ax2, ax3) = plt.subplots(1, 3)
-    #     ax1 = plt.subplot(1, 3, 1)
-    #     img1 = ax1.imshow(p_plus, cmap=mapp)
-    #     ax1.set_title('Plus')
-    #     # img1.set_clim(m, -m)
-    #     plt.colorbar(img1, ax=ax1, orientation='horizontal')
-    #
-    #     ax2 = plt.subplot(1, 3, 2)
-    #     img2 = ax2.imshow(p_minus, cmap=mapp)
-    #     ax2.set_title('Minus')
-    #     # img2.set_clim(m, -m)
-    #     plt.colorbar(img2, ax=ax2, orientation='horizontal')
-    #
-    #     ax3 = plt.subplot(1, 3, 3)
-    #     img3 = ax3.imshow(p_plus - p_minus, cmap=mapp)
-    #     ax3.set_title('Diff')
-    #     # img3.set_clim(m, -m)
-    #     plt.colorbar(img3, ax=ax3, orientation='horizontal')
-    # plt.show()
-
-    # ------------------------------------------------------------------------------- #
 
     """ Generate a training set of CLEAN PSF images """
 
     N_train, N_test = 5000, 500
-    N_batches = 1
+    N_batches = 3
     for k in range(N_batches):
         training_PSF, test_PSF, training_coef, test_coef = generate_training_set(PSF, N_train, N_test)
-        np.save('ALPHAtraining_PSF%d' % k, training_PSF)
-        np.save('ALPHAtest_PSF%d' % k, test_PSF)
-        np.save('ALPHAtraining_coef%d' % k, training_coef)
-        np.save('ALPHAtest_coef%d' % k, test_coef)
+        np.save('training_PSF%d' % k, training_PSF)
+        np.save('test_PSF%d' % k, test_PSF)
+        np.save('training_coef%d' % k, training_coef)
+        np.save('test_coef%d' % k, test_coef)
 
-    """ In the absence of noise, how many examples do we need? """
-    # Just load 3 channels
-    N_batches = 5
-    load_waves = 5
     def load_dataset(N_batches, load_waves):
         training_PSF, test_PSF, training_coef, test_coef = [], [], [], []
         for k in range(N_batches):
@@ -362,7 +318,107 @@ if __name__ == "__main__":
         test_coef = np.concatenate(test_coef, axis=0)
         return training_PSF, test_PSF, training_coef, test_coef
 
-    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=N_WAVES)
+    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=3, load_waves=N_WAVES)
+
+    H = PSF.RBF_mat[0]
+    pup = PSF.pupil_masks[0]
+    eps = 1e-3
+    c = np.random.uniform(low=-eps, high=eps, size=N_act)
+    w0 = np.dot(H, c)
+    f_w0 = fftshift(fft2(w0, norm='ortho'))
+    f_pi = fftshift(fft2(pup, norm='ortho'))
+    delta = np.real(1j * (np.conj(f_pi) * f_w0 - f_pi * np.conj(f_w0)))
+
+    B = np.linalg.tensorsolve(w0, delta)
+    im_f_w0 = np.imag(f_w0)
+
+
+
+
+    # ================================================================================================================ #
+    #                              UNCERTAINTY - Bayesian Networks approx with Dropout                                 #
+    # ================================================================================================================ #
+
+    def create_model_dropout(waves, drop_rate):
+        p = drop_rate
+        input_shape = (pix, pix, 2 * waves,)
+        model = Sequential()
+        name = "model_dropout%.2f" % drop_rate
+        model.name = name
+        model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+        model.add(Dropout(rate=1 - p))
+        model.add(Conv2D(128, (3, 3), activation='relu'))
+        model.add(Dropout(rate=1 - p))
+        # model.add(Conv2D(32, (3, 3), activation='relu'))
+        # model.add(Dropout(rate=1 - p))
+        # model.add(Conv2D(8, (3, 3), activation='relu'))
+        # model.add(Dropout(rate=1 - p))
+        model.add(Flatten())
+        model.add(Dropout(rate=1 - p))
+        model.add(Dense(N_act))
+        model.summary()
+        model.compile(optimizer='adam', loss='mean_squared_error')
+
+        return model
+
+    def predict_with_uncertainty(f, x, no_classes, n_iter=100):
+        result = np.zeros((n_iter,) + (x.shape[0], no_classes))
+
+        for i in range(n_iter):
+            result[i, :, :] = f((x, 1))[0]
+
+        prediction = result.mean(axis=0)
+        uncertainty = result.std(axis=0)
+
+        return result, prediction, uncertainty
+
+    for dropout in [0.95]:
+    # dropout = 0.95
+        dropout_model = create_model_dropout(waves=N_WAVES, drop_rate=dropout)
+
+        # Train Model
+        train_history = dropout_model.fit(x=training_PSF, y=training_coef,
+                                  validation_data=(test_PSF, test_coef),
+                                  epochs=30, batch_size=32, shuffle=True, verbose=1)
+
+        guess = dropout_model.predict(test_PSF)
+        residual = test_coef - guess
+        print(norm(residual))
+
+        print("\nModel with Dropout: %.2f" % dropout)
+        print("After training:")
+        print("Norm of residuals: %.2f" % norm(residual))
+
+        f = K.function([dropout_model.layers[0].input, K.learning_phase()],
+                       [dropout_model.layers[-1].output])
+
+        result, avg_pred, unc = predict_with_uncertainty(f, test_PSF[:500], N_act, 250)
+        bias = test_coef[:500] - avg_pred                             # [N_test, N_act]
+        mean_bias_per_act = np.mean(bias, axis=0)               # [N_act]
+        mean_abs_bias_per_act = np.mean(np.abs(bias), axis=0)
+        uncertainty_per_act = np.mean(unc, axis=0)              # [N_act]
+
+        n_act = 10
+        print("\nFor the first %d Actuators" % n_act)
+        print("Average Bias: ")
+        print(mean_bias_per_act[:n_act])
+        print("Average Abs(Bias): %.3f" %np.mean(mean_abs_bias_per_act))
+        print(mean_abs_bias_per_act[:n_act])
+        print("Uncertainty: %.3f" % np.mean(uncertainty_per_act))
+        print(uncertainty_per_act[:n_act])
+
+    plt.figure()
+    colors = ['red', 'blue', 'black', 'green', 'pink']
+    for i_ex in range(5):
+        k_act = 1
+
+        plt.hist(result[:, i_ex, k_act], histtype='step', color=colors[i_ex])
+        plt.axvline(test_coef[i_ex, k_act], color=colors[i_ex])
+        plt.xlim([-Z, Z])
+    plt.show()
+
+    # ================================================================================================================ #
+
 
     """ Test the impact of actuator Cross-Talk """
 
@@ -388,29 +444,23 @@ if __name__ == "__main__":
     """
     SHAP VALUES
     """
-    input_shape = (pix, pix, 2 * N_WAVES,)
-    model = Sequential()
-    model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
-    model.add(Conv2D(128, (3, 3), activation='relu'))
-    model.add(Conv2D(32, (3, 3), activation='relu'))
-    model.add(Conv2D(8, (3, 3), activation='relu'))
-    model.add(Flatten())
-    model.add(Dense(N_act))
-    model.summary()
-    model.compile(optimizer='adam', loss='mean_squared_error')
+
 
     train_history = model.fit(x=read_train_PSF, y=read_train_coef,
                               validation_data=(read_test_PSF, read_test_coef),
-                              epochs=25, batch_size=32, shuffle=True, verbose=1)
+                              epochs=10, batch_size=32, shuffle=True, verbose=1)
+    guess = model.predict(read_test_PSF)
+    residual = read_test_coef - guess
+    print(norm(residual))
 
     import shap
-    background = training_PSF[np.random.choice(training_PSF.shape[0], 150, replace=False)]
+    background = read_train_PSF[np.random.choice(read_train_PSF.shape[0], 250, replace=False)]
     e = shap.DeepExplainer(model, background)
-    shap_interaction_values = e.shap_interaction_values(background)
+    # shap_interaction_values = e.shap_interaction_values(background)
 
     N_cases = 250
-    test_shap = test_PSF[:N_cases]
-    test_shap_coef = test_coef[:N_cases]
+    test_shap = read_test_PSF[:N_cases]
+    test_shap_coef = read_test_coef[:N_cases]
     shap_values = e.shap_values(test_shap)
     np.save('shap', shap_values)
     n_shap = len(shap_values)
@@ -432,11 +482,11 @@ if __name__ == "__main__":
 
     ### Dot plot
     # Select only the last channel
-    shap_val_chan = [x[:,:,:,-2].reshape((N_cases, pix*pix)) for x in shap_values]
-    features_chan = test_shap[:,:,:,-2].reshape((N_cases, pix*pix))
+    shap_val_chan = [x[:,:,:,-1].reshape((N_cases, pix*pix)) for x in shap_values]
+    features_chan = test_shap[:,:,:,-1].reshape((N_cases, pix*pix))
 
     # Select which actuator
-    j_act = 0
+    j_act = 1
     shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
                       feature_names=pix_label)
     shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
@@ -473,8 +523,8 @@ if __name__ == "__main__":
     ##
 
 
-    j_act = 15
-    for i_exa in range(10):
+    j_act = 0
+    for i_exa in np.arange(10 + 5*4, 10 + 5*4 + 5, 1):
         # i_exa = 1
         # print(test_shap_coef[i_exa, j_act])
         cmap = 'hot'
@@ -569,7 +619,7 @@ if __name__ == "__main__":
 
     shap.decision_plot(e.expected_value[0], shap_val_chan[0][:25], features_chan[:25],
                        feature_order='hclust',
-                       feature_display_range=slice(None, -900, -1),
+                       feature_display_range=slice(None, -25, -1),
                        ignore_warnings=True)
 
     shap.image_plot(shap_values, -test_PSF[1:5])
@@ -732,10 +782,11 @@ if __name__ == "__main__":
                 new_coef[N_copies * k + i] = coef_copy
         ### Remove clean PSF to save memory
         del dataset
+        new_data += 5*RMS_READ
         return new_data, new_coef
 
-    RMS_READ = 1./100
-    N_copies = 3
+    RMS_READ = 1./500
+    N_copies = 5
     read_train_PSF, read_train_coef = readout_noise_images(training_PSF, training_coef, RMS_READ, N_copies)
     read_test_PSF, read_test_coef = readout_noise_images(test_PSF, test_coef, RMS_READ, N_copies)
 
