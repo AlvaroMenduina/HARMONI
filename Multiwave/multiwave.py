@@ -6,11 +6,9 @@ from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 
-from keras import models
 from keras.layers import Dense, Conv2D, BatchNormalization, MaxPooling2D, Flatten, Activation, Dropout
 from keras.models import Sequential
 from keras import backend as K
-from keras.backend.tensorflow_backend import tf
 from numpy.linalg import norm as norm
 
 # PARAMETERS
@@ -214,10 +212,38 @@ def generate_training_set(PSF_model, N_train=1500, N_test=500, foc=1.0):
 
     return dataset[:N_train], dataset[N_train:], coef[:N_train], coef[N_train:]
 
-# def flat_field_training(N_flats=5, sigma=0.15):
+def readout_noise_images(dataset, coef, RMS_READ, N_copies=3):
+    """
+    Introduces Readout Noise in the datasets
+    It creates N_copies of each PSF image with noise
+    The noise level is given by the RMS_READ
+    :param dataset: set of PSF images
+    :param coef: set of coefficients associated to the PSF images
+    :param RMS_READ: noise level
+    :param N_copies: number of copies to make for each PSF
+    :return:
+    """
+    N_PSF, pix, _pix, N_chan = dataset.shape
+    N_act = coef.shape[-1]
+    new_data = np.empty((N_copies * N_PSF, pix, pix, N_chan))
+    new_coef = np.empty((N_copies * N_PSF, N_act))
+
+    for k in range(N_PSF):
+        if k %100 == 0:
+            print(k)
+        PSF = dataset[k].copy()
+        coef_copy = coef[k].copy()
+        for i in range(N_copies):
+            read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
+            new_data[N_copies * k + i] = PSF + read_out
+            new_coef[N_copies * k + i] = coef_copy
+    del dataset ### Remove clean PSF to save memory
+    # Offset the arrays by the RMS_READ to minimize the number of pixels with negative values
+    new_data += 5 * RMS_READ
+    return new_data, new_coef
+
 
 if __name__ == "__main__":
-
 
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
@@ -337,6 +363,26 @@ if __name__ == "__main__":
     # ================================================================================================================ #
     #                              UNCERTAINTY - Bayesian Networks approx with Dropout                                 #
     # ================================================================================================================ #
+
+    def create_model(waves, name):
+        """
+        Creates a CNN model for NCPA calibration
+        :param waves: Number of wavelengths in the training set (to adjust the number of channels)
+        :return:
+        """
+        input_shape = (pix, pix, 2 * waves,)
+        model = Sequential()
+        model.name = name
+        model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
+        model.add(Conv2D(128, (3, 3), activation='relu'))
+        # model.add(Conv2D(32, (3, 3), activation='relu'))
+        # model.add(Conv2D(8, (3, 3), activation='relu'))
+        model.add(Flatten())
+        model.add(Dense(N_act))
+        model.summary()
+        model.compile(optimizer='adam', loss='mean_squared_error')
+
+        return model
 
     def create_model_dropout(waves, keep_rate):
         """
@@ -542,9 +588,9 @@ if __name__ == "__main__":
         list_guesses.append(avg_pred)
         list_uncertain.append(unc)
 
-    many_guesses = np.mean(np.concatenate(list_guesses, axis=0), axis=0)
-    many_residual = test_coef - many_guesses
-
+    guesses = np.stack(list_guesses)
+    many_guesses = np.mean(guesses, axis=0)
+    many_residual = test_coef[:500] - many_guesses
 
 
     # ================================================================================================================ #
@@ -589,6 +635,8 @@ if __name__ == "__main__":
     clean_shap_values = clean_explainer.shap_values(test_shap)
     # Save it because it sometimes crashes and it takes forever to run
     np.save('clean_shap', clean_shap_values)
+    np.save('test_shap', test_shap)
+    np.save('test_shap_coef', test_shap_coef)
 
     ### Show the Summary Plot for a given Actuator Command and a set of Wavelength Channels
     j_act = 1
@@ -610,10 +658,59 @@ if __name__ == "__main__":
         plt.close(f)
 
 
+    act_coef = np.zeros(N_act)
+    P0, _s0 = PSF.compute_PSF(0*act_coef, wave_idx=9)
 
-    background = read_train_PSF[np.random.choice(read_train_PSF.shape[0], 250, replace=False)]
-    e = shap.DeepExplainer(model, background)
-    # shap_interaction_values = e.shap_interaction_values(background)
+    act_coef[j_act] = 1.0
+    P, _s = PSF.compute_PSF(act_coef, wave_idx=9)
+    plt.figure()
+    plt.imshow(P - P0, cmap='bwr', origin='lower')
+    plt.colorbar()
+    plt.title('Differential PSF | Actuator #%d' %j_act)
+    plt.xlabel('X pixel')
+    plt.ylabel('Y pixel')
+    plt.show()
+
+    # ================================================================================================================ #
+    #                                           SHAP Values - NOISY Images                                             #
+    # ================================================================================================================ #
+
+
+
+    ### CAUTION! You probably want to do some Memory Cleanup before creating such a large training set
+
+    # import sys
+    #
+    # for var, obj in locals().items():
+    #     print(var, sys.getsizeof(obj))
+
+    RMS_READ = 1./500
+    N_copies = 5
+
+    read_train_PSF, read_train_coef = readout_noise_images(training_PSF, training_coef, RMS_READ, N_copies)
+    read_test_PSF, read_test_coef = readout_noise_images(test_PSF, test_coef, RMS_READ, N_copies)
+
+    noisy_model = create_model(waves=N_WAVES, name='SHAP_NOISY')
+
+    train_history = noisy_model.fit(x=read_train_PSF, y=read_train_coef,
+                                      validation_data=(read_test_PSF, read_test_coef),
+                                      epochs=10, batch_size=32, shuffle=True, verbose=1)
+
+    N_background = 250
+    N_shap_samples = 250
+
+    noisy_background = read_train_PSF[np.random.choice(read_train_PSF.shape[0], N_background, replace=False)]
+    noisy_explainer = shap.DeepExplainer(noisy_model, noisy_background)
+
+    # Select only the first N_shap from the test set
+    read_test_shap = read_train_PSF[:N_shap_samples]
+    read_test_shap_coef = read_test_coef[:N_shap_samples]
+    noisy_shap_values = noisy_explainer.shap_values(read_test_shap)
+    # Save it because it sometimes crashes and it takes forever to run
+    np.save('noisy_shap', noisy_shap_values)
+    np.save('read_test_shap', read_test_shap)
+    np.save('read_test_shap_coef', read_test_shap_coef)
+
 
     N_cases = 250
     test_shap = read_test_PSF[:N_cases]
@@ -628,21 +725,6 @@ if __name__ == "__main__":
     shap.summary_plot(shap_values=shap_val_chan, features=features_chan,
                       feature_names=pix_label, plot_type='bar')
 
-
-
-    act_coef = np.zeros(N_act)
-    defocus = np.load('defocus.npy')
-    P0, _s0 = PSF.compute_PSF(0*act_coef, wave_idx=9)
-
-    act_coef[j_act] = 1.0
-    P, _s = PSF.compute_PSF(act_coef, wave_idx=9)
-    plt.figure()
-    plt.imshow(P - P0, cmap='bwr', origin='lower')
-    plt.colorbar()
-    plt.title('Differential PSF | Actuator #%d' %j_act)
-    plt.xlabel('X pixel')
-    plt.ylabel('Y pixel')
-    plt.show()
 
     ##
     # shap.dependence_plot
@@ -890,26 +972,6 @@ if __name__ == "__main__":
     """ What if we include noise in the training? """
 
     training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=2, load_waves=10)
-
-    def readout_noise_images(dataset, coef, RMS_READ, N_copies=3):
-        N_PSF, pix, _pix, N_chan = dataset.shape
-        N_act = coef.shape[-1]
-        new_data = np.empty((N_copies * N_PSF, pix, pix, N_chan))
-        new_coef = np.empty((N_copies * N_PSF, N_act))
-
-        for k in range(N_PSF):
-            # if k %100 == 0:
-                # print(k)
-            PSF = dataset[k].copy()
-            coef_copy = coef[k].copy()
-            for i in range(N_copies):
-                read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
-                new_data[N_copies * k + i] = PSF + read_out
-                new_coef[N_copies * k + i] = coef_copy
-        ### Remove clean PSF to save memory
-        del dataset
-        new_data += 5*RMS_READ
-        return new_data, new_coef
 
     RMS_READ = 1./500
     N_copies = 5
@@ -1309,135 +1371,6 @@ if __name__ == "__main__":
     ax.set_title(r'RMS Wavefront [$\lambda$]')
     ax.set_xticks(list_waves)
     # ax.set_ylim([0, 0.40])
-    plt.show()
-
-
-
-
-    # =------------------------------------------
-
-
-    k_train = 0
-    plot_waves = N_WAVES
-    f, axes = plt.subplots(plot_waves, 2)
-    for i in range(plot_waves):
-        ax = plt.subplot(plot_waves, 2, 2*i + 1)
-        PSF_nom = training_PSF[k_train, :,:,2*i]
-        img = ax.imshow(PSF_nom)
-        ax.set_title('Nominal PSF [Wave %.2f]' %waves_ratio[i])
-
-        ax = plt.subplot(plot_waves, 2, 2*i + 2)
-        PSF_foc = training_PSF[k_train, :,:,2*i+1]
-        img = ax.imshow(PSF_foc)
-        ax.set_title('Defocus PSF [Wave %.2f]' %waves_ratio[i])
-    plt.show()
-
-    waves_considered = 5
-    N_channels = 2*waves_considered
-    input_shape = (pix, pix, N_channels,)
-
-    model = Sequential()
-    model.add(Conv2D(64, kernel_size=(3, 3), strides=(1, 1),
-                     activation='relu',
-                     input_shape=input_shape))
-    # model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(128, (3, 3), activation='relu'))
-    # model.add(MaxPooling2D(pool_size=(2, 2)))
-    # model.add(Conv2D(128, (3, 3), activation='relu'))
-    # model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Flatten())
-    model.add(Dense(N_act))
-    model.summary()
-
-    model = Sequential()
-    ks = 7
-    model.add(Conv2D(256, kernel_size=(ks, ks), strides=(1, 1),
-                     activation='relu',
-                     input_shape=input_shape))
-    model.add(Conv2D(128, (ks, ks), activation='relu'))
-
-    model.add(Flatten())
-    # model.add(Dense(2 * N_act))
-    model.add(Dense(N_act))
-
-    model.summary()
-
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    # train_history = model.fit(x=training_PSF[:,:,:,:2*waves_considered], y=training_coef,
-    #                           validation_data=(test_PSF[:,:,:,:2*waves_considered], test_coef),
-    #                           epochs=50, batch_size=32, shuffle=True, verbose=1)
-    train_history = model.fit(x=read_train_PSF[:,:,:,:2*waves_considered], y=read_train_coef,
-                              validation_data=(read_test_PSF[:,:,:,:2*waves_considered], read_test_coef),
-                              epochs=5, batch_size=32, shuffle=True, verbose=1)
-    loss_hist = train_history.history['loss']
-    val_hist = train_history.history['val_loss']
-
-
-    # guess = model.predict(test_PSF[:,:,:,:2*waves_considered])
-    # residual = test_coef - guess
-    guess = model.predict(read_test_PSF[:, :, :, :2 * waves_considered])
-    residual = read_test_coef - guess
-    print(np.mean(np.abs(residual)))
-
-    #### Hyperparameter Optim
-    k_sizes = [4, 5, 6, 7]
-    N_filters = [16, 32, 64]
-
-
-    for Nf1 in [128]:
-        for Nf2 in N_filters:
-            for ks in k_sizes:
-
-                model = Sequential()
-                model.add(Conv2D(Nf1, kernel_size=(ks, ks), strides=(1, 1),
-                                 activation='relu',
-                                 input_shape=input_shape))
-                model.add(Conv2D(Nf2, (ks, ks), activation='relu'))
-                model.add(Flatten())
-                model.add(Dense(N_act))
-                model.compile(optimizer='adam', loss='mean_squared_error')
-                train_history = model.fit(x=read_train_PSF[:, :, :, :2 * waves_considered], y=read_train_coef,
-                                          validation_data=(
-                                          read_test_PSF[:, :, :, :2 * waves_considered], read_test_coef),
-                                          epochs=5, batch_size=32, shuffle=True, verbose=0)
-                loss_hist = train_history.history['loss']
-                val_hist = train_history.history['val_loss']
-                print("\nHyperparams: %d Kernel Size | %d Filters 1 | %d Filters 2" % (ks, Nf1, Nf2))
-                print(val_hist[-1])
-                guess = model.predict(read_test_PSF[:, :, :, :2 * waves_considered])
-                residual = read_test_coef - guess
-                print(np.mean(np.abs(residual)))
-
-
-
-
-    validation_losses, guessed_coef, rms0, rms, wavefr0, wavefronts = test_models(PSF, training_PSF, test_PSF,
-                                                                             training_coef, test_coef)
-
-
-
-    k_phase = 5
-    plot_waves = N_WAVES
-    mapp = 'bwr'
-    f, axes = plt.subplots(1, plot_waves + 1)
-    # Initial Wavefront
-    phase0 = wavefr0[k_phase]
-    pmin = min(np.min(phase0), -np.max(phase0))
-    ax = plt.subplot(1, plot_waves + 1, 1)
-    img = ax.imshow(phase0, cmap=mapp)
-    img.set_clim(pmin, -pmin)
-    ax.set_title(r'Initial Wavefront %.4f' % rms0[k_phase])
-    plt.colorbar(img, ax=ax, orientation='horizontal')
-
-    for k in range(plot_waves):     # Loop over the
-        phase = wavefronts[k][k_phase]
-        ax = plt.subplot(1, plot_waves + 1, k+2)
-        img = ax.imshow(phase, cmap=mapp, label='A')
-        img.set_clim(pmin, -pmin)
-        ax.set_title(r'Residual %.4f [%d Waves]' % (rms[k][k_phase], list_waves[k]))
-        plt.colorbar(img, ax=ax, orientation='horizontal')
-
-    # plt.legend()
     plt.show()
 
 
