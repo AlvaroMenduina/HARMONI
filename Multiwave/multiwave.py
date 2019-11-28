@@ -318,7 +318,7 @@ if __name__ == "__main__":
         test_coef = np.concatenate(test_coef, axis=0)
         return training_PSF, test_PSF, training_coef, test_coef
 
-    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=3, load_waves=N_WAVES)
+    training_PSF, test_PSF, training_coef, test_coef = load_dataset(N_batches=5, load_waves=N_WAVES)
 
     H = PSF.RBF_mat[0]
     pup = PSF.pupil_masks[0]
@@ -334,49 +334,65 @@ if __name__ == "__main__":
 
 
 
-
     # ================================================================================================================ #
     #                              UNCERTAINTY - Bayesian Networks approx with Dropout                                 #
     # ================================================================================================================ #
 
-    def create_model_dropout(waves, drop_rate):
-        p = drop_rate
+    def create_model_dropout(waves, keep_rate):
+        """
+        Creates a CNN model for NCPA calibration with Dropout
+        A keep_rate of 0.95 means 95% of the weights are not set to 0
+        :param waves: Number of wavelengths in the training set (to adjust the number of channels)
+        :param keep_rate: Probability of keeping a weight (opposite to dropout rate)
+        :return:
+        """
+        drop_rate = 1 - keep_rate
         input_shape = (pix, pix, 2 * waves,)
         model = Sequential()
-        name = "model_dropout%.2f" % drop_rate
+        name = "model_dropout%.2f" % keep_rate
         model.name = name
         model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
-        model.add(Dropout(rate=1 - p))
+        model.add(Dropout(rate=drop_rate))
         model.add(Conv2D(128, (3, 3), activation='relu'))
-        model.add(Dropout(rate=1 - p))
+        model.add(Dropout(rate=drop_rate))
         # model.add(Conv2D(32, (3, 3), activation='relu'))
         # model.add(Dropout(rate=1 - p))
         # model.add(Conv2D(8, (3, 3), activation='relu'))
         # model.add(Dropout(rate=1 - p))
         model.add(Flatten())
-        model.add(Dropout(rate=1 - p))
+        model.add(Dropout(rate=drop_rate))
         model.add(Dense(N_act))
         model.summary()
         model.compile(optimizer='adam', loss='mean_squared_error')
 
         return model
 
-    def predict_with_uncertainty(f, x, no_classes, n_iter=100):
-        result = np.zeros((n_iter,) + (x.shape[0], no_classes))
+    def predict_with_uncertainty(f, test_set, N_classes, N_samples=100):
+        """
+        Makes use of the fact that our model has Dropout to sample from
+        the posterior of predictions to get an estimate of the uncertainty of the predictions
+        :param f: a Keras function that forces the model to act on "training mode" because Keras
+        freezes the Dropout during testing
+        :param test_set: the test images to be used
+        :param N_classes: number of classes that the model predicts
+        :param N_samples: number of times to sample the posterior
+        :return:
+        """
 
-        for i in range(n_iter):
-            result[i, :, :] = f((x, 1))[0]
+        result = np.zeros((N_samples,) + (test_set.shape[0], N_classes))
+
+        for i in range(N_samples):
+            result[i, :, :] = f((test_set, 1))[0]
 
         prediction = result.mean(axis=0)
         uncertainty = result.std(axis=0)
 
         return result, prediction, uncertainty
 
-    for dropout in [0.95]:
-    # dropout = 0.95
-        dropout_model = create_model_dropout(waves=N_WAVES, drop_rate=dropout)
+    ### Loop over several values of Dropout to see how the BIAS and Epistemic Uncertainty changes
+    for dropout in [0.90]:
 
-        # Train Model
+        dropout_model = create_model_dropout(waves=N_WAVES, keep_rate=dropout)
         train_history = dropout_model.fit(x=training_PSF, y=training_coef,
                                   validation_data=(test_PSF, test_coef),
                                   epochs=30, batch_size=32, shuffle=True, verbose=1)
@@ -392,8 +408,8 @@ if __name__ == "__main__":
         f = K.function([dropout_model.layers[0].input, K.learning_phase()],
                        [dropout_model.layers[-1].output])
 
-        result, avg_pred, unc = predict_with_uncertainty(f, test_PSF[:500], N_act, 250)
-        bias = test_coef[:500] - avg_pred                             # [N_test, N_act]
+        result, avg_pred, unc = predict_with_uncertainty(f, test_PSF[:500], N_classes=N_act, N_samples=1000)
+        bias = test_coef[:500] - avg_pred                       # [N_test, N_act]
         mean_bias_per_act = np.mean(bias, axis=0)               # [N_act]
         mean_abs_bias_per_act = np.mean(np.abs(bias), axis=0)
         uncertainty_per_act = np.mean(unc, axis=0)              # [N_act]
@@ -407,53 +423,146 @@ if __name__ == "__main__":
         print("Uncertainty: %.3f" % np.mean(uncertainty_per_act))
         print(uncertainty_per_act[:n_act])
 
-    plt.figure()
-    colors = ['red', 'blue', 'black', 'green', 'pink']
-    for i_ex in range(5):
-        k_act = 1
 
-        plt.hist(result[:, i_ex, k_act], histtype='step', color=colors[i_ex])
-        plt.axvline(test_coef[i_ex, k_act], color=colors[i_ex])
-        plt.xlim([-Z, Z])
+    def draw_actuator_commands(commands, centers):
+        """
+        Plot of each actuator commands
+        :param commands:
+        :param centers:
+        :return:
+        """
+        cent, delta = centers
+        x = np.linspace(-1, 1, 2 * N_PIX, endpoint=True)
+        xx, yy = np.meshgrid(x, x)
+        image = np.zeros((2 * N_PIX, 2 * N_PIX))
+        for i, (xc, yc) in enumerate(cent):
+            act_mask = (xx - xc) ** 2 + (yy - yc) ** 2 <= (delta / 2) ** 2
+            image += commands[i] * act_mask
+
+        return image
+
+    im_bias = draw_actuator_commands(mean_abs_bias_per_act, centers[0])
+    plt.imshow(im_bias, cmap='Reds')
+    plt.colorbar()
+    plt.show()
+
+    ### Try to fit a Gaussian to the Dropout predictions
+    from scipy.stats import norm, normaltest
+    from matplotlib import cm
+    # colors = ['red', 'blue', 'black', 'green', 'pink']
+    N_show = 10
+    colors = cm.coolwarm(np.linspace(0, 1, N_show))
+    print("\nThe True Coefficient was within [x] SIGMA of the average prediction")
+    k_act = 5
+    for i_ex in range(N_show):
+
+        predictions = result[:, i_ex, k_act]
+        _mean, _std = avg_pred[i_ex, k_act], unc[i_ex, k_act]
+
+        # Normal Test
+        statistic, p_value = normaltest(predictions)
+        # print(p_value)
+
+        # Fit a Gaussian profile
+        mean, std = norm.fit(predictions)
+
+        # True value
+        true_value = test_coef[i_ex, k_act]
+        sigmas = np.abs(true_value - _mean) / std
+
+        print("%.2f" % sigmas)
+
+        plt.figure()
+        plt.hist(predictions, bins=20, histtype='step', color=colors[i_ex])
+
+        plt.axvline(true_value, linestyle='--', color=colors[i_ex])
+        plt.xlim([-2, 2])
+        plt.xlabel("Actuator Command")
+    plt.show()
+
+    N_samples = result.shape[0]
+    N_examples = 150
+    k_act = 0
+    plt.figure()
+    _x = np.linspace(-2, 2, 50)
+    plt.plot(_x, _x, linestyle='--', color='black')
+    plt.errorbar(x=test_coef[:N_examples, k_act], y=avg_pred[:N_examples, k_act],
+                 yerr=2*unc[:N_examples, k_act], fmt='o', ms=2)
+    plt.xlim([-2, 2])
+    plt.ylim([-2, 2])
+
+    plt.figure()
+    plt.plot(_x, 0 * _x, linestyle='--', color='black')
+    plt.errorbar(x=test_coef[:N_examples, k_act], y=avg_pred[:N_examples, k_act] - test_coef[:N_examples, k_act],
+                 yerr=2*unc[:N_examples, k_act], fmt='o', ms=2)
+    plt.xlim([-2, 2])
+    plt.ylim([-2, 2])
     plt.show()
 
     # ================================================================================================================ #
-
-
-    """ Test the impact of actuator Cross-Talk """
-
-    input_shape = (pix, pix, 2*N_WAVES,)
-    model = Sequential()
-    model.add(Conv2D(128, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
-    model.add(MaxPooling2D(pool_size=(2, 2), strides=(2, 2)))
-    model.add(Conv2D(64, (3, 3), activation='relu'))
-    model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Flatten())
-    model.add(Dense(N_act))
-    model.summary()
-    model.compile(optimizer='adam', loss='mean_squared_error')
-
-    train_history = model.fit(x=training_PSF, y=training_coef,
-                              validation_data=(test_PSF, test_coef),
-                              epochs=25, batch_size=32, shuffle=True, verbose=1)
-
-    guess = model.predict(test_PSF)
-    residual = test_coef - guess
-    print(norm(residual))
-
-    """
-    SHAP VALUES
-    """
-
-
-    train_history = model.fit(x=read_train_PSF, y=read_train_coef,
-                              validation_data=(read_test_PSF, read_test_coef),
-                              epochs=10, batch_size=32, shuffle=True, verbose=1)
-    guess = model.predict(read_test_PSF)
-    residual = read_test_coef - guess
-    print(norm(residual))
+    #                                      SHAP Values - Model Interpretability                                        #
+    # ================================================================================================================ #
 
     import shap
+
+    def generate_pixel_ids(N_pixels):
+        """
+        Generate Labels for each pixel according to their (i,j) index
+        """
+        central_pix = N_pixels // 2
+        x = list(range(N_pixels))
+        xx, yy = np.meshgrid(x, x)
+        xid = xx.reshape((N_pixels * N_pixels))
+        yid = yy.reshape((N_pixels * N_pixels))
+
+        labels = ["(%d, %d)" % (x - central_pix, y - central_pix) for (x, y) in zip(xid, yid)]
+        return labels
+
+    pix_label = generate_pixel_ids(pix)
+
+    """
+    No Noise
+    """
+
+    keep_rate = 0.95
+    clean_model = create_model_dropout(waves=N_WAVES, keep_rate=dropout)
+    train_history = clean_model.fit(x=training_PSF, y=training_coef,
+                                      validation_data=(test_PSF, test_coef),
+                                      epochs=30, batch_size=32, shuffle=True, verbose=1)
+
+    N_background = 250
+    N_shap_samples = 250
+    clean_background = training_PSF[np.random.choice(training_PSF.shape[0], N_background, replace=False)]
+    clean_explainer = shap.DeepExplainer(clean_model, clean_background)
+
+    # Select only the first N_shap from the test set
+    test_shap = test_PSF[:N_shap_samples]
+    test_shap_coef = test_coef[:N_shap_samples]
+    clean_shap_values = clean_explainer.shap_values(test_shap)
+    # Save it because it sometimes crashes and it takes forever to run
+    np.save('clean_shap', clean_shap_values)
+
+    ### Show the Summary Plot for a given Actuator Command and a set of Wavelength Channels
+    j_act = 1
+    # Loop over the last 2 channels (Nominal and Defocused, longest wavelength)
+    for k_chan in [-2, -1]:
+        shap_val_chan = [x[:, :, :, k_chan].reshape((N_shap_samples, pix*pix)) for x in clean_shap_values]
+        features_chan = test_shap[:, :, :, k_chan].reshape((N_shap_samples, pix*pix))
+
+        shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
+                          feature_names=pix_label)
+
+    ### Dependence plot
+    for k in range(3*pix):
+        f, ax = plt.subplots(figsize=(10, 10))
+        ind = pix*pix//2 - pix + k
+        shap.dependence_plot(ind=ind, shap_values=shap_val_chan[j_act], features=features_chan,
+                             xmin=-3/100, xmax=0.5,feature_names=pix_label, ax=ax)
+        f.savefig(pix_label[ind])
+        plt.close(f)
+
+
+
     background = read_train_PSF[np.random.choice(read_train_PSF.shape[0], 250, replace=False)]
     e = shap.DeepExplainer(model, background)
     # shap_interaction_values = e.shap_interaction_values(background)
@@ -465,44 +574,13 @@ if __name__ == "__main__":
     np.save('shap', shap_values)
     n_shap = len(shap_values)
 
-    def generate_pixel_ids(pix):
-        """ Generate Labels for each pixel
-        according to their (i,j)
-        """
-
-        x = list(range(pix))
-        xx, yy = np.meshgrid(x, x)
-        xid = xx.reshape((pix * pix))
-        yid = yy.reshape((pix * pix))
-
-        labels = ["(%d, %d)" % (x, y) for (x, y) in zip(xid, yid)]
-        return labels
-
-    pix_label = generate_pixel_ids(pix)
-
-    ### Dot plot
-    # Select only the last channel
-    shap_val_chan = [x[:,:,:,-1].reshape((N_cases, pix*pix)) for x in shap_values]
-    features_chan = test_shap[:,:,:,-1].reshape((N_cases, pix*pix))
-
-    # Select which actuator
-    j_act = 1
-    shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
-                      feature_names=pix_label)
     shap.summary_plot(shap_values=shap_val_chan[j_act], features=features_chan,
                       feature_names=pix_label, plot_type='bar')
 
     shap.summary_plot(shap_values=shap_val_chan, features=features_chan,
                       feature_names=pix_label, plot_type='bar')
 
-    # Dependence plot
-    for k in range(3*pix):
-        f, ax = plt.subplots(figsize=(10, 10))
-        ind = pix*pix//2 - pix + k
-        shap.dependence_plot(ind=ind, shap_values=shap_val_chan[j_act], features=features_chan,
-                             xmin=-3/100, xmax=0.5,feature_names=pix_label, ax=ax)
-        f.savefig(pix_label[ind])
-        plt.close(f)
+
 
     act_coef = np.zeros(N_act)
     defocus = np.load('defocus.npy')
