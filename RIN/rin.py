@@ -266,7 +266,7 @@ if __name__ == "__main__":
     plt.show()
 
     """ Generate Images """
-    images, coef = generate_PSF_images(PSF, eps=0.5e-1, N_samples=50)
+    images, coef = generate_PSF_images(PSF, eps=0.5, N_samples=50)
     plt.figure()
     plt.imshow(images[0])
     plt.colorbar()
@@ -310,7 +310,6 @@ if __name__ == "__main__":
     plt.imshow(delta, cmap='RdBu')
     plt.clim(-m, m)
     plt.colorbar()
-
 
     plt.figure()
     plt.imshow(error, cmap='RdBu')

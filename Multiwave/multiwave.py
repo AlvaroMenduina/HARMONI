@@ -402,12 +402,13 @@ if __name__ == "__main__":
         model.add(Conv2D(128, (3, 3), activation='relu'))
         model.add(Dropout(rate=drop_rate))
         # model.add(Conv2D(32, (3, 3), activation='relu'))
-        # model.add(Dropout(rate=1 - p))
+        # model.add(Dropout(rate=drop_rate))
         # model.add(Conv2D(8, (3, 3), activation='relu'))
-        # model.add(Dropout(rate=1 - p))
+        # model.add(Dropout(rate=drop_rate))
         model.add(Flatten())
-        model.add(Dropout(rate=drop_rate))
+        #
         model.add(Dense(N_act))
+        model.add(Dropout(rate=drop_rate))
         model.summary()
         model.compile(optimizer='adam', loss='mean_squared_error')
 
@@ -473,7 +474,6 @@ if __name__ == "__main__":
 
     """ Analyze the errors in the predictions """
 
-
     def draw_actuator_commands(commands, centers):
         """
         Plot of each actuator commands
@@ -491,8 +491,18 @@ if __name__ == "__main__":
 
         return image
 
-    im_bias = draw_actuator_commands(mean_abs_bias_per_act, centers[0])
-    plt.imshow(im_bias, cmap='Reds')
+    im_bias = draw_actuator_commands(mean_bias_per_act, centers[0])
+    minn = min(np.min(im_bias), -np.max(im_bias))
+    plt.figure()
+    plt.imshow(im_bias, cmap='RdBu')
+    plt.clim(vmin=minn, vmax=-minn)
+    plt.colorbar()
+
+    im_abs_bias = draw_actuator_commands(mean_abs_bias_per_act, centers[0])
+    minn = np.min(im_abs_bias[np.nonzero(im_abs_bias)])
+    plt.figure()
+    plt.imshow(im_abs_bias, cmap='Reds')
+    plt.clim(vmin=minn, vmax=np.max(im_abs_bias))
     plt.colorbar()
     plt.show()
 
@@ -501,21 +511,17 @@ if __name__ == "__main__":
     from scipy.stats import normaltest
     from matplotlib import cm
     # colors = ['red', 'blue', 'black', 'green', 'pink']
-    N_show = 10
-    colors = cm.coolwarm(np.linspace(0, 1, N_show))
+    N_show = 5
+    colors = cm.copper(np.linspace(0, 1, N_show))
     print("\nThe True Coefficient was within [x] SIGMA of the average prediction")
-    k_act = 5
+    k_act = 10
     for i_ex in range(N_show):
 
         predictions = result[:, i_ex, k_act]
         _mean, _std = avg_pred[i_ex, k_act], unc[i_ex, k_act]
 
-        # Normal Test
-        statistic, p_value = normaltest(predictions)
-        # print(p_value)
-
-        # Fit a Gaussian profile
-        mean, std = gaussian.fit(predictions)
+        statistic, p_value = normaltest(predictions)        # Normal Test
+        mean, std = gaussian.fit(predictions)               # Fit a Gaussian profile
 
         # True value
         true_value = test_coef[i_ex, k_act]
@@ -524,11 +530,15 @@ if __name__ == "__main__":
         print("%.2f" % sigmas)
 
         plt.figure()
+        plt.imshow(test_PSF[i_ex, :, :, 0], cmap='hot')
+
+        plt.figure()
         plt.hist(predictions, bins=20, histtype='step', color=colors[i_ex])
 
         plt.axvline(true_value, linestyle='--', color=colors[i_ex])
         plt.xlim([-2, 2])
         plt.xlabel("Actuator Command")
+        plt.title('PSF #%d (True Coeff within %.2f $\sigma$)' % (i_ex + 1, sigmas))
     plt.show()
 
     N_samples = result.shape[0]
@@ -554,7 +564,7 @@ if __name__ == "__main__":
     #                                                Ensemble Approach                                                 #
     # ================================================================================================================ #
 
-    N_models = 10
+    N_models = 20
     keep_rate = 0.90
 
     # Train a Single Model to
@@ -573,24 +583,490 @@ if __name__ == "__main__":
 
     ### Train N_models
     list_models = []
-    list_guesses, list_uncertain = [], []
     for k in range(N_models):
         _model = create_model_dropout(waves=N_WAVES, keep_rate=keep_rate)
         train_history = _model.fit(x=training_PSF, y=training_coef,
                                       validation_data=(test_PSF, test_coef),
                                       epochs=30, batch_size=32, shuffle=True, verbose=1)
         list_models.append(_model)
-        # Combine the guesses
+
+    # Combine the guesses
+    list_results = []
+    list_guesses, list_uncertain = [], []
+    N_examples = 250
+    for _model in list_models:
+        print(_model.name)
         f = K.function([_model.layers[0].input, K.learning_phase()],
                        [_model.layers[-1].output])
         # Use the Uncertain predictions
-        result, avg_pred, unc = predict_with_uncertainty(f, test_PSF[:500], N_classes=N_act, N_samples=500)
+        result, avg_pred, unc = predict_with_uncertainty(f, test_PSF[:N_examples], N_classes=N_act, N_samples=250)
+        list_results.append(result)
         list_guesses.append(avg_pred)
         list_uncertain.append(unc)
 
     guesses = np.stack(list_guesses)
     many_guesses = np.mean(guesses, axis=0)
-    many_residual = test_coef[:500] - many_guesses
+    many_residual = test_coef[:N_examples] - many_guesses
+
+    uncertainties = np.stack(list_uncertain)
+    variance = np.sqrt(np.sum(uncertainties ** 2, axis=0) / N_models ** 2)
+
+    print("\nEnsemble Approach with %d Models" % N_models)
+    print("\nNorm Residuals for 1 model")
+    print(np.mean(norm(one_residual, axis=1)))
+    print("\nNorm Residuals for %d models averaged" % N_models)
+    print(np.mean(norm(many_residual, axis=1)))
+
+    """ Show how the residual decreases with the Number of Models"""
+    plt.figure()
+    m0 = 0
+    for i in np.arange(1, len(list_models) + 1):
+        mean_guess = np.mean(guesses[:i], axis=0)
+        resis = test_coef[:N_examples] - mean_guess
+        mm = np.mean(norm(resis, axis=1))
+        if i == 1:
+            m0 = mm.copy()
+        plt.scatter(i, mm/m0*100, color='blue')
+    plt.xlabel(r'N models (Ensemble)')
+    plt.ylabel(r'Percentage error relative to 1 Model')
+    plt.ylim([80, 100])
+    plt.show()
+
+
+    k_act = 1
+    truth = test_coef[:N_examples, k_act]
+    pred = many_guesses[:, k_act]
+    one_pred = one_guess[:N_examples, k_act]
+    var = variance[:, k_act]
+    plt.figure()
+    _x = np.linspace(-2, 2, 50)
+    plt.plot(_x, _x, linestyle='--', color='black')
+    plt.errorbar(x=truth, y=pred, yerr=var, fmt='o', ms=2)
+    plt.errorbar(x=truth, y=one_pred, yerr=var, fmt='o', ms=2)
+    plt.xlim([-2, 2])
+    plt.ylim([-2, 2])
+    plt.show()
+
+    plt.figure()
+    plt.scatter(truth, np.log10(np.abs(one_pred - truth)), s=6)
+    plt.scatter(truth, np.log10(np.abs(pred - truth)), s=6)
+    plt.show()
+
+    plt.hist(np.abs(one_pred - truth))
+    plt.hist(np.abs(pred - truth))
+
+    # ================================================================================================================ #
+    # ================================================================================================================ #
+    # ================================================================================================================ #
+
+    # ================================================================================================================ #
+    #                                                      NOISY                                              #
+    # ================================================================================================================ #
+
+    RMS_READ = 1./500
+    N_copies = 5
+
+    read_train_PSF, read_train_coef = readout_noise_images(training_PSF, training_coef, RMS_READ, N_copies)
+    read_test_PSF, read_test_coef = readout_noise_images(test_PSF, test_coef, RMS_READ, N_copies)
+
+    # Train a Single Model to
+    keep_rate = 0.90
+
+    for keep_rate in [0.95, 0.99]:
+        noisy_model = create_model_dropout(waves=N_WAVES, keep_rate=keep_rate)
+        train_history = noisy_model.fit(x=read_train_PSF, y=read_train_coef,
+                                          validation_data=(read_test_PSF, read_test_coef),
+                                          epochs=10, batch_size=32, shuffle=True, verbose=1)
+
+        noisy_guess = noisy_model.predict(read_test_PSF)
+        noisy_residual = read_test_coef - noisy_guess
+        noisy_testnorm = np.mean(norm(read_test_coef, axis=1))
+        noisy_errnorm = np.mean(norm(noisy_residual, axis=1))
+        print("\nModel with Dropout: %.2f" % keep_rate)
+        print("Before: %.3f" % noisy_testnorm)
+        print("After: %.3f" % noisy_errnorm)
+
+
+    ### Train N_models
+    list_noisy_models = []
+    keep_rate = 0.95
+    N_models = 10
+    for k in range(N_models):
+        _model = create_model_dropout(waves=N_WAVES, keep_rate=keep_rate)
+        train_history = _model.fit(x=read_train_PSF, y=read_train_coef,
+                                          validation_data=(read_test_PSF, read_test_coef),
+                                          epochs=10, batch_size=32, shuffle=True, verbose=1)
+        list_noisy_models.append(_model)
+
+    # Combine the guesses
+    list_results = []
+    list_guesses, list_uncertain = [], []
+    N_examples = 250
+    for _model in list_noisy_models:
+        print(_model.name)
+        f = K.function([_model.layers[0].input, K.learning_phase()],
+                       [_model.layers[-1].output])
+        # Use the Uncertain predictions
+        result, avg_pred, unc = predict_with_uncertainty(f, test_PSF[:N_examples], N_classes=N_act, N_samples=250)
+        list_results.append(result)
+        list_guesses.append(avg_pred)
+        list_uncertain.append(unc)
+
+
+
+    ######
+    #####
+
+
+    class PSFGenerator(object):
+
+        def __init__(self, PSF_model):
+            self.PSF_model = PSF_model
+            pass
+
+        def generate_dataset(self, N_train, N_test, min_RMS, max_RMS, focus):
+
+            #TODO: Add Defocus uncertainties in the future!
+            #TODO: Investigate if the Defocus intensity matters
+            #TODO: Investigate if the Random Map matters (Correlations between Actuator error and Random Map??)
+
+            N_coef = self.PSF_model.N_coef
+            N_samples = N_train + N_test
+
+            defocus = focus * np.load('master_defocus.npy')
+            dataset = np.empty((N_samples, pix, pix, 2 * N_WAVES))
+
+
+            # We need to find a range of coefficient intensities that gives us a reasonable range
+            # for the RMS wavefront
+            c_guess = np.linspace(0.1, 2, 50)
+            N_tries = 25
+            mean_RMS = []
+            plt.figure()
+            for c in c_guess:
+                _coef = c * np.random.uniform(low=-1, high=1, size=(N_tries, N_coef))
+                _rms = []
+                for k in range(N_tries):
+                    wavefront = np.dot(self.PSF_model.RBF_flat[0], _coef[k])
+                    _rms.append(np.std(wavefront))
+                plt.scatter(c * range(N_tries), _rms, s=5, color='blue')
+                mean_RMS.append(np.mean(_rms))
+            plt.xlabel(r'Coefficient Scale')
+            plt.ylabel(r'RMS wavefront [$2\pi$ waves]')
+            plt.axvline(min_RMS, linestyle='--', color='black')
+            plt.axvline(max_RMS, linestyle='--', color='red')
+            plt.show()
+
+            c_range = np.argwhere(min_RMS < mean_RMS < max_RMS)
+            c_min, c_max = c_range[0, 0], c_range[-1, 0]
+
+            # Now that we know the range of scales that gives us our desired RMS range
+            # we can uniformly sample it, to get a training set that covers both low and high
+            # wavefront errors
+
+            coef = np.random.uniform(low=-1, high=1, size=(N_tries, N_coef))
+            print("Generating %d PSF images" % N_samples)
+            RMS = []
+            for i in range(N_samples):
+                if i % 100 == 0:
+                    print(i)
+
+                scale = np.random.uniform(low=c_min, high=c_max, size=1)
+                coef[i] *= scale        # rescale to sample the RMS range
+
+                wavefront = np.dot(self.PSF_model.RBF_flat[0], coef[i])
+                RMS.append(np.std(wavefront))
+                for wave_idx in range(N_WAVES):
+                    # Nominal image
+                    im0, _s = self.PSF_model.compute_PSF(coef[i], wave_idx=wave_idx)
+                    dataset[i, :, :, 2 * wave_idx] = im0
+
+                    # Defocused image
+                    im_foc, _s = self.PSF_model.compute_PSF(coef[i] + defocus, wave_idx=wave_idx)
+                    dataset[i, :, :, 2 * wave_idx + 1] = im_foc
+
+            # Show histogram of RMS wavefronts
+            plt.figure()
+            plt.hist(RMS, bins=20, histtype='step')
+            plt.xlabel(r'RMS wavefront')
+            plt.axvline(min_RMS, linestyle='--', color='black')
+            plt.axvline(max_RMS, linestyle='--', color='red')
+            plt.show()
+
+            return dataset[:N_train], dataset[N_train:], coef[:N_train], coef[N_train:]
+
+        def save_dataset_batches(self, path_to_save, N_train, N_test, N_batches,
+                                 min_RMS=0.05, max_RMS=0.80, focus=1):
+            """
+            Generate and save N_batches of [N_train + N_test] PSF images
+            This code tries to generate PSF images that cover a wide range of
+            RMS wavefront errors, to allow iterative NCPA calibration
+
+            You can specify your desired range of RMS [min_RMS, max_RMS] in 2 pi waves at minimum wavelength
+            :param path_to_save: name of the directory to save the files
+            :param N_train: Number of PSF images for the Training set
+            :param N_test: Number of PSF images for the Test set
+            :param N_batches: Number of batches of [N_train + N_test] to generate
+            :param min_RMS: minimum RMS wavefront error in your PSF images
+            :param max_RMS: maximum RMS wavefront error in your PSF images
+            :param focus: intensity of the defocus term
+            :return:
+            """
+
+            cur_dir = os.getcwd()
+            path = os.path.join(cur_dir, path_to_save)
+            try:
+                os.mkdir(path)
+                print("Directory ", path, " Created ")
+            except FileExistsError:
+                print("Directory ", path, " already exists")
+
+            for k in range(N_batches):
+                training_PSF, test_PSF, \
+                training_coef, test_coef = self.generate_dataset(N_train, N_test, min_RMS, max_RMS, focus)
+                np.save(os.path.join(path, 'training_PSF%d' % k), training_PSF)
+                np.save(os.path.join(path, 'test_PSF%d' % k), test_PSF)
+                np.save(os.path.join(path, 'training_coef%d' % k), training_coef)
+                np.save(os.path.join(path, 'test_coef%d' % k), test_coef)
+
+        def load_dataset_batches(self, path_to_load, N_batches, N_waves):
+            """
+            Load just a few batches, you can specify how many wavelength channels you want to keep
+
+            Sometimes training with a large dataset with many batches and many wavelengths can be
+            problematic, specially if you want to add Noise effects or other Data Augmetation techniques
+            :param path_to_load: where the files are stored
+            :param N_batches: how many batches to load
+            :param N_waves: how many wavelength channels to keep
+            :return:
+            """
+
+            cur_dir = os.getcwd()
+            path = os.path.join(cur_dir, path_to_load)
+
+            training_PSF, test_PSF, training_coef, test_coef = [], [], [], []
+            print("Loading %d Batches of %d Wavelength channels")
+            for k in range(N_batches):
+                print(k)
+                training_p = np.load(os.path.join(path, 'training_PSF%d.npy' % k))[:, :, :, :2 * N_waves]
+                test_p = np.load(os.path.join(path, 'test_PSF%d.npy' % k))[:, :, :, :2 * N_waves]
+                training_c = np.load(os.path.join(path, 'training_coef%d.npy' % k))
+                test_c = np.load(os.path.join(path, 'test_coef%d.npy' % k))
+
+                training_PSF.append(training_p)
+                test_PSF.append(test_p)
+                training_coef.append(training_c)
+                test_coef.append(test_c)
+
+            training_PSF = np.concatenate(training_PSF, axis=0)
+            test_PSF = np.concatenate(test_PSF, axis=0)
+            training_coef = np.concatenate(training_coef, axis=0)
+            test_coef = np.concatenate(test_coef, axis=0)
+
+            print("Size of the loaded dataset: ", training_PSF.shape)
+
+            return training_PSF, test_PSF, training_coef, test_coef
+
+
+    class BatchNoiseTraining(object):
+
+        def __init__(self, PSF_model, dataset, model_options, batch_size=500):
+
+            self.PSF_model = PSF_model
+            _train_PSF = dataset[0]
+            N_samples = _train_PSF.shape[0]
+            self.batch_size = batch_size
+            self.N_batches = N_samples // batch_size
+
+            self.clean_dataset = dataset        # [train_PSF, train_coef, test_PSF, test_coef]
+            self.model = create_model_dropout(waves=model_options["N_WAVES"],
+                                              keep_rate=model_options["keep_rate"])
+
+        def select_bad_pixels(self, N_channels, p_bad=0.10, max_bad_pixels=3):
+            """
+            Randomly select which pixels to asign as BAD PIXELS for a datacube with N_channels
+            First, we randomly select WHICH CHANNELS will be affected by bad pixels
+            This is done using a binomial distribution with success rate [p_bad]
+
+            For the selected channels we randomly choose HOW MANY bad pixels to put sampling uniformly
+            from [1, max_bad_pixels]
+
+            Finally, we select WHERE in the image the bad pixels will be
+
+            :param N_channels:
+            :param p_bad:
+            :param max_bad_pixels:
+            :return: a list of channel indices, and a list of pixel indices for each channel
+            """
+
+            which_channels = np.random.binomial(n=1, p=p_bad, size=N_channels)
+            channels = list(np.argwhere(which_channels == 1)[:, 0])
+            if len(channels) == 0:
+                channels = [np.random.choice(N_channels, size=1)]
+            pixels = []
+            for _chan in channels:
+                _pix = []
+                how_many = np.random.randint(low=1, high=max_bad_pixels)
+                for i in range(how_many):
+                    x_bad, y_bad = np.random.choice(pix, size=2)
+                    _pix.append([x_bad, y_bad])
+                pixels.append(_pix)
+
+            print(channels)
+            print(pixels)
+            return channels, pixels
+
+        def add_bad_pixels(self, PSF_images, coef, N_copies):
+
+            BAD, HOT = 0, 99
+            N_PSF, pix, _pix, N_chan = PSF_images.shape
+            N_coef = coef.shape[-1]
+            new_data = np.empty((N_copies * N_PSF, pix, pix, N_chan))
+            new_coef = np.empty((N_copies * N_PSF, N_coef))
+
+            for k in range(N_PSF):
+                if k % 100 == 0:
+                    print("PSFs done: %d" % k)
+                PSF = PSF_images[k].copy()
+                coef_copy = coef[k].copy()
+                for i_copy in range(N_copies):
+
+                    # Select the bad pixels
+                    bad_channels, bad_pixels = self.select_bad_pixels(N_chan, p_bad=1./N_chan, max_bad_pixels=3)
+                    for j_chan, _badpix in zip(bad_channels, bad_pixels):   # Loop over the Channels
+                        for i_bad, j_bad in _badpix:                        # Loop over the pixel positions
+                            value = np.random.choice([BAD, HOT], size=1)    # Is it hot or is it cold?
+                            PSF[N_copies * k + i_copy, i_bad, j_bad, j_chan] = value
+                    new_coef[N_copies * k + i_copy] = coef_copy
+            return new_data, new_coef
+
+        def add_readout_noise(self, PSF_images, coef, N_copies):
+
+            N_PSF, pix, _pix, N_chan = PSF_images.shape
+            N_coef = coef.shape[-1]
+            new_data = np.empty((N_copies * N_PSF, pix, pix, N_chan))
+            new_coef = np.empty((N_copies * N_PSF, N_coef))
+
+            ### SNR range
+            SNR_min = 100
+            SNR_max = 500
+            SNR_range = np.linspace(SNR_min, SNR_max, N_copies, endpoint=True)
+            RMS_READ = 1. / SNR_range
+
+            print("\nAdding Readout Noise to %d PSF images [%d copies]" % (N_PSF, N_copies))
+            print("SNR range from %d to %d" % (SNR_min, SNR_max))
+            for k in range(N_PSF):
+                if k % 100 == 0:
+                    print("PSFs done: %d" % k)
+                PSF = PSF_images[k].copy()
+                coef_copy = coef[k].copy()
+                for i_copy in range(N_copies):
+                    read_out = np.random.normal(loc=0, scale=RMS_READ[i_copy], size=(pix, pix, N_chan))
+                    new_data[N_copies * k + i_copy] = PSF + read_out
+                    new_coef[N_copies * k + i_copy] = coef_copy
+            # Offset the arrays by the RMS_READ to minimize the number of pixels with negative values
+            new_data += 5 * RMS_READ[0]
+            return new_data, new_coef
+
+        def train_in_batches(self, epochs_per_batch, N_noise_copies, verbose=1):
+
+            loss, val_loss = [], []
+            print("\nTraining Model with %d batches of %d PSF images" % (self.N_batches, self.batch_size))
+            for k_iter in range(self.N_batches):
+
+                batch = [x[k_iter * self.batch_size : (k_iter + 1) * self.batch_size] for x in self.clean_dataset]
+
+                # Introduce Noise in the samples
+                noisy_train_PSF, noisy_train_coef = self.add_readout_noise(batch[0], batch[1], N_copies=N_noise_copies)
+                noisy_test_PSF, noisy_test_coef = self.add_readout_noise(batch[2], batch[3], N_copies=N_noise_copies)
+
+                # Add Bad Pixels
+                badpix_train_PSF, badpix_train_coef = self.add_bad_pixels(noisy_train_PSF, noisy_train_coef, N_copies=2)
+                badpix_test_PSF, badpix_test_coef = self.add_bad_pixels(noisy_test_PSF, noisy_test_coef, N_copies=2)
+
+                train_history = self.model.fit(x=badpix_train_PSF, y=badpix_train_coef,
+                                               validation_data=(badpix_test_PSF, badpix_test_coef),
+                                               epochs=epochs_per_batch, batch_size=32,
+                                               shuffle=True, verbose=verbose)
+
+                loss.extend(train_history.history['loss'])
+                val_loss.extend(train_history.history['val_loss'])
+
+        def test_one_iteration(self, N_test, N_noise, N_bad_pixel):
+
+            # Randomly select N_test samples from the clean Test Set
+            clean_test_PSF, clean_test_coef = self.clean_dataset[-2], self.clean_dataset[-1]
+            choice = np.random.choice(range(clean_test_PSF.shape[0]), size=N_test)
+            test_PSF = clean_test_PSF[choice]
+            test_coef = clean_test_coef[choice]
+
+            # Introduce noise effects
+            noisy_test_PSF, noisy_test_coef = self.add_readout_noise(test_PSF, test_coef, N_copies=N_noise)
+            badpix_test_PSF, badpix_test_coef = self.add_bad_pixels(noisy_test_PSF, noisy_test_coef, N_copies=N_bad_pixel)
+
+            guess = self.model.predict(badpix_test_PSF)
+            residual = badpix_test_coef - guess
+
+            print("_____________________________________________________________")
+            print("\nTesting the Model on %d PSF images" % N_test)
+            print("%d copies with Readout Noise" % N_noise)
+            print("%d copies with Bad Pixels" % N_bad_pixel)
+            print("\nOverall Performance")
+            mean_test = np.mean(norm(badpix_test_coef, axis=1))
+            mean_res = np.mean(norm(residual, axis=1))
+            print("Averaged morm of Test Coefficients: %.3f" % mean_test)
+            print("Averaged norm of Residual Coefficients: %.3f" % mean_res)
+
+            ### Aggregated results across all cases of Noise
+            RMS0, RMS = [], []
+            H_matrix = self.PSF_model.RBF_flat[0]
+            N_PSF = badpix_test_PSF.shape[0]
+            for k in range(N_PSF):
+                true_coef = badpix_test_coef[k]
+                true_wavefront = np.dot(H_matrix, true_coef)
+                RMS0.append(np.std(true_wavefront))
+
+                residual_wavefront = np.dot(H_matrix, residual[k])
+                RMS.append(np.std(residual_wavefront))
+            plt.figure()
+            plt.hist(RMS0, bins=50, histtype='step', label='Initial')
+            plt.hist(RMS, bins=50, histtype='step', label='Final')
+            plt.xlabel(r'RMS wavefront error [waves]')
+
+            actuator = 0
+            max_ = np.ceil(max(-np.min(badpix_test_coef[:, actuator]), np.max(badpix_test_coef[:, actuator])))
+            _x = np.linspace(-max_, max_, 10, endpoint=True)
+            plt.figure()
+            plt.plot(_x, _x, linestyle='--', color='black')
+            plt.scatter(badpix_test_coef[:, actuator], guess[:, actuator], s=5)
+            plt.xlabel(r'True Coefficient')
+            plt.ylabel(r'Guessed Coefficient')
+            plt.title('Actuator Coefficient #%d' % actuator)
+
+            #TODO: There might be a performance variations across Noise levels and Bad pixels
+            fig, axes = plt.subplots(N_noise, N_bad_pixel)
+            for i_noise in range(N_noise):
+                for j_badpixel in range(N_bad_pixel):
+                    rms0, rms = [], []
+                    for k_image in range(N_test):
+                        k = i_noise*N_noise + j_badpixel*N_bad_pixel + k_image
+                        true_coef = badpix_test_coef[k]
+                        true_wavefront = np.dot(H_matrix, true_coef)
+                        rms0.append(np.std(true_wavefront))
+
+                        residual_wavefront = np.dot(H_matrix, residual[k])
+                        rms.append(np.std(residual_wavefront))
+
+                    kfig = i_noise * N_noise + j_badpixel * N_bad_pixel
+                    ax = plt.subplot(N_noise, N_bad_pixel, i*N_bad_pixel + kfig + 1)
+                    h1 = ax.hist(RMS0, bins=50, histtype='step', label='Initial')
+                    ax.set_title(r'i_noise=%d, j_pixel=%d' % (i_noise, j_badpixel))
+                    ax.set_xlim([0, 1])
+                    plt.xlabel('RMS')
+            plt.show()
+
+        def test_iteratively(self):
+            pass
 
 
     # ================================================================================================================ #
@@ -679,10 +1155,10 @@ if __name__ == "__main__":
 
     ### CAUTION! You probably want to do some Memory Cleanup before creating such a large training set
 
-    # import sys
-    #
-    # for var, obj in locals().items():
-    #     print(var, sys.getsizeof(obj))
+    import sys
+
+    for var, obj in locals().items():
+        print(var, sys.getsizeof(obj))
 
     RMS_READ = 1./500
     N_copies = 5
