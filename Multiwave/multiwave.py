@@ -113,6 +113,7 @@ class PointSpreadFunction(object):
         self.N_act = RBF_matrices[0][0].shape[-1]
         self.RBF_mat = [r[0] for r in RBF_matrices]
         self.pupil_masks = [r[1] for r in RBF_matrices]
+        self.RBF_flat = [r[2] for r in RBF_matrices]
         self.waves_ratio = np.linspace(1., waveN / wave0, N_waves, endpoint=True)
 
         self.PEAKS = self.peak_PSF(N_waves)
@@ -701,22 +702,61 @@ if __name__ == "__main__":
     # Combine the guesses
     list_results = []
     list_guesses, list_uncertain = [], []
-    N_examples = 250
+    N_examples = 150
     for _model in list_noisy_models:
         print(_model.name)
         f = K.function([_model.layers[0].input, K.learning_phase()],
                        [_model.layers[-1].output])
         # Use the Uncertain predictions
-        result, avg_pred, unc = predict_with_uncertainty(f, test_PSF[:N_examples], N_classes=N_act, N_samples=250)
-        list_results.append(result)
+        result, avg_pred, unc = predict_with_uncertainty(f, read_test_PSF[:N_examples], N_classes=N_act, N_samples=250)
+        # list_results.append(result)
         list_guesses.append(avg_pred)
         list_uncertain.append(unc)
+
+    guesses = np.stack(list_guesses)
+    many_guesses = np.mean(guesses, axis=0)
+    many_residual = read_test_coef[:N_examples] - many_guesses
+    one_residual = read_test_coef[:N_examples] - guesses[0]
+
+
+    print("\nEnsemble Approach with %d Models" % N_models)
+    print("\nNorm Residuals for 1 model")
+    print(np.mean(norm(one_residual, axis=1)))
+    print("\nNorm Residuals for %d models averaged" % N_models)
+    print(np.mean(norm(many_residual, axis=1)))
+
+    """ Show how the residual decreases with the Number of Models"""
+    plt.figure()
+    m0 = 0
+    for i in np.arange(1, len(list_noisy_models) + 1):
+        mean_guess = np.mean(guesses[:i], axis=0)
+        resis = read_test_coef[:N_examples] - mean_guess
+        mm = np.mean(norm(resis, axis=1))
+        if i == 1:
+            m0 = mm.copy()
+        plt.scatter(i, mm/m0*100, color='blue')
+    plt.xlabel(r'N models (Ensemble)')
+    plt.ylabel(r'Percentage error relative to 1 Model')
+    plt.ylim([80, 100])
+    plt.show()
 
 
 
     ######
     #####
 
+    master_defocus = np.random.uniform(low=-1, high=1, size=N_act)
+    np.save('master_defocus', master_defocus)
+
+    focus = 1.5
+    min_RMS, max_RMS = 0.10, 0.85
+    N_train, N_test = 1500, 500
+    Generator = PSFGenerator(PSF)
+
+    # train_p, train_c, test_p, test_c = Generator.generate_dataset(N_train, N_test, min_RMS, max_RMS, focus)
+    N_batches = 10
+    path_to_save = "Datasets"
+    Generator.save_dataset_batches(path_to_save, N_train, N_test, N_batches, min_RMS, max_RMS, focus)
 
     class PSFGenerator(object):
 
@@ -724,13 +764,13 @@ if __name__ == "__main__":
             self.PSF_model = PSF_model
             pass
 
-        def generate_dataset(self, N_train, N_test, min_RMS, max_RMS, focus):
+        def generate_dataset(self, N_train, N_test, min_RMS, max_RMS, focus, show_fig=False):
 
             #TODO: Add Defocus uncertainties in the future!
             #TODO: Investigate if the Defocus intensity matters
             #TODO: Investigate if the Random Map matters (Correlations between Actuator error and Random Map??)
 
-            N_coef = self.PSF_model.N_coef
+            N_coef = self.PSF_model.N_act
             N_samples = N_train + N_test
 
             defocus = focus * np.load('master_defocus.npy')
@@ -739,32 +779,41 @@ if __name__ == "__main__":
 
             # We need to find a range of coefficient intensities that gives us a reasonable range
             # for the RMS wavefront
-            c_guess = np.linspace(0.1, 2, 50)
-            N_tries = 25
+            c_guess = np.linspace(0.0, 2.5, 50)
+            N_tries = 50
             mean_RMS = []
-            plt.figure()
+            # fig = plt.figure()
             for c in c_guess:
+                # print(c)
                 _coef = c * np.random.uniform(low=-1, high=1, size=(N_tries, N_coef))
                 _rms = []
                 for k in range(N_tries):
                     wavefront = np.dot(self.PSF_model.RBF_flat[0], _coef[k])
                     _rms.append(np.std(wavefront))
-                plt.scatter(c * range(N_tries), _rms, s=5, color='blue')
+                # plt.scatter(c * np.ones(N_tries), _rms, s=3, color='blue')
                 mean_RMS.append(np.mean(_rms))
-            plt.xlabel(r'Coefficient Scale')
-            plt.ylabel(r'RMS wavefront [$2\pi$ waves]')
-            plt.axvline(min_RMS, linestyle='--', color='black')
-            plt.axvline(max_RMS, linestyle='--', color='red')
-            plt.show()
+            # plt.xlabel(r'Coefficient Scale')
+            # plt.ylabel(r'RMS wavefront [$2\pi$ waves]')
+            # plt.axhline(min_RMS, linestyle='--', color='black')
+            # plt.axhline(max_RMS, linestyle='--', color='red')
 
-            c_range = np.argwhere(min_RMS < mean_RMS < max_RMS)
-            c_min, c_max = c_range[0, 0], c_range[-1, 0]
+            mean_RMS = np.array(mean_RMS)
+            i_cmax = np.argwhere(mean_RMS < max_RMS)
+            c_max = c_guess[i_cmax[-1, 0]]
+            i_cmin = np.argwhere(mean_RMS > min_RMS)
+            c_min = c_guess[i_cmin[0, 0]]
+            # plt.axvline(c_min, linestyle='--', color='black')
+            # plt.axvline(c_max, linestyle='--', color='red')
+            print(c_min, c_max)
+
+            if show_fig:
+                plt.show()
 
             # Now that we know the range of scales that gives us our desired RMS range
             # we can uniformly sample it, to get a training set that covers both low and high
             # wavefront errors
 
-            coef = np.random.uniform(low=-1, high=1, size=(N_tries, N_coef))
+            coef = np.random.uniform(low=-1, high=1, size=(N_samples, N_coef))
             print("Generating %d PSF images" % N_samples)
             RMS = []
             for i in range(N_samples):
@@ -786,12 +835,13 @@ if __name__ == "__main__":
                     dataset[i, :, :, 2 * wave_idx + 1] = im_foc
 
             # Show histogram of RMS wavefronts
-            plt.figure()
-            plt.hist(RMS, bins=20, histtype='step')
-            plt.xlabel(r'RMS wavefront')
-            plt.axvline(min_RMS, linestyle='--', color='black')
-            plt.axvline(max_RMS, linestyle='--', color='red')
-            plt.show()
+            if show_fig:
+                plt.figure()
+                plt.hist(RMS, bins=20, histtype='step')
+                plt.xlabel(r'RMS wavefront')
+                plt.axvline(min_RMS, linestyle='--', color='black')
+                plt.axvline(max_RMS, linestyle='--', color='red')
+                plt.show()
 
             return dataset[:N_train], dataset[N_train:], coef[:N_train], coef[N_train:]
 
@@ -1032,6 +1082,7 @@ if __name__ == "__main__":
             plt.hist(RMS0, bins=50, histtype='step', label='Initial')
             plt.hist(RMS, bins=50, histtype='step', label='Final')
             plt.xlabel(r'RMS wavefront error [waves]')
+            plt.legend()
 
             actuator = 0
             max_ = np.ceil(max(-np.min(badpix_test_coef[:, actuator]), np.max(badpix_test_coef[:, actuator])))
@@ -1059,10 +1110,12 @@ if __name__ == "__main__":
 
                     kfig = i_noise * N_noise + j_badpixel * N_bad_pixel
                     ax = plt.subplot(N_noise, N_bad_pixel, i*N_bad_pixel + kfig + 1)
-                    h1 = ax.hist(RMS0, bins=50, histtype='step', label='Initial')
+                    h1 = ax.hist(rms0, bins=50, histtype='step', label='Initial')
+                    h2 = ax.hist(rms, bins=50, histtype='step', label='Final')
                     ax.set_title(r'i_noise=%d, j_pixel=%d' % (i_noise, j_badpixel))
                     ax.set_xlim([0, 1])
                     plt.xlabel('RMS')
+                    plt.legend()
             plt.show()
 
         def test_iteratively(self):
