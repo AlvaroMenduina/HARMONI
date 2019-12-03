@@ -7,10 +7,19 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import seaborn as sns
 
+
 from keras.layers import Dense, Conv2D, BatchNormalization, MaxPooling2D, Flatten, Activation, Dropout
 from keras.models import Sequential
 from keras import backend as K
 from numpy.linalg import norm as norm
+
+from itertools import tee
+
+def pairwise(iterable):
+    """s -> (s0,s1), (s1,s2), (s2, s3), ..."""
+    a, b = tee(iterable)
+    next(b, None)
+    return zip(a, b)
 
 # PARAMETERS
 Z = 1.75                    # Strength of the aberrations
@@ -980,6 +989,17 @@ if __name__ == "__main__":
             return channels, pixels
 
         def add_bad_pixels(self, PSF_images, coef, N_copies):
+            """
+            Data augmentation to include Bad Pixels in the images
+            For each case within the dataset of PSF_images, we generate N_copies
+            Each copy contains a random instance of Bad Pixel corruption
+
+            The selection of Bad Pixels is done in self.select_bad_pixels
+            :param PSF_images:
+            :param coef:
+            :param N_copies:
+            :return:
+            """
 
             BAD, HOT = 0, 99
             N_PSF, pix, _pix, N_chan = PSF_images.shape
@@ -1007,6 +1027,28 @@ if __name__ == "__main__":
             return new_data, new_coef
 
         def add_readout_noise(self, PSF_images, coef, SNR_min=100, SNR_max=500, N_copies=2, random=False):
+            """
+            Data augmentation to include Readout Noise in the images
+            For each case within the dataset of PSF_images, we generate N_copies
+            Each copy contains a random instance of Readout Noise
+
+            The noise for the copies ranges (in terms of SNR) from SNR_min to SNR_max
+            if random==False we uniformly sample the range [SNR_1, ..., SNR_Ncopies]
+            if random==True for each copy we randomly select the SNR within the range [SNR_min, SNR_max]
+
+            The noise map is generated using a Gaussian distribution with std = 1 / SNR
+            and it's added to the images
+
+            We finally offset the PSF_images with 5 * 1 / SNR_min to make sure most pixels have positive values
+
+            :param PSF_images: [N_samples, pix, pix, N_wavechan] clean PSF images
+            :param coef: aberration coefficients (we need to create multiple copies)
+            :param SNR_min: minimum Signal-to-Noise ratio
+            :param SNR_max: maximum Signal-to-Noise ratio
+            :param N_copies: How many copies with noise to create for each PSF image
+            :param random: whether to use fixed values of SNR of random values within the range [SNR_min, SNR_max]
+            :return: [N_copies * N_samples, pix, pix, N_wavechan]
+            """
 
             N_PSF, pix, _pix, N_chan = PSF_images.shape
             N_coef = coef.shape[-1]
@@ -1040,6 +1082,26 @@ if __name__ == "__main__":
             return new_data, new_coef
 
         def train_in_batches(self, loops, epochs_per_batch, N_noise_copies, verbose=1):
+            """
+            We want to train with as many examples of aberrations as possible, and with as many
+            copies of noise effects as possible to increase robustness
+
+            However, doing that with a single dataset can cause Memory issues. For that reason,
+            we train in small batches
+
+            We loop over the CLEAN dataset in batches of self.batch_size, possibily "loops" x times
+            For each batch, we run data augmentation, creating N_noise_copies of each PSF example
+            We ran the training for epochs_per_batch, and after that we select the next batch and start over
+
+            This ensures that the model is exposed to many instances of the noise effects (Readout Noise, etc)
+            because they are randomly generated multiple times, without blowing up the memory
+
+            :param loops: Number of times to cycle over the complete CLEAN dataset
+            :param epochs_per_batch: Number of epochs to run the training for a mini_batch of the CLEAN dataset
+            :param N_noise_copies: Number of copies of Noise effects to generate for each batch
+            :param verbose:
+            :return:
+            """
 
             loss, val_loss = [], []
             print("\nTraining Model with %d batches of %d PSF images" % (self.N_batches, self.batch_size))
@@ -1066,7 +1128,7 @@ if __name__ == "__main__":
                     loss.extend(train_history.history['loss'])
                     val_loss.extend(train_history.history['val_loss'])
 
-        def test_one_iteration(self, SNR_min=100, SNR_max=500, N_noise=5):
+        def test_one_iteration(self, SNR_min=100, SNR_max=500, N_noise=5, random_noise=False):
             """
             Test the performance of the trained model [1 single iteration]
             :param N_noise:
@@ -1075,7 +1137,8 @@ if __name__ == "__main__":
 
             test_PSF, test_coef = self.clean_dataset[-2], self.clean_dataset[-1]
             noisy_test_PSF, noisy_test_coef = self.add_readout_noise(test_PSF, test_coef,
-                                                                     SNR_min=SNR_min, SNR_max=SNR_max, N_copies=N_noise)
+                                                                     SNR_min=SNR_min, SNR_max=SNR_max,
+                                                                     N_copies=N_noise, random=random_noise)
 
             guess = batch_trainer.model.predict(noisy_test_PSF)
             residual = noisy_test_coef - guess
@@ -1123,16 +1186,8 @@ if __name__ == "__main__":
                 print("Averaged morm of Test Coefficients: %.3f" % mean_test)
                 print("Averaged norm of Residual Coefficients: %.3f" % mean_res)
 
-                RMS0, RMS = [], []
-                H_matrix = batch_trainer.PSF_model.RBF_flat[0]
-                N_PSF = _p.shape[0]
-                for k in range(N_PSF):
-                    true_coef = _c[k]
-                    true_wavefront = np.dot(H_matrix, true_coef)
-                    RMS0.append(np.std(true_wavefront))
-
-                    residual_wavefront = np.dot(H_matrix, residual[k])
-                    RMS.append(np.std(residual_wavefront))
+                RMS0 = self.compute_RMS(H_matrix, _c)
+                RMS = self.compute_RMS(H_matrix, residual)
 
                 mu_RMS = np.mean(RMS)
                 mus.append(mu_RMS)
@@ -1170,7 +1225,7 @@ if __name__ == "__main__":
                 rms.append(np.std(wavefront))
             return rms
 
-        def test_iteratively(self, N_iter):
+        def test_iteratively(self, N_iter, random_noise=False):
             """
             Test the model for several iterations
             At the beginning of each iteration, the PSF images are corrupted with Readout Noise
@@ -1185,21 +1240,20 @@ if __name__ == "__main__":
             list_iter = list(range(N_iter + 1))
             RMS0 = self.compute_RMS(H_matrix, test_coef)    # Compute the initial RMS wavefront
             list_RMS = [RMS0]
-            mus, stds, meds = [], [], []                    # Average RMS, std and median at each iter
-            mus.append(np.mean(RMS0))
-            stds.append(np.std(RMS0))
-            meds.append(np.median(RMS0))
+            mus, stds, meds = [np.mean(RMS0)], [np.std(RMS0)], [np.median(RMS0)]  # Average RMS, std and median at each iter
 
             plt.figure()
             plt.hist(RMS0, bins=50, histtype='step', label='Initial')
 
             print("\nTesting the performance for %d iterations" % N_iter)
             print("Size of the test set: ", test_PSF.shape[0])
+            print("Initial RMS: mean=%.3f, std=%.3f, median=%.3f" % (mus[0], stds[0], meds[0]))
             clean_PSF, clean_coef = test_PSF, test_coef
-            for k in range(N_iter):
-                print("\nAt iteration #%d/%d" % (k, N_iter))
 
-                noisy_test_PSF, noisy_test_coef = batch_trainer.add_readout_noise(clean_PSF, clean_coef, N_copies=1)
+            for k in range(N_iter):
+                print("\nAt iteration #%d/%d" % (k + 1, N_iter))
+
+                noisy_test_PSF, noisy_test_coef = batch_trainer.add_readout_noise(clean_PSF, clean_coef, N_copies=1, random=random_noise)
                 guess = batch_trainer.model.predict(noisy_test_PSF)
                 residual = noisy_test_coef - guess
                 mean_test = np.mean(norm(noisy_test_coef, axis=1))
@@ -1212,7 +1266,7 @@ if __name__ == "__main__":
                 list_RMS.append(RMS)
                 mu, rms, med = np.mean(RMS), np.std(RMS), np.median(RMS)        # Save the statistics
                 mus.append(mu)
-                stds.append(std)
+                stds.append(rms)
                 meds.append(med)
                 print("After correction: mean=%.3f, std=%.3f, median=%.3f" % (mu, rms, med))
 
@@ -1222,11 +1276,36 @@ if __name__ == "__main__":
             plt.xlabel(r'RMS wavefront error [waves]')
             plt.legend()
 
+            # Plot the mean RMS and the std as a function of Iterations
             plt.figure()
             plt.errorbar(list_iter, mus, stds)
             plt.plot(list_iter, mus, color='black')
             plt.xlabel('Iteration')
             plt.ylabel(r'RMS wavefront error')
+            plt.ylim([0, 1.0])
+
+            # Use seaborn to plot the 2D density plots of RMS before and after each iteration
+            for i_iter, (rms_initial, rms_final) in enumerate(pairwise(list_RMS)):
+                plt.figure()
+                ax = sns.kdeplot(rms_initial, rms_final, cmap="Blues", shade=True, bw='scott', clip=[0, 1.0, 0, 0.4], shade_lowest=True)
+                ax.plot([0, 1], [0, 1], linestyle='--', color='black', label='No Correction')
+                plt.xlabel(r'Initial RMS [waves]')
+                plt.ylabel(r'Final RMS [waves]')
+                plt.xlim([0, 1.0])
+                # plt.xlim([0, 1.1*np.max(rms_initial)])
+                plt.ylim([0, 0.4])
+                # plt.ylim([0, 1.1*np.max(rms_initial)])
+                plt.legend()
+                plt.title('Iteration #%d' % (i_iter + 1))
+
+            # Plot the 2D density plot of RMS before and after the LAST ITERATION
+            plt.figure()
+            ax = sns.kdeplot(list_RMS[0], list_RMS[-1], cmap="Blues", shade=True, bw='scott', clip=[0, 1.0, 0, 0.4],
+                             shade_lowest=True)
+            plt.xlabel(r'Before Calibration RMS [waves]')
+            plt.ylabel(r'After %d Iterations RMS [waves]' % (N_iter))
+            plt.xlim([0, 1.0])
+            plt.ylim([0, 0.15])
 
             return list_RMS
 
@@ -1250,103 +1329,37 @@ if __name__ == "__main__":
 
     batch_trainer = BatchNoiseTraining(PSF, dataset, model_options, batch_size=2500)
     batch_trainer.train_in_batches(loops=1, epochs_per_batch=5, N_noise_copies=5, verbose=1)
+    # batch_trainer.test_one_iteration(SNR_min=100, SNR_max=500, N_noise=5)
 
-    batch_trainer.test_one_iteration(SNR_min=100, SNR_max=500, N_noise=5)
+    list_RMS = batch_trainer.test_iteratively(N_iter=3, random_noise=True)
+
+    # ================================================================================================================ #
+    """ Impact of Defocus Intensity"""
+
+    GeneratorDefocus = PSFGenerator(PSF)
+    N_batches = 5
+    min_RMS, max_RMS = 0.10, 0.85
+    N_train, N_test = 1500, 500
+    focus_range = [0.25, 0.50, 1.00, 1.50, 2.00]
+    path_focus = "Focus Intensity"
+    for i, foc in enumerate(focus_range):
+        print("\nFocus Intensity: %.2f" % foc)
+        path_to_save = os.path.join(path_focus, "%d" % i)
+        GeneratorDefocus.save_dataset_batches(path_to_save, N_train, N_test, N_batches, min_RMS, max_RMS, focus=foc)
+
+    N_waves = 10
+    model_options = {"N_WAVES": N_waves, "keep_rate": 0.95}
+    for i, foc in enumerate(focus_range):
+        dataset = GeneratorDefocus.load_dataset_batches(path_to_load=path_to_save, N_batches=N_batches, N_waves=10)
+        batch_trainer_focus = BatchNoiseTraining(PSF, dataset, model_options, batch_size=2500)
+        batch_trainer_focus.train_in_batches(loops=1, epochs_per_batch=5, N_noise_copies=5, verbose=1)
+        batch_trainer_focus.test_one_iteration()
+
 
 
     ##### Run iterations
 
-    noisy_test_PSF, noisy_test_coef = batch_trainer.add_readout_noise(test_PSF, test_coef, N_copies=1, random=False)
-    guess = batch_trainer.model.predict(noisy_test_PSF)
-    residual = noisy_test_coef - guess
-    mean_test = np.mean(norm(noisy_test_coef, axis=1))
-    mean_res = np.mean(norm(residual, axis=1))
-    print("Averaged morm of Test Coefficients: %.3f" % mean_test)
-    print("Averaged norm of Residual Coefficients: %.3f" % mean_res)
 
-    RMS0, RMS = [], []
-    H_matrix = batch_trainer.PSF_model.RBF_flat[0]
-    N_PSF = noisy_test_PSF.shape[0]
-    for k in range(N_PSF):
-        true_coef = noisy_test_coef[k]
-        true_wavefront = np.dot(H_matrix, true_coef)
-        RMS0.append(np.std(true_wavefront))
-
-        residual_wavefront = np.dot(H_matrix, residual[k])
-        RMS.append(np.std(residual_wavefront))
-    plt.figure()
-    plt.hist(RMS0, bins=50, histtype='step', label='Initial')
-    plt.hist(RMS, bins=50, histtype='step', label='Final')
-    plt.xlabel(r'RMS wavefront error [waves]')
-    plt.legend()
-
-    updated_PSF = Generator.update_psf(residual, focus=focus)
-    noisy_test_PSF2, noisy_test_coef2 = batch_trainer.add_readout_noise(updated_PSF, residual, N_copies=1)
-
-    guess2 = batch_trainer.model.predict(noisy_test_PSF2)
-    residual2 = noisy_test_coef2 - guess2
-    mean_test = np.mean(norm(noisy_test_coef2, axis=1))
-    mean_res = np.mean(norm(residual2, axis=1))
-    print("Averaged morm of Test Coefficients: %.3f" % mean_test)
-    print("Averaged norm of Residual Coefficients: %.3f" % mean_res)
-
-    RMS00, RMS1 = [], []
-    H_matrix = batch_trainer.PSF_model.RBF_flat[0]
-    N_PSF = noisy_test_PSF2.shape[0]
-    for k in range(N_PSF):
-        true_coef = noisy_test_coef2[k]
-        true_wavefront = np.dot(H_matrix, true_coef)
-        RMS00.append(np.std(true_wavefront))
-
-        residual_wavefront = np.dot(H_matrix, residual2[k])
-        RMS1.append(np.std(residual_wavefront))
-    plt.figure()
-    plt.hist(RMS0, bins=50, histtype='step', label='Initial')
-    plt.hist(RMS00, bins=50, histtype='step', label='Iter1')
-    # plt.hist(RMS, bins=50, histtype='step', label='Final')
-    plt.hist(RMS1, bins=50, histtype='step', label='Iter2')
-    plt.xlabel(r'RMS wavefront error [waves]')
-    plt.legend()
-
-    plt.figure()
-    ax = sns.kdeplot(RMS0, RMS, cmap="Blues", shade=True, bw='scott', clip=[0, 1.5, 0, 1], shade_lowest=True)
-    ax = sns.kdeplot(RMS00, RMS1, cmap="Blues", shade=True, bw='scott', clip=[0, 1.5, 0, 1], shade_lowest=True)
-    ax.plot([0, 1], [0, 1], linestyle='--', color='black', label='No Correction')
-    plt.xlabel(r'Initial RMS [waves]')
-    plt.ylabel(r'Final RMS [waves]')
-    plt.xlim([0, 0.4])
-    plt.ylim([0, 0.4])
-    plt.title(r'SNR %d : $\mu=%.3f$, $\tilde{x}=%.3f$, $\sigma=%.3f$ [$\lambda$]' % (int(s), mu_RMS, med_RMS, std_RMS))
-    plt.legend()
-    plt.show()
-
-    updated_PSF2 = Generator.update_psf(residual2, focus=focus)
-    noisy_test_PSF3, noisy_test_coef3 = batch_trainer.add_readout_noise(updated_PSF2, residual2, N_copies=1)
-
-    guess3 = batch_trainer.model.predict(noisy_test_PSF3)
-    residual3 = noisy_test_coef3 - guess3
-    mean_test = np.mean(norm(noisy_test_coef3, axis=1))
-    mean_res = np.mean(norm(residual3, axis=1))
-    print("Averaged morm of Test Coefficients: %.3f" % mean_test)
-    print("Averaged norm of Residual Coefficients: %.3f" % mean_res)
-
-    RMS000, RMS2 = [], []
-    H_matrix = batch_trainer.PSF_model.RBF_flat[0]
-    N_PSF = noisy_test_PSF3.shape[0]
-    for k in range(N_PSF):
-        true_coef = noisy_test_coef3[k]
-        true_wavefront = np.dot(H_matrix, true_coef)
-        RMS000.append(np.std(true_wavefront))
-
-        residual_wavefront = np.dot(H_matrix, residual3[k])
-        RMS2.append(np.std(residual_wavefront))
-    plt.figure()
-    # plt.hist(RMS0, bins=50, histtype='step', label='Initial')
-    plt.hist(RMS000, bins=50, histtype='step', label='Initial')
-    # plt.hist(RMS, bins=50, histtype='step', label='Final')
-    plt.hist(RMS2, bins=50, histtype='step', label='Iter3')
-    plt.xlabel(r'RMS wavefront error [waves]')
-    plt.legend()
 
 
     # ================================================================================================================ #
