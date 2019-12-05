@@ -886,11 +886,19 @@ if __name__ == "__main__":
 
             cur_dir = os.getcwd()
             path = os.path.join(cur_dir, path_to_save)
-            try:
-                os.mkdir(path)
-                print("Directory ", path, " Created ")
-            except FileExistsError:
-                print("Directory ", path, " already exists")
+            # Watch out because it won't create a Folder / Subfolder simultaneously
+            # if you do os.mkdir(path) and path is cwd\\ Folder \\ Subfolder
+            split_paths = os.path.split(path)
+            path0 = ''
+            # We must loop over the Folder structure, creating one layer at a time
+            for _path in split_paths:
+                path0 = os.path.join(path0, _path)
+                path = os.path.join(cur_dir, path0)
+                try:
+                    os.mkdir(path)
+                    print("Directory ", path, " Created ")
+                except FileExistsError:
+                    print("Directory ", path, " already exists")
 
             for k in np.arange(k0, k0 + N_batches):
                 training_PSF, test_PSF, \
@@ -1309,7 +1317,6 @@ if __name__ == "__main__":
 
             return list_RMS
 
-
     # master_defocus = np.random.uniform(low=-1, high=1, size=N_act)
     # np.save('master_defocus', master_defocus)
 
@@ -1334,12 +1341,16 @@ if __name__ == "__main__":
     list_RMS = batch_trainer.test_iteratively(N_iter=3, random_noise=True)
 
     # ================================================================================================================ #
+    #                                     Analysis of the DEFOCUS term                                                 #
+    # ================================================================================================================ #
+
     """ Impact of Defocus Intensity"""
 
     GeneratorDefocus = PSFGenerator(PSF)
     N_batches = 5
     min_RMS, max_RMS = 0.10, 0.85
     N_train, N_test = 1500, 500
+    # Watch out for the folder Names
     focus_range = [0.25, 0.50, 1.00, 1.50, 2.00]        # [0, 1, 2, 3, 4]
     new_focus_range = [1.25, 1.75]                      # [5, 6]
     path_focus = "Focus Intensity"
@@ -1393,6 +1404,49 @@ if __name__ == "__main__":
         batch_trainer_focus = BatchNoiseTraining(PSF, dataset, model_options, batch_size=2500)
         batch_trainer_focus.train_in_batches(loops=1, epochs_per_batch=5, N_noise_copies=5, verbose=1)
         batch_trainer_focus.test_one_iteration()
+
+    """ Zernike Defocus and other Diversities """
+    import zern_core as zern
+
+    pupil = PSF.pupil_masks[0]
+    N_zern = 10
+    x = np.linspace(-1, 1, N_PIX, endpoint=True)
+    xx, yy = np.meshgrid(x, x)
+    rho, theta = np.sqrt(xx ** 2 + yy ** 2), np.arctan2(xx, yy)
+
+    rho, theta = rho[pupil], theta[pupil]
+    zernike = zern.ZernikeNaive(mask=pupil)
+    _phase = zernike(coef=np.zeros(N_zern), rho=rho / (RHO_APER), theta=theta, normalize_noll=False,
+                     mode='Jacobi', print_option='Silent')
+    H_flat = zernike.model_matrix[:, 3:]
+    H_matrix = zern.invert_model_matrix(H_flat, pupil)
+    N_zern = H_matrix.shape[-1]
+
+    defocus_zern = H_matrix[:, :, 1]
+    y_obs = defocus_zern[pupil]
+    _H = PSF.RBF_flat[0]
+    _Ht = _H.T
+    N = np.dot(_Ht, _H)
+    invN = np.linalg.inv(N)
+    x_fit = np.dot(invN, np.dot(_Ht, y_obs))
+
+    defocus_actu = np.dot(PSF.RBF_mat[0], x_fit)
+    plt.figure()
+    plt.imshow(defocus_zern)
+    plt.colorbar()
+
+    plt.figure()
+    plt.imshow(defocus_actu)
+    plt.colorbar()
+
+    plt.show()
+
+    opt_foc = 1.75
+    path_focus = "FocusZernike"
+    np.save('master_defocus', defocus_actu)
+    GeneratorDefocus = PSFGenerator(PSF)
+
+    GeneratorDefocus.save_dataset_batches(path_focus, N_train, N_test, N_batches, min_RMS, max_RMS, focus=opt_foc)
 
 
 
