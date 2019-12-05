@@ -1140,7 +1140,7 @@ if __name__ == "__main__":
                                                                      SNR_min=SNR_min, SNR_max=SNR_max,
                                                                      N_copies=N_noise, random=random_noise)
 
-            guess = batch_trainer.model.predict(noisy_test_PSF)
+            guess = self.model.predict(noisy_test_PSF)
             residual = noisy_test_coef - guess
 
             print("_____________________________________________________________")
@@ -1154,7 +1154,7 @@ if __name__ == "__main__":
 
             ### Aggregated results across all cases of SNR
             RMS0, RMS = [], []
-            H_matrix = batch_trainer.PSF_model.RBF_flat[0]
+            H_matrix = self.PSF_model.RBF_flat[0]
             N_PSF = noisy_test_PSF.shape[0]
             for k in range(N_PSF):
                 true_coef = noisy_test_coef[k]
@@ -1179,7 +1179,7 @@ if __name__ == "__main__":
                 _c = noisy_test_coef[i::N_noise]
                 # _c = badpix_test_coef[2 * i::2 * N_noise]
 
-                guess = batch_trainer.model.predict(_p)
+                guess = self.model.predict(_p)
                 residual = _c - guess
                 mean_test = np.mean(norm(_c, axis=1))
                 mean_res = np.mean(norm(residual, axis=1))
@@ -1235,7 +1235,7 @@ if __name__ == "__main__":
             :return:
             """
             test_PSF, test_coef = self.clean_dataset[-2], self.clean_dataset[-1]
-            H_matrix = batch_trainer.PSF_model.RBF_flat[0]
+            H_matrix = self.PSF_model.RBF_flat[0]
 
             list_iter = list(range(N_iter + 1))
             RMS0 = self.compute_RMS(H_matrix, test_coef)    # Compute the initial RMS wavefront
@@ -1253,8 +1253,8 @@ if __name__ == "__main__":
             for k in range(N_iter):
                 print("\nAt iteration #%d/%d" % (k + 1, N_iter))
 
-                noisy_test_PSF, noisy_test_coef = batch_trainer.add_readout_noise(clean_PSF, clean_coef, N_copies=1, random=random_noise)
-                guess = batch_trainer.model.predict(noisy_test_PSF)
+                noisy_test_PSF, noisy_test_coef = self.add_readout_noise(clean_PSF, clean_coef, N_copies=1, random=random_noise)
+                guess = self.model.predict(noisy_test_PSF)
                 residual = noisy_test_coef - guess
                 mean_test = np.mean(norm(noisy_test_coef, axis=1))
                 mean_res = np.mean(norm(residual, axis=1))
@@ -1340,9 +1340,12 @@ if __name__ == "__main__":
     N_batches = 5
     min_RMS, max_RMS = 0.10, 0.85
     N_train, N_test = 1500, 500
-    focus_range = [0.25, 0.50, 1.00, 1.50, 2.00]
+    focus_range = [0.25, 0.50, 1.00, 1.50, 2.00]        # [0, 1, 2, 3, 4]
+    new_focus_range = [1.25, 1.75]                      # [5, 6]
     path_focus = "Focus Intensity"
     for i, foc in enumerate(focus_range):
+    # for i, foc in zip([5, 6], new_focus_range):
+
         print("\nFocus Intensity: %.2f" % foc)
         path_to_save = os.path.join(path_focus, "%d" % i)
         GeneratorDefocus.save_dataset_batches(path_to_save, N_train, N_test, N_batches, min_RMS, max_RMS, focus=foc)
@@ -1350,10 +1353,47 @@ if __name__ == "__main__":
     N_waves = 10
     model_options = {"N_WAVES": N_waves, "keep_rate": 0.95}
     for i, foc in enumerate(focus_range):
+    # for i, foc in zip([5, 6], new_focus_range):
+    for i, foc in zip([2], [1.00]):
+        path_to_save = os.path.join(path_focus, "%d" % i)
+        print("\nFocus Intensity: %.2f" % foc)
         dataset = GeneratorDefocus.load_dataset_batches(path_to_load=path_to_save, N_batches=N_batches, N_waves=10)
         batch_trainer_focus = BatchNoiseTraining(PSF, dataset, model_options, batch_size=2500)
         batch_trainer_focus.train_in_batches(loops=1, epochs_per_batch=5, N_noise_copies=5, verbose=1)
         batch_trainer_focus.test_one_iteration()
+
+    ##
+    """ Impact of Random Defocus """
+
+    # Use the 'optimum' strength from the previous analysis
+    opt_foc = 1.75
+    # np.load('master_defocus.npy')
+    path_focus = "FocusRandom"
+    for k in range(5):
+        GeneratorDefocus = PSFGenerator(PSF)
+        master_defocus = np.random.uniform(low=-1, high=1, size=N_act)
+        np.save('master_defocus', master_defocus)
+        np.save('master_defocus%d' % k, master_defocus)         # Save a copy for later
+        path_to_save = os.path.join(path_focus, "%d" % k)
+        # path_to_save = path_focus
+
+        GeneratorDefocus.save_dataset_batches(path_to_save, N_train, N_test, N_batches, min_RMS, max_RMS, focus=opt_foc)
+
+        # path_to_save = os.path.join(path_focus, "%d" % k)
+        coef_foc = opt_foc * np.load('master_defocus%d.npy' % k)
+        phase = np.dot(PSF.RBF_mat[0], coef_foc)
+        phase_f = np.dot(PSF.RBF_flat[0], coef_foc)
+        rms_foc = np.std(phase_f)
+        plt.figure()
+        plt.imshow(phase)
+        plt.colorbar()
+        plt.title('%.3f' % rms_foc)
+
+        dataset = GeneratorDefocus.load_dataset_batches(path_to_load=path_to_save, N_batches=N_batches, N_waves=10)
+        batch_trainer_focus = BatchNoiseTraining(PSF, dataset, model_options, batch_size=2500)
+        batch_trainer_focus.train_in_batches(loops=1, epochs_per_batch=5, N_noise_copies=5, verbose=1)
+        batch_trainer_focus.test_one_iteration()
+
 
 
 
