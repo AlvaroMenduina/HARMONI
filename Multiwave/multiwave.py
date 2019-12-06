@@ -21,13 +21,14 @@ def pairwise(iterable):
     next(b, None)
     return zip(a, b)
 
+
 # PARAMETERS
 Z = 1.75                    # Strength of the aberrations
 pix = 30                    # Pixels to crop the PSF
 N_PIX = 256
 RHO_APER = 0.5
 RHO_OBSC = 0.15
-N_WAVES = 10
+N_WAVES = 5                 # Normally 10
 WAVE_N = 2.0
 
 # ### Super useful code to display variables and their sizes (helps you clear the RAM)
@@ -784,16 +785,36 @@ if __name__ == "__main__":
                     dataset[i, :, :, 2 * wave_idx + 1] = im_foc
             return dataset
 
-        def generate_dataset(self, N_train, N_test, min_RMS, max_RMS, focus, show_fig=False):
+        def generate_dataset(self, N_train, N_test, min_RMS, max_RMS, focus_strength, focus_coef, show_fig=False):
+            """
+            Uses the PSF model to generate [N_train + N_test] PSF images
+            We try to same the range of RMS wavefront error uniformly to allow iterative calibration
+            i.e. we want the CNN model to look at PSF with all cases of RMS (low aberrations, high aberrations)
+            To do that, we estimate the scaling of the aberration coefficients, so that the RMS is
+            approximately within a given range [min_RMS, max_RMS]
 
-            #TODO: Add Defocus uncertainties in the future!
+            With regards to the defocus (or diversity) we can use whatever type we want
+            by providing the location of a set of wavefront coefficients [focus_coef]
+            The rescaling [focus_strength] allows us to investigate how the intensity of defocus
+            for a given shape, affects the performance
+            :param N_train:
+            :param N_test:
+            :param min_RMS:
+            :param max_RMS:
+            :param focus_strength:
+            :param focus_coef: path to a set of model coefficients to be used as 'defocus' / 'diversity'
+            :param show_fig: whether to show the estimates the code uses to fulfill the [min_RMS, max_RMS]
+            :return:
+            """
+
             #TODO: Investigate if the Defocus intensity matters
             #TODO: Investigate if the Random Map matters (Correlations between Actuator error and Random Map??)
 
             N_coef = self.PSF_model.N_act
             N_samples = N_train + N_test
 
-            defocus = focus * np.load('master_defocus.npy')
+            # defocus = focus * np.load('master_defocus.npy')
+            defocus = focus_strength * np.load(focus_coef)
             dataset = np.empty((N_samples, pix, pix, 2 * N_WAVES))
 
 
@@ -852,6 +873,7 @@ if __name__ == "__main__":
 
                     # Defocused image
                     im_foc, _s = self.PSF_model.compute_PSF(coef[i] + defocus, wave_idx=wave_idx)
+                    # TODO: Add Defocus uncertainties in the future!
                     dataset[i, :, :, 2 * wave_idx + 1] = im_foc
 
             # Show histogram of RMS wavefronts
@@ -866,7 +888,7 @@ if __name__ == "__main__":
             return dataset[:N_train], dataset[N_train:], coef[:N_train], coef[N_train:]
 
         def save_dataset_batches(self, path_to_save, N_train, N_test, N_batches,
-                                 min_RMS=0.05, max_RMS=0.80, focus=1.0, k0=0):
+                                 min_RMS, max_RMS, focus_strength, focus_coef, k0=0):
             """
             Generate and save N_batches of [N_train + N_test] PSF images
             This code tries to generate PSF images that cover a wide range of
@@ -879,7 +901,8 @@ if __name__ == "__main__":
             :param N_batches: Number of batches of [N_train + N_test] to generate
             :param min_RMS: minimum RMS wavefront error in your PSF images
             :param max_RMS: maximum RMS wavefront error in your PSF images
-            :param focus: intensity of the defocus term
+            :param focus_strength: intensity of the defocus term, it rescales the focus_coef
+            :param focus_coef: path to a set of coefficients to be used to define the defocus wavefront / diversity
             :param k0: initial index for the filenames (to avoid overwriting old files)
             :return:
             """
@@ -902,7 +925,7 @@ if __name__ == "__main__":
 
             for k in np.arange(k0, k0 + N_batches):
                 training_PSF, test_PSF, \
-                training_coef, test_coef = self.generate_dataset(N_train, N_test, min_RMS, max_RMS, focus)
+                training_coef, test_coef = self.generate_dataset(N_train, N_test, min_RMS, max_RMS, focus_strength, focus_coef)
                 np.save(os.path.join(path, 'training_PSF%d' % k), training_PSF)
                 np.save(os.path.join(path, 'test_PSF%d' % k), test_PSF)
                 np.save(os.path.join(path, 'training_coef%d' % k), training_coef)
@@ -1125,11 +1148,11 @@ if __name__ == "__main__":
                     noisy_test_PSF, noisy_test_coef = self.add_readout_noise(test_p, test_c, N_copies=2)
 
                     # Add Bad Pixels
-                    badpix_train_PSF, badpix_train_coef = self.add_bad_pixels(noisy_train_PSF, noisy_train_coef, N_copies=2)
-                    badpix_test_PSF, badpix_test_coef = self.add_bad_pixels(noisy_test_PSF, noisy_test_coef, N_copies=2)
+                    # badpix_train_PSF, badpix_train_coef = self.add_bad_pixels(noisy_train_PSF, noisy_train_coef, N_copies=2)
+                    # badpix_test_PSF, badpix_test_coef = self.add_bad_pixels(noisy_test_PSF, noisy_test_coef, N_copies=2)
 
-                    train_history = self.model.fit(x=badpix_train_PSF, y=badpix_train_coef,
-                                                   validation_data=(badpix_test_PSF, badpix_test_coef),
+                    train_history = self.model.fit(x=noisy_train_PSF, y=noisy_train_coef,
+                                                   validation_data=(noisy_test_PSF, noisy_test_coef),
                                                    epochs=epochs_per_batch, batch_size=32,
                                                    shuffle=True, verbose=verbose)
 
@@ -1171,54 +1194,60 @@ if __name__ == "__main__":
 
                 residual_wavefront = np.dot(H_matrix, residual[k])
                 RMS.append(np.std(residual_wavefront))
-            plt.figure()
-            plt.hist(RMS0, bins=50, histtype='step', label='Initial')
-            plt.hist(RMS, bins=50, histtype='step', label='Final')
-            plt.xlabel(r'RMS wavefront error [waves]')
-            plt.legend()
+            # plt.figure()
+            # plt.hist(RMS0, bins=50, histtype='step', label='Initial')
+            # plt.hist(RMS, bins=50, histtype='step', label='Final')
+            # plt.xlabel(r'RMS wavefront error [waves]')
+            # plt.legend()
 
-            ### Slice by SNR to see the impact of Readout Noise
-            SNR = np.linspace(SNR_min, SNR_max, N_noise, endpoint=True)
-            mus, stds = [], []
-            for i, s in enumerate(SNR):
-                print("\nSNR: ", s)
-                _p = noisy_test_PSF[i::N_noise]      # Read Out only
-                # _p = badpix_test_PSF[2 * i::2 * N_noise]  # Read Out + Bad Pixels
-                _c = noisy_test_coef[i::N_noise]
-                # _c = badpix_test_coef[2 * i::2 * N_noise]
+            metric = [np.mean(RMS0), np.std(RMS0), np.mean(RMS), np.std(RMS)]
 
-                guess = self.model.predict(_p)
-                residual = _c - guess
-                mean_test = np.mean(norm(_c, axis=1))
-                mean_res = np.mean(norm(residual, axis=1))
-                print("Averaged morm of Test Coefficients: %.3f" % mean_test)
-                print("Averaged norm of Residual Coefficients: %.3f" % mean_res)
+            # ### Slice by SNR to see the impact of Readout Noise
+            # SNR = np.linspace(SNR_min, SNR_max, N_noise, endpoint=True)
+            # mus, stds = [], []
+            # for i, s in enumerate(SNR):
+            #     print("\nSNR: ", s)
+            #     _p = noisy_test_PSF[i::N_noise]      # Read Out only
+            #     # _p = badpix_test_PSF[2 * i::2 * N_noise]  # Read Out + Bad Pixels
+            #     _c = noisy_test_coef[i::N_noise]
+            #     # _c = badpix_test_coef[2 * i::2 * N_noise]
+            #
+            #     guess = self.model.predict(_p)
+            #     residual = _c - guess
+            #     mean_test = np.mean(norm(_c, axis=1))
+            #     mean_res = np.mean(norm(residual, axis=1))
+            #     print("Averaged morm of Test Coefficients: %.3f" % mean_test)
+            #     print("Averaged norm of Residual Coefficients: %.3f" % mean_res)
+            #
+            #     RMS0 = self.compute_RMS(H_matrix, _c)
+            #     RMS = self.compute_RMS(H_matrix, residual)
+            #
+            #     mu_RMS = np.mean(RMS)
+            #     mus.append(mu_RMS)
+            #     std_RMS = np.std(RMS)
+            #     stds.append(std_RMS)
+            #     med_RMS = np.median(RMS)
 
-                RMS0 = self.compute_RMS(H_matrix, _c)
-                RMS = self.compute_RMS(H_matrix, residual)
+                # plt.figure()
+                # ax = sns.kdeplot(RMS0, RMS, cmap="Blues", shade=True, bw='scott', clip=[0, 1.0, 0, 0.4], shade_lowest=True)
+                # ax.plot([0, 1], [0, 1], linestyle='--', color='black', label='No Correction')
+                # plt.xlabel(r'Initial RMS [waves]')
+                # plt.ylabel(r'Final RMS [waves]')
+                # plt.xlim([0, 1.0])
+                # plt.ylim([0, 0.4])
+                # plt.title(r'SNR %d : $\mu=%.3f$, $\tilde{x}=%.3f$, $\sigma=%.3f$ [$\lambda$]' % (int(s), mu_RMS, med_RMS, std_RMS))
+                # plt.legend()
 
-                mu_RMS = np.mean(RMS)
-                mus.append(mu_RMS)
-                std_RMS = np.std(RMS)
-                stds.append(std_RMS)
-                med_RMS = np.median(RMS)
+            # plt.figure()
+            # plt.errorbar(SNR, mus, stds, fmt='o')
+            # plt.plot(SNR, mus, color='black')
+            # plt.xlabel(r'SNR')
+            # plt.ylabel(r'RMS wavefront')
+            # plt.show()
 
-                plt.figure()
-                ax = sns.kdeplot(RMS0, RMS, cmap="Blues", shade=True, bw='scott', clip=[0, 1.0, 0, 0.4], shade_lowest=True)
-                ax.plot([0, 1], [0, 1], linestyle='--', color='black', label='No Correction')
-                plt.xlabel(r'Initial RMS [waves]')
-                plt.ylabel(r'Final RMS [waves]')
-                plt.xlim([0, 1.0])
-                plt.ylim([0, 0.4])
-                plt.title(r'SNR %d : $\mu=%.3f$, $\tilde{x}=%.3f$, $\sigma=%.3f$ [$\lambda$]' % (int(s), mu_RMS, med_RMS, std_RMS))
-                plt.legend()
+            # Return a Performance Metrics
 
-            plt.figure()
-            plt.errorbar(SNR, mus, stds, fmt='o')
-            plt.plot(SNR, mus, color='black')
-            plt.xlabel(r'SNR')
-            plt.ylabel(r'RMS wavefront')
-            plt.show()
+            return metric
 
         def compute_RMS(self, H_matrix, coef):
             """
@@ -1317,8 +1346,9 @@ if __name__ == "__main__":
 
             return list_RMS
 
-    # master_defocus = np.random.uniform(low=-1, high=1, size=N_act)
-    # np.save('master_defocus', master_defocus)
+    master_defocus = np.random.uniform(low=-1, high=1, size=N_act)
+    np.save('master_defocus', master_defocus)
+    path_coef_focus = os.path.join(os.getcwd(), 'master_defocus.npy')
 
     focus = 1.5
     min_RMS, max_RMS = 0.10, 0.85
@@ -1328,7 +1358,7 @@ if __name__ == "__main__":
     # train_p, train_c, test_p, test_c = Generator.generate_dataset(N_train, N_test, min_RMS, max_RMS, focus)
     N_batches = 10
     path_to_save = "Datasets"
-    Generator.save_dataset_batches(path_to_save, N_train, N_test, N_batches, min_RMS, max_RMS, focus)
+    Generator.save_dataset_batches(path_to_save, N_train, N_test, N_batches, min_RMS, max_RMS, focus, path_coef_focus)
 
     N_waves = 10
     dataset = Generator.load_dataset_batches(path_to_load=path_to_save, N_batches=N_batches, N_waves=10)
@@ -1356,16 +1386,18 @@ if __name__ == "__main__":
     path_focus = "Focus Intensity"
     for i, foc in enumerate(focus_range):
     # for i, foc in zip([5, 6], new_focus_range):
-
+        # First we generate the Datasets, which takes a long time
         print("\nFocus Intensity: %.2f" % foc)
         path_to_save = os.path.join(path_focus, "%d" % i)
-        GeneratorDefocus.save_dataset_batches(path_to_save, N_train, N_test, N_batches, min_RMS, max_RMS, focus=foc)
+        GeneratorDefocus.save_dataset_batches(path_to_save, N_train, N_test, N_batches,
+                                              min_RMS, max_RMS, foc, path_coef_focus)
 
     N_waves = 10
     model_options = {"N_WAVES": N_waves, "keep_rate": 0.95}
     for i, foc in enumerate(focus_range):
     # for i, foc in zip([5, 6], new_focus_range):
-    for i, foc in zip([2], [1.00]):
+    # for i, foc in zip([2], [1.00]):
+        # After that we can run whichever cases we want, without having to generate the PSF images again
         path_to_save = os.path.join(path_focus, "%d" % i)
         print("\nFocus Intensity: %.2f" % foc)
         dataset = GeneratorDefocus.load_dataset_batches(path_to_load=path_to_save, N_batches=N_batches, N_waves=10)
@@ -1382,18 +1414,17 @@ if __name__ == "__main__":
     path_focus = "FocusRandom"
     for k in range(5):
         GeneratorDefocus = PSFGenerator(PSF)
-        master_defocus = np.random.uniform(low=-1, high=1, size=N_act)
-        np.save('master_defocus', master_defocus)
-        np.save('master_defocus%d' % k, master_defocus)         # Save a copy for later
         path_to_save = os.path.join(path_focus, "%d" % k)
+        master_defocus = np.random.uniform(low=-1, high=1, size=N_act)
+        np.save(os.path.join(path_to_save, 'master_defocus'), master_defocus)
+        path_coef_focus = os.path.join(path_to_save, 'master_defocus.npy')
         # path_to_save = path_focus
 
-        GeneratorDefocus.save_dataset_batches(path_to_save, N_train, N_test, N_batches, min_RMS, max_RMS, focus=opt_foc)
+        GeneratorDefocus.save_dataset_batches(path_to_save, N_train, N_test, N_batches,
+                                              min_RMS, max_RMS, opt_foc, path_coef_focus)
 
-        # path_to_save = os.path.join(path_focus, "%d" % k)
-        coef_foc = opt_foc * np.load('master_defocus%d.npy' % k)
-        phase = np.dot(PSF.RBF_mat[0], coef_foc)
-        phase_f = np.dot(PSF.RBF_flat[0], coef_foc)
+        phase = np.dot(PSF.RBF_mat[0], master_defocus)
+        phase_f = np.dot(PSF.RBF_flat[0], master_defocus)
         rms_foc = np.std(phase_f)
         plt.figure()
         plt.imshow(phase)
@@ -1449,8 +1480,96 @@ if __name__ == "__main__":
     GeneratorDefocus.save_dataset_batches(path_focus, N_train, N_test, N_batches, min_RMS, max_RMS, focus=opt_foc)
 
 
+    ### Can you brute force the OPTIMUM diversity?
+
+    def create_directory(path_to_save):
+        cur_dir = os.getcwd()
+        path = os.path.join(cur_dir, path_to_save)
+        # Watch out because it won't create a Folder / Subfolder simultaneously
+        # if you do os.mkdir(path) and path is cwd\\ Folder \\ Subfolder
+        split_paths = os.path.split(path)
+        path0 = ''
+        # We must loop over the Folder structure, creating one layer at a time
+        for _path in split_paths:
+            path0 = os.path.join(path0, _path)
+            path = os.path.join(cur_dir, path0)
+            try:
+                os.mkdir(path)
+                print("Directory ", path, " Created ")
+            except FileExistsError:
+                print("Directory ", path, " already exists")
+
+    from time import time
+    N_batches = 1
+    min_RMS, max_RMS = 0.10, 0.85
+    N_train, N_test = 5000, 500
+    GeneratorMC = PSFGenerator(PSF)
+
+    path_MC = "BruteForce"
+    N_tries = 1000
+    opt_foc = 1.75  # Use the 'optimum' strength from the previous analysis
+    all_coef = np.random.uniform(low=-1, high=1, size=(N_tries, N_act))
+    diversity_coefs, metrics = [], []
+
+    N_waves = 5
+    model_options = {"N_WAVES": N_waves, "keep_rate": 0.95}
+    start0 = time()
+
+    for i in np.arange(40, 100):
+        start = time()
+        print("\n====================================================")
+        print("Trial %d " % i)
+        print("\n====================================================")
+        path_to_save = os.path.join(path_MC, "%d" % i)
+        create_directory(path_to_save)
+        master_defocus = all_coef[i]
+        np.save(os.path.join(path_to_save, 'master_defocus'), master_defocus)
+        path_coef_focus = os.path.join(os.path.join(path_to_save, 'master_defocus.npy'))
 
 
+        GeneratorMC.save_dataset_batches(path_to_save, N_train, N_test, N_batches,
+                                              min_RMS, max_RMS, opt_foc, path_coef_focus)
+
+        dataset = GeneratorMC.load_dataset_batches(path_to_load=path_to_save, N_batches=N_batches, N_waves=N_waves)
+
+        batch_trainer_MC = BatchNoiseTraining(PSF, dataset, model_options, batch_size=1000)
+        batch_trainer_MC.train_in_batches(loops=1, epochs_per_batch=3, N_noise_copies=3, verbose=1)
+        metric = batch_trainer_MC.test_one_iteration()
+        print("\n====================================================")
+        print(metric)
+        print("\n====================================================")
+        metrics.append(metric)
+        np.save(os.path.join(path_to_save, 'metric'), np.array(metric))
+
+        end = time()
+        time_iter = (end - start) / 60      # in min
+        total_time = (end - start0) / 60      # in min
+        remaining_iter = N_tries - (i + 1)
+        estimate = remaining_iter * total_time / (i + 1) / 60
+        print("Time for iteration: %.2f minutes" % time_iter)
+        print("Total time: %.2f minutes" % total_time)
+        print("ETA: -%.2f hours" % estimate)
+
+    all_coef = []
+    metrics = []
+    rms_c = []
+    for i in np.arange(40):
+        path_to_save = os.path.join(path_MC, "%d" % i)
+        all_coef.append(np.load(os.path.join(path_to_save, 'master_defocus.npy')))
+        metrics.append(np.load(os.path.join(path_to_save, 'metric.npy')))
+    all_coef = np.stack(all_coef)
+    metrics = np.stack(metrics)
+
+    norm_c = norm(all_coef, axis=1)
+
+
+    plt.figure()
+    plt.scatter(norm_c, metrics[:,2])
+    plt.show()
+
+    plt.figure()
+    plt.plot(np.sort(metrics[:,2]))
+    plt.show()
     ##### Run iterations
 
 
