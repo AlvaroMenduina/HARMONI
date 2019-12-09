@@ -16,6 +16,13 @@ ELT_DIAM = 39
 CENTRAL_OBS = 0.30                  # Central obscuration is ~30% of the diameter
 MILIARCSECS_IN_A_RAD = 206265000
 
+def crop_array(array, crop=25):
+    PIX = array.shape[0]
+    min_crop = PIX // 2 - crop // 2
+    max_crop = PIX // 2 + crop // 2
+    array_crop = array[min_crop:max_crop, min_crop:max_crop]
+    return array_crop
+
 
 def rho_spaxel_scale(spaxel_scale=4, wavelength=1.5):
     """
@@ -101,10 +108,21 @@ if __name__ == """__main__""":
             self.create_slicer_masks()
             self.create_pupil_mirror_apertures(self.pupil_mirror_aperture)
 
-            wavefront = self.pupil_masks[1.5]
-            nominal_pup = self.pupil_masks[1.5] * np.exp(1j * 2 * np.pi * wavefront / 1.5)
-            self.nominal_PSF = (np.abs(fftshift(fft2(nominal_pup, norm='ortho')))) ** 2
-            self.PEAK = np.max(self.nominal_PSF)
+            self.compute_peak_nominal_PSFs()
+
+        def compute_peak_nominal_PSFs(self):
+            """
+            Compute the PEAK of the PSF without aberrations so that we can
+            normalize everything by it
+            """
+            self.nominal_PSFs, self.PEAKs = {}, {}
+            for wavelength in self.wave_range:
+                pupil_mask = self.pupil_masks[wavelength]
+                nominal_pup = pupil_mask * np.exp(1j * 2 * np.pi * pupil_mask / wavelength)
+                nominal_PSF = (np.abs(fftshift(fft2(nominal_pup, norm='ortho')))) ** 2
+                self.nominal_PSFs[wavelength] = nominal_PSF
+                self.PEAKs[wavelength] = np.max(nominal_PSF)
+            return
 
         def create_pupil_masks(self, spaxel_scale, N_waves=1, wave0=1.5, waveN=1.5):
             """
@@ -139,6 +157,11 @@ if __name__ == """__main__""":
             return
 
         def create_slicer_masks(self):
+            """
+            Creates a list of slicer masks that model the finite aperture por each slice
+            effectively cropping the PSF at the focal plane
+            :return:
+            """
 
             # Check the size of the arrays
             U = self.N_PIX * self.spaxel_scale          # Size in [m.a.s] of the Slicer Plane
@@ -164,6 +187,13 @@ if __name__ == """__main__""":
             return
 
         def create_pupil_mirror_apertures(self, aperture):
+            """
+            Creates a mask to model the finite aperture of the pupil mirror,
+            which effectively introduces fringe effects on the PSF at the exit slit
+            :param aperture:
+            :return:
+            """
+            #TODO: find out how to properly define the aperture
 
             x0 = np.linspace(-1., 1., self.N_PIX, endpoint=True)
             xx, yy = np.meshgrid(x0, x0)
@@ -171,12 +201,19 @@ if __name__ == """__main__""":
             return
 
         def propagate_pupil_to_slicer(self, wavelength, wavefront):
+            """
+            Takes the a given wavefront at the PUPIL plane at a given wavelength
+            and propagates it to the focal plane, i.e. SLICER plane
+            using standard Fourier transforms
+            :param wavelength:
+            :param wavefront: a wavefront map
+            :return: complex electric field at the slicer
+            """
 
-            # FIXME: possibility of using other wavefronts
             print("Pupil Plane -> Image Slicer Plane")
 
             pupil_mask = self.pupil_masks[wavelength]
-            wavefront = pupil_mask
+            # wavefront = pupil_mask
             complex_pupil = pupil_mask * np.exp(1j * 2*np.pi * wavefront / wavelength)
 
             # Propagate to Slicer plane
@@ -185,6 +222,12 @@ if __name__ == """__main__""":
             return complex_slicer
 
         def propagate_slicer_to_pupil_mirror(self, complex_slicer):
+            """
+            Using the SLICER MASKS, it masks the complex field at the SLICER plane
+            and propagates each slice to the PUPIL MIRROR plane using inverse Fourier transform
+            :param complex_slicer: complex electric field at the SLICER plane
+            :return:
+            """
 
             print("Image Slicer Plane -> Pupil Mirror Plane")
             complex_mirror = []
@@ -200,15 +243,17 @@ if __name__ == """__main__""":
             return complex_mirror
 
         def propagate_pupil_mirror_to_exit_slit(self, complex_mirror):
+            """
+            Using the PUPIL MIRROR MASK, it propagates each slice to the corresponding
+            exit slit
+            :param complex_mirror: complex electric field at the PUPIL MIRROR plane [a list of slices]
+            """
 
             print("Pupil Mirror Plane -> Exit Slits")
             exit_slits = []
             for c_mirror in complex_mirror:
                 masked_mirror = self.pupil_mirror_mask * c_mirror
                 complex_slit = fftshift(fft2(masked_mirror , norm='ortho'))
-                # plt.figure()
-                # plt.imshow((np.abs(masked_mirror))**2)
-                # plt.title()
                 image_slit = (np.abs(complex_slit))**2
                 exit_slits.append(image_slit)
             image = np.sum(np.stack(exit_slits), axis=0)
@@ -274,14 +319,14 @@ if __name__ == """__main__""":
                 # Exit Slit plane
 
                 plt.figure()
-                plt.imshow(image_slit / self.PEAK, extent=slicer_extents)
+                plt.imshow(image_slit / self.PEAKs[wavelength], extent=slicer_extents)
                 self.plot_slicer_boundaries()
                 plt.xlim([-zoom_size, zoom_size])
                 plt.ylim([-zoom_size, zoom_size])
                 plt.colorbar()
                 plt.title('Exit Slit')
 
-                residual = (image_slit - self.nominal_PSF) / self.PEAK
+                residual = (image_slit - self.nominal_PSFs[wavelength]) / self.PEAKs[wavelength]
                 m_res = min(np.min(residual), -np.max(residual))
                 plt.figure()
                 plt.imshow(residual, extent=slicer_extents, cmap='bwr')
@@ -295,6 +340,10 @@ if __name__ == """__main__""":
             return complex_slicer, complex_mirror, image_slit
 
         def plot_slicer_boundaries(self):
+            """
+            Overlays the boundaries of each SLICE on the plots
+            :return:
+            """
 
             min_alpha, max_alpha = 0.15, 0.85
             half_slices = (self.N_slices - 1)//2
@@ -321,53 +370,53 @@ if __name__ == """__main__""":
 
     #___________________________________________________________________________________
     """ Impact of Pupil Mirror Aperture """
+
+    print("\n======================================================")
+    print("         Impact of Pupil Mirror Aperture ")
+    print("======================================================\n")
+
+
     apertures = [0.99, 0.95, 0.90, 0.80, 0.75]
 
     for aper in apertures:
         print("\n-------------------------------------------------------------")
-        print("Pupil Mirror Aperture: ", aper)
+        print("         Pupil Mirror Aperture: ", aper)
+        print("-------------------------------------------------------------\n")
         slicer_options = {"N_slices": 15, "spaxels_per_slice": 11, "pupil_mirror_aperture": aper}
         slicer = SlicerModel(slicer_options=slicer_options,N_PIX=N_PIX,
-                             spaxel_scale=0.5, N_waves=1, wave0=1.5, waveN=1.5)
-        _complex_slicer, _complex_mirror, image_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0)
-
+                             spaxel_scale=0.5, N_waves=2, wave0=1.5, waveN=2.0)
         slicer_size = slicer.N_PIX * slicer.spaxel_scale / 2
         slicer_extents = [-slicer_size, slicer_size, -slicer_size, slicer_size]
         zoom_size = slicer.N_slices * slicer.slice_size_mas / 2
 
-        # Pupil Mirror plane
-        central_slice = (slicer.N_slices - 1) // 2
-        pupil_mirror = _complex_mirror[central_slice]
-        pupil_image = (np.abs(pupil_mirror)) ** 2
-        plt.figure()
-        plt.imshow(np.log10(pupil_image), extent=[-1, 1, -1, 1])
-        plt.clim(vmin=-10)
-        plt.axhline(slicer.pupil_mirror_aperture, linestyle='--', color='white')
-        plt.axhline(-slicer.pupil_mirror_aperture, linestyle='--', color='white')
-        plt.title('Pupil Mirror [Central Slice] | Aperture: %.2f' % aper)
+        for wave in slicer.wave_range:
+            _complex_slicer, _complex_mirror, image_slit = slicer.propagate_one_wavelength(wavelength=wave, wavefront=0)
 
-        # plt.figure()
-        # plt.imshow(image_slit / slicer.PEAK, extent=slicer_extents)
-        # slicer.plot_slicer_boundaries()
-        # plt.xlim([-zoom_size, zoom_size])
-        # plt.ylim([-zoom_size, zoom_size])
-        # plt.colorbar()
-        # plt.xlabel('m.a.s')
-        # plt.ylabel('m.a.s')
-        # plt.title('Exit Slit')
+            # Pupil Mirror plane
+            central_slice = (slicer.N_slices - 1) // 2
+            pupil_mirror = _complex_mirror[central_slice]
+            pupil_image = (np.abs(pupil_mirror)) ** 2
+            plt.figure()
+            plt.imshow(np.log10(pupil_image), extent=[-1, 1, -1, 1])
+            plt.clim(vmin=-10)
+            plt.axhline(slicer.pupil_mirror_aperture, linestyle='--', color='white')
+            plt.axhline(-slicer.pupil_mirror_aperture, linestyle='--', color='white')
+            plt.title('Pupil Mirror [Central Slice] (%.2f microns) | Aperture: %.2f' % (wave, aper))
 
-        residual = (image_slit - slicer.nominal_PSF) / slicer.PEAK
-        m_res = min(np.min(residual), -np.max(residual))
-        plt.figure()
-        plt.imshow(residual, extent=slicer_extents, cmap='bwr')
-        plt.xlim([-zoom_size, zoom_size])
-        plt.ylim([-zoom_size, zoom_size])
-        slicer.plot_slicer_boundaries()
-        plt.colorbar()
-        plt.clim(m_res, -m_res)
-        plt.title('Exit Slit - No Slicer | Aperture: %.2f' % aper)
-        plt.xlabel(r'm.a.s')
-        plt.ylabel(r'm.a.s')
+            # Exit Slit
+            residual = (image_slit - slicer.nominal_PSFs[wave]) / slicer.PEAKs[wave]
+            m_res = min(np.min(residual), -np.max(residual))
+            plt.figure()
+            plt.imshow(residual, extent=slicer_extents, cmap='bwr')
+            plt.xlim([-zoom_size, zoom_size])
+            plt.ylim([-zoom_size, zoom_size])
+            slicer.plot_slicer_boundaries()
+            plt.colorbar()
+            plt.clim(m_res, -m_res)
+            plt.title('Exit Slit - No Slicer (%.2f microns) | Aperture: %.2f' % (wave, aper))
+            plt.xlabel(r'm.a.s')
+            plt.ylabel(r'm.a.s')
+
     plt.show()
 
 
@@ -407,13 +456,11 @@ if __name__ == """__main__""":
             """
             Computes the (Xc, Yc) coordinates of actuator centres
             inside a circle of rho_aper, assuming there are N_actuators
-            along the [-1, 1] line
+            along the line Diameter
 
-            :param N_actuators: Number of actuators along the [-1, 1] line
-            :param rho_aper: Relative size of the aperture wrt [-1, 1]
-            :param rho_obsc: Relative size of the obscuration
+            :param N_actuators: Number of actuators along the Diameter
             :param radial: if True, we add actuators at the boundaries RHO_APER, RHO_OBSC
-            :return: [act (list of actuator centres), delta (actuator separation)], max_freq (max spatial frequency we sense)
+            :return: [act (list of actuator centres), delta (actuator separation)]
             """
             wave_range = self.slicer_model.wave_range
             wave_ratios = self.slicer_model.waves_ratio
@@ -448,10 +495,21 @@ if __name__ == """__main__""":
             return centres
 
         def create_actuator_matrices(self, centres, h_centers):
+            """
+            Creates the a list of matrices at a range of Wavelengths useful for Wavefront calculations
+            [[Actuator_Matrices, Pupil_Masks, Actuator_Flats]_{wave_1}, ..., [ ]_{wave_N} ]
+
+            (1) Actuator Matrices is a [N_PIX, N_PIX, N_act] array representing the influence matrix of each actuator
+            i.e., each slice shows the effect of poking one actuator
+            (2) Pupil_Masks: the pupil mask at each wavelength (which varies in relative size)
+
+            :param centres:
+            :param h_centers:
+            :return:
+            """
 
             wave_ratios = self.slicer_model.waves_ratio
             alpha = 1 / np.sqrt(np.log(100 / h_centers))
-            # alpha = alpha_centers
 
             matrices = []
             for i, wave in enumerate(wave_ratios):
@@ -474,24 +532,38 @@ if __name__ == """__main__""":
 
             return matrices
 
-        def generate_PSF(self, N_PSF, scale, random=True):
+        def generate_PSF(self, coef):
+            """
+            Using the SLICER MODEL, it propagates a set of wavefronts up to the EXIT SLIT
+            to model the effects of Image Slicers on the PSF
+            """
 
             print("\nGenerating %d PSF images" % N_PSF)
 
-            coef = scale * np.random.uniform(low=-1, high=1, size=(N_PSF, self.N_act))
-            PSF_images = []
+
+            PSF_slicer, PSF_no_slicer = [], []
             for i in range(N_PSF):
                 print(i)
-                PSF_waves = []      # length is Number of Wavelengths
+                PSF_slicer_waves, PSF_no_slicer_waves = [], []     # length is Number of Wavelengths
+
                 for j, wave in enumerate(self.slicer_model.wave_range):
+                    # With Slicer
                     pupil = self.pupil_masks[j]
                     wavefront = pupil * np.dot(self.actuator_matrices[j], coef[i])
                     _slicer, _mirror, slit = self.slicer_model.propagate_one_wavelength(wave, wavefront, plot=False)
-                    PSF_waves.append(slit)
-                PSF_images.append(PSF_waves)
-            return np.array(PSF_images), coef
+                    crop_slit = crop_array(slit, self.slicer_model.N_slices * self.slicer_model.spaxels_per_slice)
+                    PSF_slicer_waves.append(crop_slit / self.slicer_model.PEAKs[wave])
 
+                    # Without Slicer
+                    pupil_complex = pupil * np.exp(1j * 2 * np.pi * wavefront / wave)
+                    image_ = (np.abs(fftshift(fft2(pupil_complex, norm='ortho'))))**2
+                    image = crop_array(image_, self.slicer_model.N_slices * self.slicer_model.spaxels_per_slice)
+                    PSF_no_slicer_waves.append(image / self.slicer_model.PEAKs[wave])
 
+                PSF_slicer.append(PSF_slicer_waves)
+                PSF_no_slicer.append(PSF_no_slicer_waves)
+
+            return np.array(PSF_slicer), np.array(PSF_no_slicer)
 
     slicer_options = {"N_slices": 15, "spaxels_per_slice": 11, "pupil_mirror_aperture": 0.95}
     N_PIX = 2048
@@ -502,7 +574,16 @@ if __name__ == """__main__""":
     N_act = 8
     h_centres = 20
     PSF_generator = SlicerPSFCalculator(slicer_model=slicer, N_actuators=N_act, radial=True, h_centers=h_centres)
-    images = PSF_generator.generate_PSF(N_PSF=3, scale=1.5)
+    N_PSF = 1
+    scale = 0.35
+    coef = scale * np.random.uniform(low=-1, high=1, size=(N_PSF, PSF_generator.N_act))
+    images_slicer, images_no_slicer = PSF_generator.generate_PSF(coef)
+
+    for i, wave in enumerate(slicer.wave_range):
+        plt.figure()
+        plt.imshow(images_slicer[0, i] - images_no_slicer[0, i])
+        plt.colorbar()
+    plt.show()
 
     #___________________________________________________________________________________
 
