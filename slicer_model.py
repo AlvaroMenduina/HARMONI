@@ -465,10 +465,9 @@ class SlicerPSFCalculator(object):
 
         print("\nGenerating %d PSF images" % N_PSF)
 
-
         PSF_slicer, PSF_no_slicer = [], []
         for i in range(N_PSF):
-            print(i)
+            print("     PSF #%d" % (i+1))
             PSF_slicer_waves, PSF_no_slicer_waves = [], []     # length is Number of Wavelengths
 
             for j, wave in enumerate(self.slicer_model.wave_range):
@@ -487,6 +486,7 @@ class SlicerPSFCalculator(object):
 
             PSF_slicer.append(PSF_slicer_waves)
             PSF_no_slicer.append(PSF_no_slicer_waves)
+            print("_______________________________________________________")
 
         return np.array(PSF_slicer), np.array(PSF_no_slicer)
 
@@ -651,19 +651,72 @@ if __name__ == """__main__""":
 
     plt.show()
 
+    # ================================================================================================================ #
+    #              Example of how to generate PSF images with Slicer Effects                                           #
+    # ================================================================================================================ #
 
-    N_act = 8
-    h_centres = 20
+    print("\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++")
+    print("+-+            How to generate PSF images with Slicer Effects")
+    print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n")
+    """ (1) Create a Slicer Model """
+    pup_mirr_aper = 0.70
+    scale_mas = 0.5
+    slicer_options = {"N_slices": 15, "spaxels_per_slice": 7, "pupil_mirror_aperture": pup_mirr_aper}
+    slicer = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
+                         spaxel_scale=scale_mas, N_waves=2, wave0=1.5, waveN=2.0)
+    print("++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n")
+
+    """ (2) Create a PSF Calculator based on the Slicer Model """
+    # Number of Actuators in the Diameter, height of Gaussian profile at neighbour actuator [%]
+    N_act, h_centres = 8, 20
     PSF_generator = SlicerPSFCalculator(slicer_model=slicer, N_actuators=N_act, radial=True, h_centers=h_centres)
     N_PSF = 1
-    scale = 0.35
+    scale = 0.35        # Scale of the actuator commands
     coef = scale * np.random.uniform(low=-1, high=1, size=(N_PSF, PSF_generator.N_act))
     images_slicer, images_no_slicer = PSF_generator.generate_PSF(coef)
 
+    slicer_size = slicer.N_PIX * slicer.spaxel_scale / 2
+    slicer_extents = [-slicer_size, slicer_size, -slicer_size, slicer_size]
+
+    j_image = 0
     for i, wave in enumerate(slicer.wave_range):
+
+
+        PSF_slicer = images_slicer[j_image, i]
+        PSF_no_slicer = images_no_slicer[j_image, i]
+        diff = PSF_slicer - PSF_no_slicer
+        m_diff = min(np.min(diff), -np.max(diff))
+
         plt.figure()
-        plt.imshow(images_slicer[0, i] - images_no_slicer[0, i])
-        plt.colorbar()
+        ax1 = plt.subplot(1, 3, 1)
+        im1 = ax1.imshow(PSF_slicer)
+        # im1.set_clim(vmin=-10)
+        # ax1.set_xlim([-zoom_size, zoom_size])
+        # ax1.set_ylim([-zoom_size, zoom_size])
+        # slicer.plot_slicer_boundaries()
+        # ax1.set_title('Slicer (%.2f microns) | Slice Width: %.2f FWHM' % (wave, FWHM_ratio))
+        plt.colorbar(im1, ax=ax1, orientation='horizontal')
+
+        ax2 = plt.subplot(1, 3, 2)
+        im2 = ax2.imshow(PSF_no_slicer)
+        # im2.set_clim(vmin=-10)
+        # ax2.set_xlim([-zoom_size, zoom_size])
+        # ax2.set_ylim([-zoom_size, zoom_size])
+        # slicer.plot_slicer_boundaries()
+        # ax2.set_title('Pupil Mirror [Central Slice] (%.2f microns)' % (wave))
+        plt.colorbar(im2, ax=ax2, orientation='horizontal')
+
+        ax3 = plt.subplot(1, 3, 3)
+        im3 = ax3.imshow(diff, extent=slicer_extents, cmap='bwr')
+        # im3.set_clim(m_diff, -m_diff)
+        # ax3.set_xlim([-zoom_size, zoom_size])
+        # ax3.set_ylim([-zoom_size, zoom_size])
+        # ax3.set_xlabel(r'm.a.s')
+        # ax3.set_ylabel(r'm.a.s')
+        # slicer.plot_slicer_boundaries()
+        plt.colorbar(im3, ax=ax3, orientation='horizontal')
+        # ax3.set_title('Exit Slit - No Slicer (%.2f microns)' % (wave))
+
     plt.show()
 
     #___________________________________________________________________________________
