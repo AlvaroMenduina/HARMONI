@@ -502,31 +502,32 @@ if __name__ == """__main__""":
     _rho = rho_spaxel_scale(spaxel_scale=spaxels, wavelength=nom_wave)
     check_spaxel_scale(rho_aper=_rho, wavelength=nom_wave)
 
-
-
+    # ================================================================================================================ #
+    #                           Example of how to create an Image Slicer model                                         #
+    # ================================================================================================================ #
 
     slicer_options = {"N_slices": 15, "spaxels_per_slice": 11, "pupil_mirror_aperture": 0.95}
     N_PIX = 2048
+    spaxel_mas = 0.5        # to get a decent resolution
 
-    slicer = SlicerModel(slicer_options=slicer_options,
-                         N_PIX=N_PIX, spaxel_scale=0.5, N_waves=1, wave0=1.5, waveN=1.5)
+    slicer = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
+                         spaxel_scale=spaxel_mas, N_waves=3, wave0=1.5, waveN=2.5)
     for wave in slicer.wave_range:
         plt.figure()
         plt.imshow(slicer.pupil_masks[wave])
         plt.title('Pupil Mask at %.2f microns' % wave)
     plt.show()
 
-    slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=True)
+    complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=True)
     plt.show()
 
-
-    #___________________________________________________________________________________
-    """ Impact of Pupil Mirror Aperture """
+    # ================================================================================================================ #
+    #                                    Impact of the PUPIL MIRROR APERTURE                                           #
+    # ================================================================================================================ #
 
     print("\n======================================================")
     print("         Impact of Pupil Mirror Aperture ")
     print("======================================================\n")
-
 
     apertures = [0.99, 0.95, 0.90, 0.80, 0.75]
 
@@ -548,35 +549,108 @@ if __name__ == """__main__""":
             central_slice = (slicer.N_slices - 1) // 2
             pupil_mirror = _complex_mirror[central_slice]
             pupil_image = (np.abs(pupil_mirror)) ** 2
-            plt.figure()
-            plt.imshow(np.log10(pupil_image), extent=[-1, 1, -1, 1])
-            plt.clim(vmin=-10)
-            plt.axhline(slicer.pupil_mirror_aperture, linestyle='--', color='white')
-            plt.axhline(-slicer.pupil_mirror_aperture, linestyle='--', color='white')
-            plt.title('Pupil Mirror [Central Slice] (%.2f microns) | Aperture: %.2f' % (wave, aper))
 
             # Exit Slit
             residual = (image_slit - slicer.nominal_PSFs[wave]) / slicer.PEAKs[wave]
             m_res = min(np.min(residual), -np.max(residual))
+
             plt.figure()
-            plt.imshow(residual, extent=slicer_extents, cmap='bwr')
-            plt.xlim([-zoom_size, zoom_size])
-            plt.ylim([-zoom_size, zoom_size])
+            ax1 = plt.subplot(1, 2, 1)
+            im1 = ax1.imshow(np.log10(pupil_image), extent=[-1, 1, -1, 1])
+            im1.set_clim(vmin=-10)
+            ax1.axhline(slicer.pupil_mirror_aperture, linestyle='--', color='white')
+            ax1.axhline(-slicer.pupil_mirror_aperture, linestyle='--', color='white')
+            ax1.set_title('Pupil Mirror [Central Slice] (%.2f microns) | Aperture: %.2f' % (wave, aper))
+            plt.colorbar(im1, ax=ax1, orientation='horizontal')
+
+            ax2 = plt.subplot(1, 2, 2)
+            im2 = ax2.imshow(residual, extent=slicer_extents, cmap='bwr')
+            im2.set_clim(m_res, -m_res)
+            ax2.set_xlim([-zoom_size, zoom_size])
+            ax2.set_ylim([-zoom_size, zoom_size])
+            ax2.set_xlabel(r'm.a.s')
+            ax2.set_ylabel(r'm.a.s')
             slicer.plot_slicer_boundaries()
-            plt.colorbar()
-            plt.clim(m_res, -m_res)
-            plt.title('Exit Slit - No Slicer (%.2f microns) | Aperture: %.2f' % (wave, aper))
-            plt.xlabel(r'm.a.s')
-            plt.ylabel(r'm.a.s')
+            plt.colorbar(im2, ax=ax2, orientation='horizontal')
+            ax2.set_title('Exit Slit - No Slicer (%.2f microns) | Aperture: %.2f' % (wave, aper))
 
     plt.show()
 
+    # ================================================================================================================ #
+    #                                            Impact of the SLICE size                                              #
+    # ================================================================================================================ #
 
-    slicer_options = {"N_slices": 15, "spaxels_per_slice": 11, "pupil_mirror_aperture": 0.95}
-    N_PIX = 2048
+    print("\n======================================================")
+    print("         Impact of Slice size     ")
+    print("======================================================\n")
 
-    slicer = SlicerModel(slicer_options=slicer_options,
-                         N_PIX=N_PIX, spaxel_scale=0.5, N_waves=2, wave0=1.5, waveN=2.0)
+    slice_sizes = [7, 11, 15, 19]           # in spaxels of 0.5 mas each
+    scale_mas = 0.5
+    fwhm_ratios = []
+    pup_mirr_aper = 0.90
+
+    for slice_size in slice_sizes:
+
+        slicer_options = {"N_slices": 15, "spaxels_per_slice": slice_size, "pupil_mirror_aperture": pup_mirr_aper}
+        slicer = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
+                             spaxel_scale=scale_mas, N_waves=2, wave0=1.5, waveN=2.0)
+        FWHM_ratio = slicer.FWHM_ratio
+        fwhm_ratios.append(FWHM_ratio)
+        print("\n-----------------------------------------------------------------------------------------")
+        print("Slice Size: %d spaxels | %.2f of the FWHM @1.5 microns" % (slice_size, FWHM_ratio))
+        print("-----------------------------------------------------------------------------------------\n")
+        slicer_size = slicer.N_PIX * slicer.spaxel_scale / 2
+        slicer_extents = [-slicer_size, slicer_size, -slicer_size, slicer_size]
+        zoom_size = slicer.N_slices * slicer.slice_size_mas / 2
+
+
+        for wave in slicer.wave_range:
+            _complex_slicer, _complex_mirror, image_slit = slicer.propagate_one_wavelength(wavelength=wave, wavefront=0)
+
+            central_slice = (slicer.N_slices - 1) // 2
+
+            # Image Slicer
+            slice_image = (np.abs(_complex_slicer)) ** 2
+
+            # Pupil Mirror plane
+            pupil_mirror = _complex_mirror[central_slice]
+            pupil_image = (np.abs(pupil_mirror)) ** 2
+
+            # Exit Slit
+            residual = (image_slit - slicer.nominal_PSFs[wave]) / slicer.PEAKs[wave]
+            m_res = min(np.min(residual), -np.max(residual))
+
+            plt.figure()
+            ax1 = plt.subplot(1, 3, 1)
+            im1 = ax1.imshow(np.log10(slice_image), extent=slicer_extents)
+            im1.set_clim(vmin=-10)
+            ax1.set_xlim([-zoom_size, zoom_size])
+            ax1.set_ylim([-zoom_size, zoom_size])
+            slicer.plot_slicer_boundaries()
+            ax1.set_title('Slicer (%.2f microns) | Slice Width: %.2f FWHM' % (wave, FWHM_ratio))
+            plt.colorbar(im1, ax=ax1, orientation='horizontal')
+
+            ax2 = plt.subplot(1, 3, 2)
+            im2 = ax2.imshow(np.log10(pupil_image), extent=[-1, 1, -1, 1])
+            im2.set_clim(vmin=-10)
+            ax2.axhline(slicer.pupil_mirror_aperture, linestyle='--', color='white')
+            ax2.axhline(-slicer.pupil_mirror_aperture, linestyle='--', color='white')
+            ax2.set_title('Pupil Mirror [Central Slice] (%.2f microns)' % (wave))
+            plt.colorbar(im2, ax=ax2, orientation='horizontal')
+
+            ax3 = plt.subplot(1, 3, 3)
+            im3 = ax3.imshow(residual, extent=slicer_extents, cmap='bwr')
+            im3.set_clim(m_res, -m_res)
+            ax3.set_xlim([-zoom_size, zoom_size])
+            ax3.set_ylim([-zoom_size, zoom_size])
+            ax3.set_xlabel(r'm.a.s')
+            ax3.set_ylabel(r'm.a.s')
+            slicer.plot_slicer_boundaries()
+            plt.colorbar(im3, ax=ax3, orientation='horizontal')
+            ax3.set_title('Exit Slit - No Slicer (%.2f microns)' % (wave))
+
+    plt.show()
+
 
     N_act = 8
     h_centres = 20
