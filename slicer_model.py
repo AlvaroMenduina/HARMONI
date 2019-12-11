@@ -10,17 +10,56 @@ import numpy as np
 from numpy.fft import fft2, fftshift, ifft2
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
+from time import time
+import numba
+from numba import jit
+
+import pycuda.autoinit
+import pycuda.gpuarray as gpuarray
+from pycuda.elementwise import ElementwiseKernel
+import skcuda.linalg as clinalg
+import skcuda.fft as cu_fft
 
 # SPAXEL SCALE
 ELT_DIAM = 39
-CENTRAL_OBS = 0.30                  # Central obscuration is ~30% of the diameter
+CENTRAL_OBS = 0.30                  # Central obscuration is ~30% of the diameter for the ELT
 MILIARCSECS_IN_A_RAD = 206265000
 
-def crop_array(array, crop=25):
-    PIX = array.shape[0]
-    min_crop = PIX // 2 - crop // 2
-    max_crop = PIX // 2 + crop // 2
-    array_crop = array[min_crop:max_crop, min_crop:max_crop]
+
+def crop_array(array, crop):
+    """
+    Crops an array or datacube for various cases of shapes to a smaller dimesion
+    Typically used to zoom in for the PSF arrays
+    :param array: can be [Pix, Pix] or [:, Pix, Pix] or [:, Pix, Pix, :]
+    :param crop:
+    :return:
+    """
+    shape = array.shape
+
+    if len(shape) == 2:         # Classic [Pix, Pix] array
+        PIX = array.shape[0]
+        if crop > PIX:
+            raise ValueError("Array is only %d x %d pixels. Trying to crop to %d x %d" % (PIX, PIX, crop, crop))
+        min_crop = (PIX + 1 - crop) // 2
+        max_crop = (PIX + 1 + crop) // 2
+        array_crop = array[min_crop:max_crop, min_crop:max_crop]
+
+    if len(shape) == 3:         # [N_PSF, Pix, Pix] array
+        N_PSF, PIX = array.shape[0], array.shape[1]
+        if crop > PIX:
+            raise ValueError("Array is only %d x %d pixels. Trying to crop to %d x %d" % (PIX, PIX, crop, crop))
+        min_crop = (PIX + 1 - crop) // 2
+        max_crop = (PIX + 1 + crop) // 2
+        array_crop = array[:, min_crop:max_crop, min_crop:max_crop]
+
+    if len(shape) == 4:         # [N_PSF, Pix, Pix, N_channels] array
+        N_PSF, PIX = array.shape[0], array.shape[1]
+        if crop > PIX:
+            raise ValueError("Array is only %d x %d pixels. Trying to crop to %d x %d" % (PIX, PIX, crop, crop))
+        min_crop = (PIX + 1 - crop) // 2
+        max_crop = (PIX + 1 + crop) // 2
+        array_crop = array[:, min_crop:max_crop, min_crop:max_crop, :]
+
     return array_crop
 
 
@@ -42,6 +81,7 @@ def rho_spaxel_scale(spaxel_scale=4, wavelength=1.5):
     rho = scale_rad * ELT_DIAM / (wavelength * 1e-6)
     return rho
 
+
 def check_spaxel_scale(rho_aper, wavelength):
     """
     Checks the spaxel scale at a certain wavelength, for a given aperture radius
@@ -55,6 +95,7 @@ def check_spaxel_scale(rho_aper, wavelength):
     SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
     print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wavelength))
 
+
 def compute_FWHM(wavelength):
     """
     Compute the Full Width Half Maximum of the PSF at a given Wavelength
@@ -66,6 +107,21 @@ def compute_FWHM(wavelength):
     FWHM_MAS = FWHM_RAD * MILIARCSECS_IN_A_RAD
     return FWHM_MAS
 
+@jit(nopython=True)
+def fft_lightning(pupil_mask, wavefront, wavelength, slicer_masks_fftshift, pupil_mirror_mask):
+    complex_pupil = pupil_mask * np.exp(1j * 2 * np.pi * wavefront / wavelength)
+    complex_slicer = (np.fft.fft2(complex_pupil))
+    masked_complex_slicer = complex_slicer * np.array(slicer_masks_fftshift)
+    complex_mirrors = np.fft.ifft2(masked_complex_slicer, axes=(1, 2))
+    masked_mirrors = pupil_mirror_mask * complex_mirrors
+    complex_slit = np.fft.fftshift(np.fft.fft2(masked_mirrors, axes=(1, 2)))
+    image = np.sum((np.abs(complex_slit)) ** 2, axis=0)
+    return image
+
+add = ElementwiseKernel(
+        "float *a, float *b, float *c",
+        "c[i] = a[i] + b[i]",
+"add")
 
 class SlicerModel(object):
     """
@@ -132,7 +188,7 @@ class SlicerModel(object):
         # check_spaxel_scale(rho_aper=rho_aper, wavelength=wave0)
         rho_obsc = CENTRAL_OBS * rho_aper
 
-        self.pupil_masks = {}
+        self.pupil_masks, self.pupil_masks_fft = {}, {}
         x0 = np.linspace(-1., 1., self.N_PIX, endpoint=True)
         xx, yy = np.meshgrid(x0, x0)
         rho = np.sqrt(xx ** 2 + yy ** 2)
@@ -141,7 +197,9 @@ class SlicerModel(object):
             wavelength = self.wave_range[i]
             print("Wavelength: %.2f microns" % wavelength)
             pupil = (rho <= rho_aper / wave) & (rho >= rho_obsc / wave)
-            self.pupil_masks[wavelength] = pupil
+            mask = np.array(pupil).astype(np.float64)
+            self.pupil_masks[wavelength] = mask
+            self.pupil_masks_fft[wavelength] = np.stack(mask * self.N_slices)
         return
 
     def create_slicer_masks(self):
@@ -158,6 +216,7 @@ class SlicerModel(object):
 
         slice_width = self.slice_size_mas
         self.slicer_masks, self.slice_boundaries = [], []
+        self.slicer_masks_fftshift = []
         #TODO: what if N_slices is not odd??
         N_slices_above = (self.N_slices - 1) // 2
         lower_centre = -N_slices_above * slice_width
@@ -171,6 +230,8 @@ class SlicerModel(object):
             # plt.figure()
             # plt.imshow(mask)
             self.slicer_masks.append(mask)
+            self.slicer_masks_fftshift.append(fftshift(mask))
+        self.slicer_masks_fftshift = np.array(self.slicer_masks_fftshift).astype(np.float64)
         # np.sum(np.stack(self.slicer_masks), axis=0)
         return
 
@@ -185,7 +246,9 @@ class SlicerModel(object):
 
         x0 = np.linspace(-1., 1., self.N_PIX, endpoint=True)
         xx, yy = np.meshgrid(x0, x0)
-        self.pupil_mirror_mask = np.abs(yy) <= aperture
+        pupil_mirror_mask = np.abs(yy) <= aperture
+        self.pupil_mirror_mask = np.array(pupil_mirror_mask).astype(np.float64)
+        self.pupil_mirror_masks_fft = np.stack([self.pupil_mirror_mask]*self.N_slices)
         return
 
     def propagate_pupil_to_slicer(self, wavelength, wavefront):
@@ -198,7 +261,7 @@ class SlicerModel(object):
         :return: complex electric field at the slicer
         """
 
-        print("Pupil Plane -> Image Slicer Plane")
+        # print("Pupil Plane -> Image Slicer Plane")
 
         pupil_mask = self.pupil_masks[wavelength]
         # wavefront = pupil_mask
@@ -217,17 +280,15 @@ class SlicerModel(object):
         :return:
         """
 
-        print("Image Slicer Plane -> Pupil Mirror Plane")
+        # print("Image Slicer Plane -> Pupil Mirror Plane")
         complex_mirror = []
         for i_slice in range(self.N_slices):        # Loop over the Slices
             mask = self.slicer_masks[i_slice]
             masked_complex_slicer = mask * complex_slicer
             # Pre FFT-Shift to put it back to the format the FFT uses
             _shifted = fftshift(masked_complex_slicer)
-
             # propagate to Pupil Mirror plane
-            complex_pupil_mirror = ifft2(_shifted, norm='ortho')
-            complex_mirror.append(complex_pupil_mirror)
+            complex_mirror.append(ifft2(_shifted, norm='ortho'))
         return complex_mirror
 
     def propagate_pupil_mirror_to_exit_slit(self, complex_mirror):
@@ -237,16 +298,72 @@ class SlicerModel(object):
         :param complex_mirror: complex electric field at the PUPIL MIRROR plane [a list of slices]
         """
 
-        print("Pupil Mirror Plane -> Exit Slits")
+        # print("Pupil Mirror Plane -> Exit Slits")
         exit_slits = []
         for c_mirror in complex_mirror:
             masked_mirror = self.pupil_mirror_mask * c_mirror
-            complex_slit = fftshift(fft2(masked_mirror , norm='ortho'))
-            image_slit = (np.abs(complex_slit))**2
-            exit_slits.append(image_slit)
+            complex_slit = fftshift(fft2(masked_mirror, norm='ortho'))
+            exit_slits.append((np.abs(complex_slit))**2)
         image = np.sum(np.stack(exit_slits), axis=0)
 
         return exit_slits, image
+
+    def propagate_eager(self, wavelength, wavefront):
+        """
+
+        :param wavelength:
+        :param wavefront:
+        :return:
+        """
+
+        N = self.N_PIX
+
+        # Pupil Plane -> Image Slicer
+        complex_pupil = self.pupil_masks[wavelength] * np.exp(1j * 2 * np.pi * self.pupil_masks[wavelength] / wavelength)
+        complex_pupil_gpu = gpuarray.to_gpu(np.asarray(complex_pupil, np.complex64))
+        plan = cu_fft.Plan(complex_pupil_gpu.shape, np.complex64, np.complex64)
+        cu_fft.fft(complex_pupil_gpu, complex_pupil_gpu, plan)
+
+        # Add N_slices copies to be Masked
+        complex_slicer_cpu = complex_pupil_gpu.get()
+        complex_slicer_cpu = np.stack([complex_slicer_cpu]*self.N_slices)
+        complex_slicer_gpu = gpuarray.to_gpu(complex_slicer_cpu)
+        # slicer_masks = np.array(self.slicer_masks_fftshift).astype(np.float64)
+        slicer_masks_gpu = gpuarray.to_gpu(self.slicer_masks_fftshift)
+        clinalg.multiply(slicer_masks_gpu, complex_slicer_gpu, overwrite=True)
+
+       # Slicer -> Pupil Mirror
+        plan = cu_fft.Plan((N, N), np.complex64, np.complex64, self.N_slices)
+        cu_fft.ifft(complex_slicer_gpu, complex_slicer_gpu, plan, True)
+        mirror_mask_gpu = gpuarray.to_gpu(self.pupil_mirror_masks_fft)
+        clinalg.multiply(mirror_mask_gpu, complex_slicer_gpu, overwrite=True)
+
+        # Pupil Mirror -> Slits
+        cu_fft.fft(complex_slicer_gpu, complex_slicer_gpu, plan)
+        slit = complex_slicer_gpu.get()
+
+        return slit
+
+
+
+        # print("\nPropagating Wavelength: %.2f microns" % wavelength)
+        # complex_pupil = self.pupil_masks[wavelength] * np.exp(1j * 2*np.pi * wavefront / wavelength)
+        # complex_slicer = (fft2(complex_pupil, norm='ortho'))
+        # masked_complex_slicer = complex_slicer * np.array(self.slicer_masks_fftshift)
+        # complex_mirrors = ifft2(masked_complex_slicer, axes=(1, 2), norm='ortho')
+        # masked_mirrors = self.pupil_mirror_mask * complex_mirrors
+        # complex_slit = fftshift(fft2(masked_mirrors, axes=(1, 2), norm='ortho'))
+        # image = np.sum((np.abs(complex_slit))**2, axis=0)
+        # print(complex_mirrors.shape)
+
+        # exit_slits = []
+        # for i_slice in range(self.N_slices):        # Loop over the Slices
+        #     masked_complex_slicer = self.slicer_masks[i_slice] * complex_slicer
+        #     complex_mirror = ifft2(masked_complex_slicer, norm='ortho')
+        #     complex_slit = fftshift(fft2(self.pupil_mirror_mask * complex_mirror, norm='ortho'))
+        #     exit_slits.append((np.abs(complex_slit))**2)
+        # image = np.sum(np.stack(exit_slits), axis=0)
+        # return slit
 
     def propagate_one_wavelength(self, wavelength, wavefront, plot=False):
         """
@@ -254,6 +371,7 @@ class SlicerModel(object):
         :param wavelength:
         :param wavefront:
         """
+
         print("\nPropagating Wavelength: %.2f microns" % wavelength)
         complex_slicer = slicer.propagate_pupil_to_slicer(wavelength=wavelength, wavefront=wavefront)
         complex_mirror = slicer.propagate_slicer_to_pupil_mirror(complex_slicer)
@@ -512,13 +630,26 @@ if __name__ == """__main__""":
 
     slicer = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
                          spaxel_scale=spaxel_mas, N_waves=3, wave0=1.5, waveN=2.5)
-    for wave in slicer.wave_range:
-        plt.figure()
-        plt.imshow(slicer.pupil_masks[wave])
-        plt.title('Pupil Mask at %.2f microns' % wave)
+    # for wave in slicer.wave_range:
+    #     plt.figure()
+    #     plt.imshow(slicer.pupil_masks[wave])
+    #     plt.title('Pupil Mask at %.2f microns' % wave)
+    # plt.show()
+
+    start = time()
+    # complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=True)
+    exit_slit = slicer.propagate_eager(wavelength=1.5, wavefront=0)
+    end = time()
+    one_wave_time = end - start
+
+    print("Time to propagate 1 wavelength: %.2f seconds" % one_wave_time)
+    print("Time to propagate 1 slice: %.2f seconds" % (one_wave_time / slicer.N_slices))
     plt.show()
 
-    complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=True)
+    for i in range(15):
+        plt.figure()
+        plt.imshow(fftshift(np.abs(exit_slit[i]))**2)
+        plt.colorbar()
     plt.show()
 
     # ================================================================================================================ #
