@@ -185,7 +185,7 @@ class SlicerModel(object):
             pupil = (rho <= rho_aper / wave) & (rho >= rho_obsc / wave)
             mask = np.array(pupil).astype(np.float32)
             self.pupil_masks[wavelength] = mask
-            self.pupil_masks_fft[wavelength] = np.stack(mask * self.N_slices)
+            self.pupil_masks_fft[wavelength] = np.stack(mask * self.N_slices)       # For the GPU calculations
         return
 
     def create_slicer_masks(self):
@@ -213,12 +213,11 @@ class SlicerModel(object):
             up_mask = vv > (centre - slice_width/2)
             low_mask = vv < (centre + slice_width/2)
             mask = up_mask * low_mask
-            # plt.figure()
-            # plt.imshow(mask)
+
             self.slicer_masks.append(mask)
-            self.slicer_masks_fftshift.append(fftshift(mask))
+            self.slicer_masks_fftshift.append(fftshift(mask))           # For the GPU calculations
         self.slicer_masks_fftshift = np.array(self.slicer_masks_fftshift).astype(np.float32)
-        # np.sum(np.stack(self.slicer_masks), axis=0)
+
         return
 
     def create_pupil_mirror_apertures(self, aperture):
@@ -296,28 +295,33 @@ class SlicerModel(object):
 
     def propagate_gpu_wavelength(self, wavelength, wavefront, N):
         """
+        Propagation from Pupil Plane to Exit Slit on the GPU for a single wavelength
 
+        Repeated N times to show how it runs much faster on the GPU when we want to compute
+        many PSF images
         :param wavefront:
         :return:
         """
-
+        # It is a pain in the ass to handle the memory properly on the GPU when you have [N_slices, N_pix, N_pix]
+        # arrays
+        print("\nPropagating on the GPU")
         # GPU memory management
         free, total = cuda.mem_get_info()
-        # print("Memory Start | Free: %.2f percent" %(free/total*100))
+        print("Memory Start | Free: %.2f percent" % (free/total*100))
         slicer_masks_gpu = gpuarray.to_gpu(self.slicer_masks_fftshift)
         mirror_mask_gpu = gpuarray.to_gpu(self.pupil_mirror_masks_fft)
 
         plan_batch = cu_fft.Plan((self.N_PIX, self.N_PIX), np.complex64, np.complex64, self.N_slices)
 
+        # Allocate GPU arrays that will be overwritten with skcuda.misc.set_realloc to save memory
         _pupil = np.zeros((self.N_PIX, self.N_PIX), dtype=np.complex64)
         complex_pupil_gpu = gpuarray.to_gpu(_pupil)
 
         _slicer = np.zeros((self.N_slices, self.N_PIX, self.N_PIX), dtype=np.complex64)
         complex_slicer_gpu = gpuarray.to_gpu(_slicer)
 
-        slits = []
+        PSF_images = []
         for i in range(N):
-
 
             # Pupil Plane -> Image Slicer
             pupil_mask = self.pupil_masks[wavelength]
@@ -329,21 +333,22 @@ class SlicerModel(object):
             complex_slicer_cpu = complex_pupil_gpu.get()
             complex_slicer_cpu = np.stack([complex_slicer_cpu] * self.N_slices)
             skcuda.misc.set_realloc(complex_slicer_gpu, complex_slicer_cpu)
-
             clinalg.multiply(slicer_masks_gpu, complex_slicer_gpu, overwrite=True)
 
+            # Image Slicer -> Pupil Mirror
             cu_fft.ifft(complex_slicer_gpu, complex_slicer_gpu, plan_batch, True)
             clinalg.multiply(mirror_mask_gpu, complex_slicer_gpu, overwrite=True)
 
-            # Pupil Mirror -> Slits
+            # Pupil Mirror -> Exit Slits
             cu_fft.fft(complex_slicer_gpu, complex_slicer_gpu, plan_batch)
             _slits = complex_slicer_gpu.get()
-            _slits = np.sum(((_slits))**2, axis=0)
-            slits.append(_slits)
+            slits = np.sum((np.abs(_slits))**2, axis=0)
+            PSF_images.append(slits)
 
-            free, total = cuda.mem_get_info()
-            print("Memory End | Free: %.2f percent" %(free/total*100))
+            # free, total = cuda.mem_get_info()
+            # print("Memory End | Free: %.2f percent" % (free/total*100))
 
+        # Make sure you clean up the memory so that it doesn't blow up!!
         complex_pupil_gpu.gpudata.free()
         complex_slicer_gpu.gpudata.free()
         slicer_masks_gpu.gpudata.free()
@@ -351,11 +356,12 @@ class SlicerModel(object):
         free, total = cuda.mem_get_info()
         print("Memory Final | Free: %.2f percent" % (free / total * 100))
 
-        return fftshift(np.array(slits), axes=(1, 2))
+        return fftshift(np.array(PSF_images), axes=(1, 2))
 
     def propagate_eager(self, wavelength, wavefront):
         """
-
+        'Not-Too-Good' version of the propagation on the GPU (lots of Memory issues...)
+        Remove in the future
         :param wavelength:
         :param wavefront:
         :return:
@@ -404,27 +410,6 @@ class SlicerModel(object):
         print("***Free: %.2f percent" % (free / total * 100))
 
         return slit
-
-
-
-        # print("\nPropagating Wavelength: %.2f microns" % wavelength)
-        # complex_pupil = self.pupil_masks[wavelength] * np.exp(1j * 2*np.pi * wavefront / wavelength)
-        # complex_slicer = (fft2(complex_pupil, norm='ortho'))
-        # masked_complex_slicer = complex_slicer * np.array(self.slicer_masks_fftshift)
-        # complex_mirrors = ifft2(masked_complex_slicer, axes=(1, 2), norm='ortho')
-        # masked_mirrors = self.pupil_mirror_mask * complex_mirrors
-        # complex_slit = fftshift(fft2(masked_mirrors, axes=(1, 2), norm='ortho'))
-        # image = np.sum((np.abs(complex_slit))**2, axis=0)
-        # print(complex_mirrors.shape)
-
-        # exit_slits = []
-        # for i_slice in range(self.N_slices):        # Loop over the Slices
-        #     masked_complex_slicer = self.slicer_masks[i_slice] * complex_slicer
-        #     complex_mirror = ifft2(masked_complex_slicer, norm='ortho')
-        #     complex_slit = fftshift(fft2(self.pupil_mirror_mask * complex_mirror, norm='ortho'))
-        #     exit_slits.append((np.abs(complex_slit))**2)
-        # image = np.sum(np.stack(exit_slits), axis=0)
-        # return slit
 
     def propagate_one_wavelength(self, wavelength, wavefront, plot=False):
         """
@@ -685,98 +670,50 @@ if __name__ == """__main__""":
     #                           Example of how to create an Image Slicer model                                         #
     # ================================================================================================================ #
 
-    slicer_options = {"N_slices": 21, "spaxels_per_slice": 11, "pupil_mirror_aperture": 0.95}
-    N_PIX = 2048
-    spaxel_mas = 0.5        # to get a decent resolution
-
-    slicer = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
-                         spaxel_scale=spaxel_mas, N_waves=1, wave0=1.5, waveN=2.5)
     # for wave in slicer.wave_range:
     #     plt.figure()
     #     plt.imshow(slicer.pupil_masks[wave])
     #     plt.title('Pupil Mask at %.2f microns' % wave)
     # plt.show()
 
-    N_PSF = 5
-    start = time()
-    for i in range(N_PSF):
-        # for wave in slicer.wave_range:
-        complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=False)
-    # exit_slit = slicer.propagate_eager(wavelength=1.5, wavefront=0)
-    end = time()
-    waves_time = end - start
+    # ================================================================================================================ #
+    #                                      Speed Comparison on the GPU                                            #
+    # ================================================================================================================ #
 
-    # N_waves = len(slicer.wave_range)
-    print("Time to propagate %d PSFs: %.2f seconds" % (N_PSF, waves_time))
-    print("Time to propagate 1 PSF: %.2f seconds" % (waves_time / N_PSF))
-    print("Time to propagate 1 slice: %.2f seconds" % (waves_time / N_PSF / slicer.N_slices))
+    slicer_options = {"N_slices": 23, "spaxels_per_slice": 11, "pupil_mirror_aperture": 0.95}
+    N_PIX = 2048
+    spaxel_mas = 0.5        # to get a decent resolution
 
+    slicer = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
+                         spaxel_scale=spaxel_mas, N_waves=1, wave0=1.5, waveN=2.5)
+
+    print("\n---------------------------------------------------------------------")
+    print("Running on the CPU")
     N_PSF = 15
-    start = time()
-    # for wave in slicer.wave_range:
-    #     exit_slit = slicer.propagate_eager(wavelength=wave, wavefront=0)
+    cpu_start = time()
+    for i in range(N_PSF):
+        complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=False)
+    cpu_end = time()
+    cpu_time = cpu_end - cpu_start
+
+    print("Time to propagate %d PSFs: %.2f seconds" % (N_PSF, cpu_time))
+    print("Time to propagate 1 PSF (%d slices): %.2f seconds" % (slicer.N_slices, cpu_time / N_PSF))
+    print("Time to propagate 1 slice: %.2f seconds" % (cpu_time / N_PSF / slicer.N_slices))
+
+    gpu_start = time()
     exit_slits = slicer.propagate_gpu_wavelength(wavelength=1.5, wavefront=0, N=5)
-    end = time()
-    waves_time = end - start
-    print("Time to propagate %d PSFs: %.2f seconds" % (N_PSF, waves_time))
-    print("Time to propagate 1 PSF: %.2f seconds" % (waves_time / N_PSF))
-    print("Time to propagate 1 slice: %.2f seconds" % (waves_time / N_PSF / slicer.N_slices))
-
+    gpu_end = time()
+    gpu_time = gpu_end - gpu_start
+    print("Time to propagate %d PSFs: %.2f seconds" % (N_PSF, gpu_time))
+    print("Time to propagate 1 PSF (%d slices): %.2f seconds" % (slicer.N_slices, gpu_time / N_PSF))
+    print("Time to propagate 1 slice: %.2f seconds" % (gpu_time / N_PSF / slicer.N_slices))
 
     free, total = cuda.mem_get_info()
     print("Free: %.2f percent" % (free / total * 100))
 
-#   =============================
-    N = slicer.N_PIX
-    # free, total = cuda.mem_get_info()
-    free, total = cuda.mem_get_info()
-    print("Free: %.2f percent" % (free / total * 100))
-
-    # Pupil Plane -> Image Slicer
-    complex_pupil = slicer.pupil_masks[1.5] * np.exp(1j * 2 * np.pi * slicer.pupil_masks[1.5] / 1.5)
-    complex_pupil_gpu = gpuarray.to_gpu(np.asarray(complex_pupil, np.complex64))
-    plan = cu_fft.Plan(complex_pupil_gpu.shape, np.complex64, np.complex64)
-    cu_fft.fft(complex_pupil_gpu, complex_pupil_gpu, plan, scale=True)
-
-    # Add N_slices copies to be Masked
-    complex_slicer_cpu = complex_pupil_gpu.get()
-    complex_pupil_gpu.gpudata.free()
-
-    free, total = cuda.mem_get_info()
-    print("*Free: %.2f percent" % (free / total * 100))
-
-    complex_slicer_cpu = np.stack([complex_slicer_cpu] * slicer.N_slices)
-    complex_slicer_gpu = gpuarray.to_gpu(complex_slicer_cpu)
-    slicer_masks_gpu = gpuarray.to_gpu(slicer.slicer_masks_fftshift)
-    clinalg.multiply(slicer_masks_gpu, complex_slicer_gpu, overwrite=True)
-    slicer_masks_gpu.gpudata.free()
-    free, total = cuda.mem_get_info()
-    print("**Free: %.2f percent" % (free / total * 100))
-
-    # Slicer -> Pupil Mirror
-    plan = cu_fft.Plan((N, N), np.complex64, np.complex64, slicer.N_slices)
-    cu_fft.ifft(complex_slicer_gpu, complex_slicer_gpu, plan, scale=True)
-    mirror_mask_gpu = gpuarray.to_gpu(slicer.pupil_mirror_masks_fft)
-    clinalg.multiply(mirror_mask_gpu, complex_slicer_gpu, overwrite=True)
-
-    conj_complex_slicer_gpu = clinalg.conj(complex_slicer_gpu)
-    norm_squa = clinalg.multiply(conj_complex_slicer_gpu, complex_slicer_gpu)
-    conj_complex_slicer_gpu.gpudata.free()
-
-    slits = complex_slicer_gpu.get()
-    complex_slicer_gpu.gpudata.free()
-    mirror_mask_gpu.gpudata.free()
-    slit = fftshift(np.sum((np.abs(slits)) ** 2, axis=0))
-
-    free, total = cuda.mem_get_info()
-    print("***Free: %.2f percent" % (free / total * 100))
-    #   =============================
-
-    plt.show()
-
-    for i in range(5):
+    for i in range(N_PSF):
         plt.figure()
-        plt.imshow((np.abs(exit_slits[i]))**2)
+        plt.imshow(exit_slits[i])
         plt.colorbar()
     plt.show()
 
