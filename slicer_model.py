@@ -11,12 +11,12 @@ from numpy.fft import fft2, fftshift, ifft2
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from time import time
-import numba
-from numba import jit
+
 
 import pycuda.autoinit
 import pycuda.gpuarray as gpuarray
-from pycuda.elementwise import ElementwiseKernel
+import pycuda.driver as cuda
+import skcuda
 import skcuda.linalg as clinalg
 import skcuda.fft as cu_fft
 
@@ -107,21 +107,7 @@ def compute_FWHM(wavelength):
     FWHM_MAS = FWHM_RAD * MILIARCSECS_IN_A_RAD
     return FWHM_MAS
 
-@jit(nopython=True)
-def fft_lightning(pupil_mask, wavefront, wavelength, slicer_masks_fftshift, pupil_mirror_mask):
-    complex_pupil = pupil_mask * np.exp(1j * 2 * np.pi * wavefront / wavelength)
-    complex_slicer = (np.fft.fft2(complex_pupil))
-    masked_complex_slicer = complex_slicer * np.array(slicer_masks_fftshift)
-    complex_mirrors = np.fft.ifft2(masked_complex_slicer, axes=(1, 2))
-    masked_mirrors = pupil_mirror_mask * complex_mirrors
-    complex_slit = np.fft.fftshift(np.fft.fft2(masked_mirrors, axes=(1, 2)))
-    image = np.sum((np.abs(complex_slit)) ** 2, axis=0)
-    return image
 
-add = ElementwiseKernel(
-        "float *a, float *b, float *c",
-        "c[i] = a[i] + b[i]",
-"add")
 
 class SlicerModel(object):
     """
@@ -197,7 +183,7 @@ class SlicerModel(object):
             wavelength = self.wave_range[i]
             print("Wavelength: %.2f microns" % wavelength)
             pupil = (rho <= rho_aper / wave) & (rho >= rho_obsc / wave)
-            mask = np.array(pupil).astype(np.float64)
+            mask = np.array(pupil).astype(np.float32)
             self.pupil_masks[wavelength] = mask
             self.pupil_masks_fft[wavelength] = np.stack(mask * self.N_slices)
         return
@@ -231,7 +217,7 @@ class SlicerModel(object):
             # plt.imshow(mask)
             self.slicer_masks.append(mask)
             self.slicer_masks_fftshift.append(fftshift(mask))
-        self.slicer_masks_fftshift = np.array(self.slicer_masks_fftshift).astype(np.float64)
+        self.slicer_masks_fftshift = np.array(self.slicer_masks_fftshift).astype(np.float32)
         # np.sum(np.stack(self.slicer_masks), axis=0)
         return
 
@@ -247,7 +233,7 @@ class SlicerModel(object):
         x0 = np.linspace(-1., 1., self.N_PIX, endpoint=True)
         xx, yy = np.meshgrid(x0, x0)
         pupil_mirror_mask = np.abs(yy) <= aperture
-        self.pupil_mirror_mask = np.array(pupil_mirror_mask).astype(np.float64)
+        self.pupil_mirror_mask = np.array(pupil_mirror_mask).astype(np.float32)
         self.pupil_mirror_masks_fft = np.stack([self.pupil_mirror_mask]*self.N_slices)
         return
 
@@ -308,6 +294,65 @@ class SlicerModel(object):
 
         return exit_slits, image
 
+    def propagate_gpu_wavelength(self, wavelength, wavefront, N):
+        """
+
+        :param wavefront:
+        :return:
+        """
+
+        # GPU memory management
+        free, total = cuda.mem_get_info()
+        # print("Memory Start | Free: %.2f percent" %(free/total*100))
+        slicer_masks_gpu = gpuarray.to_gpu(self.slicer_masks_fftshift)
+        mirror_mask_gpu = gpuarray.to_gpu(self.pupil_mirror_masks_fft)
+
+        plan_batch = cu_fft.Plan((self.N_PIX, self.N_PIX), np.complex64, np.complex64, self.N_slices)
+
+        _pupil = np.zeros((self.N_PIX, self.N_PIX), dtype=np.complex64)
+        complex_pupil_gpu = gpuarray.to_gpu(_pupil)
+
+        _slicer = np.zeros((self.N_slices, self.N_PIX, self.N_PIX), dtype=np.complex64)
+        complex_slicer_gpu = gpuarray.to_gpu(_slicer)
+
+        slits = []
+        for i in range(N):
+
+
+            # Pupil Plane -> Image Slicer
+            pupil_mask = self.pupil_masks[wavelength]
+            complex_pupil = pupil_mask * np.exp(1j * 2 * np.pi * pupil_mask / wavelength)
+            skcuda.misc.set_realloc(complex_pupil_gpu, np.asarray(complex_pupil, np.complex64))
+            cu_fft.fft(complex_pupil_gpu, complex_pupil_gpu, plan_batch)
+
+            # Add N_slices copies to be Masked
+            complex_slicer_cpu = complex_pupil_gpu.get()
+            complex_slicer_cpu = np.stack([complex_slicer_cpu] * self.N_slices)
+            skcuda.misc.set_realloc(complex_slicer_gpu, complex_slicer_cpu)
+
+            clinalg.multiply(slicer_masks_gpu, complex_slicer_gpu, overwrite=True)
+
+            cu_fft.ifft(complex_slicer_gpu, complex_slicer_gpu, plan_batch, True)
+            clinalg.multiply(mirror_mask_gpu, complex_slicer_gpu, overwrite=True)
+
+            # Pupil Mirror -> Slits
+            cu_fft.fft(complex_slicer_gpu, complex_slicer_gpu, plan_batch)
+            _slits = complex_slicer_gpu.get()
+            _slits = np.sum(((_slits))**2, axis=0)
+            slits.append(_slits)
+
+            free, total = cuda.mem_get_info()
+            print("Memory End | Free: %.2f percent" %(free/total*100))
+
+        complex_pupil_gpu.gpudata.free()
+        complex_slicer_gpu.gpudata.free()
+        slicer_masks_gpu.gpudata.free()
+        mirror_mask_gpu.gpudata.free()
+        free, total = cuda.mem_get_info()
+        print("Memory Final | Free: %.2f percent" % (free / total * 100))
+
+        return fftshift(np.array(slits), axes=(1, 2))
+
     def propagate_eager(self, wavelength, wavefront):
         """
 
@@ -317,30 +362,46 @@ class SlicerModel(object):
         """
 
         N = self.N_PIX
+        # free, total = cuda.mem_get_info()
+        free, total = cuda.mem_get_info()
+        print("Free: %.2f percent" %(free/total*100))
 
         # Pupil Plane -> Image Slicer
         complex_pupil = self.pupil_masks[wavelength] * np.exp(1j * 2 * np.pi * self.pupil_masks[wavelength] / wavelength)
         complex_pupil_gpu = gpuarray.to_gpu(np.asarray(complex_pupil, np.complex64))
         plan = cu_fft.Plan(complex_pupil_gpu.shape, np.complex64, np.complex64)
-        cu_fft.fft(complex_pupil_gpu, complex_pupil_gpu, plan)
+        cu_fft.fft(complex_pupil_gpu, complex_pupil_gpu, plan, scale=True)
 
         # Add N_slices copies to be Masked
         complex_slicer_cpu = complex_pupil_gpu.get()
+        complex_pupil_gpu.gpudata.free()
+
+        free, total = cuda.mem_get_info()
+        print("*Free: %.2f percent" %(free/total*100))
+
         complex_slicer_cpu = np.stack([complex_slicer_cpu]*self.N_slices)
         complex_slicer_gpu = gpuarray.to_gpu(complex_slicer_cpu)
-        # slicer_masks = np.array(self.slicer_masks_fftshift).astype(np.float64)
         slicer_masks_gpu = gpuarray.to_gpu(self.slicer_masks_fftshift)
         clinalg.multiply(slicer_masks_gpu, complex_slicer_gpu, overwrite=True)
+        slicer_masks_gpu.gpudata.free()
+        free, total = cuda.mem_get_info()
+        print("**Free: %.2f percent" %(free/total*100))
 
        # Slicer -> Pupil Mirror
         plan = cu_fft.Plan((N, N), np.complex64, np.complex64, self.N_slices)
-        cu_fft.ifft(complex_slicer_gpu, complex_slicer_gpu, plan, True)
+        cu_fft.ifft(complex_slicer_gpu, complex_slicer_gpu, plan, scale=True)
         mirror_mask_gpu = gpuarray.to_gpu(self.pupil_mirror_masks_fft)
         clinalg.multiply(mirror_mask_gpu, complex_slicer_gpu, overwrite=True)
 
         # Pupil Mirror -> Slits
         cu_fft.fft(complex_slicer_gpu, complex_slicer_gpu, plan)
-        slit = complex_slicer_gpu.get()
+        slits = complex_slicer_gpu.get()
+        complex_slicer_gpu.gpudata.free()
+        mirror_mask_gpu.gpudata.free()
+        slit = fftshift(np.sum((np.abs(slits))**2, axis=0))
+
+        free, total = cuda.mem_get_info()
+        print("***Free: %.2f percent" % (free / total * 100))
 
         return slit
 
@@ -624,31 +685,98 @@ if __name__ == """__main__""":
     #                           Example of how to create an Image Slicer model                                         #
     # ================================================================================================================ #
 
-    slicer_options = {"N_slices": 15, "spaxels_per_slice": 11, "pupil_mirror_aperture": 0.95}
+    slicer_options = {"N_slices": 21, "spaxels_per_slice": 11, "pupil_mirror_aperture": 0.95}
     N_PIX = 2048
     spaxel_mas = 0.5        # to get a decent resolution
 
     slicer = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
-                         spaxel_scale=spaxel_mas, N_waves=3, wave0=1.5, waveN=2.5)
+                         spaxel_scale=spaxel_mas, N_waves=1, wave0=1.5, waveN=2.5)
     # for wave in slicer.wave_range:
     #     plt.figure()
     #     plt.imshow(slicer.pupil_masks[wave])
     #     plt.title('Pupil Mask at %.2f microns' % wave)
     # plt.show()
 
+    N_PSF = 5
     start = time()
-    # complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=True)
-    exit_slit = slicer.propagate_eager(wavelength=1.5, wavefront=0)
+    for i in range(N_PSF):
+        # for wave in slicer.wave_range:
+        complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=False)
+    # exit_slit = slicer.propagate_eager(wavelength=1.5, wavefront=0)
     end = time()
-    one_wave_time = end - start
+    waves_time = end - start
 
-    print("Time to propagate 1 wavelength: %.2f seconds" % one_wave_time)
-    print("Time to propagate 1 slice: %.2f seconds" % (one_wave_time / slicer.N_slices))
+    # N_waves = len(slicer.wave_range)
+    print("Time to propagate %d PSFs: %.2f seconds" % (N_PSF, waves_time))
+    print("Time to propagate 1 PSF: %.2f seconds" % (waves_time / N_PSF))
+    print("Time to propagate 1 slice: %.2f seconds" % (waves_time / N_PSF / slicer.N_slices))
+
+    N_PSF = 15
+    start = time()
+    # for wave in slicer.wave_range:
+    #     exit_slit = slicer.propagate_eager(wavelength=wave, wavefront=0)
+    exit_slits = slicer.propagate_gpu_wavelength(wavelength=1.5, wavefront=0, N=5)
+    end = time()
+    waves_time = end - start
+    print("Time to propagate %d PSFs: %.2f seconds" % (N_PSF, waves_time))
+    print("Time to propagate 1 PSF: %.2f seconds" % (waves_time / N_PSF))
+    print("Time to propagate 1 slice: %.2f seconds" % (waves_time / N_PSF / slicer.N_slices))
+
+
+    free, total = cuda.mem_get_info()
+    print("Free: %.2f percent" % (free / total * 100))
+
+#   =============================
+    N = slicer.N_PIX
+    # free, total = cuda.mem_get_info()
+    free, total = cuda.mem_get_info()
+    print("Free: %.2f percent" % (free / total * 100))
+
+    # Pupil Plane -> Image Slicer
+    complex_pupil = slicer.pupil_masks[1.5] * np.exp(1j * 2 * np.pi * slicer.pupil_masks[1.5] / 1.5)
+    complex_pupil_gpu = gpuarray.to_gpu(np.asarray(complex_pupil, np.complex64))
+    plan = cu_fft.Plan(complex_pupil_gpu.shape, np.complex64, np.complex64)
+    cu_fft.fft(complex_pupil_gpu, complex_pupil_gpu, plan, scale=True)
+
+    # Add N_slices copies to be Masked
+    complex_slicer_cpu = complex_pupil_gpu.get()
+    complex_pupil_gpu.gpudata.free()
+
+    free, total = cuda.mem_get_info()
+    print("*Free: %.2f percent" % (free / total * 100))
+
+    complex_slicer_cpu = np.stack([complex_slicer_cpu] * slicer.N_slices)
+    complex_slicer_gpu = gpuarray.to_gpu(complex_slicer_cpu)
+    slicer_masks_gpu = gpuarray.to_gpu(slicer.slicer_masks_fftshift)
+    clinalg.multiply(slicer_masks_gpu, complex_slicer_gpu, overwrite=True)
+    slicer_masks_gpu.gpudata.free()
+    free, total = cuda.mem_get_info()
+    print("**Free: %.2f percent" % (free / total * 100))
+
+    # Slicer -> Pupil Mirror
+    plan = cu_fft.Plan((N, N), np.complex64, np.complex64, slicer.N_slices)
+    cu_fft.ifft(complex_slicer_gpu, complex_slicer_gpu, plan, scale=True)
+    mirror_mask_gpu = gpuarray.to_gpu(slicer.pupil_mirror_masks_fft)
+    clinalg.multiply(mirror_mask_gpu, complex_slicer_gpu, overwrite=True)
+
+    conj_complex_slicer_gpu = clinalg.conj(complex_slicer_gpu)
+    norm_squa = clinalg.multiply(conj_complex_slicer_gpu, complex_slicer_gpu)
+    conj_complex_slicer_gpu.gpudata.free()
+
+    slits = complex_slicer_gpu.get()
+    complex_slicer_gpu.gpudata.free()
+    mirror_mask_gpu.gpudata.free()
+    slit = fftshift(np.sum((np.abs(slits)) ** 2, axis=0))
+
+    free, total = cuda.mem_get_info()
+    print("***Free: %.2f percent" % (free / total * 100))
+    #   =============================
+
     plt.show()
 
-    for i in range(15):
+    for i in range(5):
         plt.figure()
-        plt.imshow(fftshift(np.abs(exit_slit[i]))**2)
+        plt.imshow((np.abs(exit_slits[i]))**2)
         plt.colorbar()
     plt.show()
 
