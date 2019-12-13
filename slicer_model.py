@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from time import time
 
-
+import pycuda
 import pycuda.autoinit
 import pycuda.gpuarray as gpuarray
 import pycuda.driver as cuda
@@ -22,7 +22,7 @@ import skcuda.fft as cu_fft
 
 # SPAXEL SCALE
 ELT_DIAM = 39
-CENTRAL_OBS = 0.30                  # Central obscuration is ~30% of the diameter for the ELT
+CENTRAL_OBS = 0.0                  # Central obscuration is ~30% of the diameter for the ELT
 MILIARCSECS_IN_A_RAD = 206265000
 
 
@@ -107,6 +107,14 @@ def compute_FWHM(wavelength):
     FWHM_MAS = FWHM_RAD * MILIARCSECS_IN_A_RAD
     return FWHM_MAS
 
+def pupil_mask(xx, yy, rho_aper, rho_obsc, anamorphic=False):
+
+    if anamorphic == False:
+        rho = np.sqrt(xx ** 2 + yy ** 2)
+    elif anamorphic == True:
+        rho = np.sqrt(xx ** 2 + (2 * yy) ** 2)
+    pupil = (rho <= rho_aper) & (rho >= rho_obsc)
+    return pupil
 
 
 class SlicerModel(object):
@@ -120,6 +128,8 @@ class SlicerModel(object):
         self.N_slices = slicer_options["N_slices"]                                          # Number os Slices to use
         self.spaxels_per_slice = slicer_options["spaxels_per_slice"]                        # Size of the slice in Spaxels
         self.pupil_mirror_aperture = slicer_options["pupil_mirror_aperture"]                # Pupil Mirror Aperture
+        N_rings = self.spaxels_per_slice / 2
+        self.anamorphic = slicer_options["anamorphic"]                                      # Anamorphic Preoptics?
         self.slice_size_mas = self.spaxels_per_slice * spaxel_scale                         # Size of 1 slice in mas
         self.spaxel_scale = spaxel_scale                                                    # Spaxel scale [mas]
         self.N_PIX = N_PIX
@@ -136,7 +146,7 @@ class SlicerModel(object):
 
         self.create_pupil_masks(spaxel_scale, N_waves, wave0, waveN)
         self.create_slicer_masks()
-        self.create_pupil_mirror_apertures(self.pupil_mirror_aperture)
+        self.create_pupil_mirror_apertures(N_rings=self.pupil_mirror_aperture * N_rings)
 
         self.compute_peak_nominal_PSFs()
 
@@ -177,13 +187,14 @@ class SlicerModel(object):
         self.pupil_masks, self.pupil_masks_fft = {}, {}
         x0 = np.linspace(-1., 1., self.N_PIX, endpoint=True)
         xx, yy = np.meshgrid(x0, x0)
-        rho = np.sqrt(xx ** 2 + yy ** 2)
+
         print("\nCreating Pupil Masks:")
         for i, wave in enumerate(self.waves_ratio):
             wavelength = self.wave_range[i]
             print("Wavelength: %.2f microns" % wavelength)
-            pupil = (rho <= rho_aper / wave) & (rho >= rho_obsc / wave)
-            mask = np.array(pupil).astype(np.float32)
+            # pupil = (rho <= rho_aper / wave) & (rho >= rho_obsc / wave)
+            _pupil = pupil_mask(xx, yy, rho_aper / wave, rho_obsc / wave, self.anamorphic)
+            mask = np.array(_pupil).astype(np.float32)
             self.pupil_masks[wavelength] = mask
             self.pupil_masks_fft[wavelength] = np.stack(mask * self.N_slices)       # For the GPU calculations
         return
@@ -220,18 +231,25 @@ class SlicerModel(object):
 
         return
 
-    def create_pupil_mirror_apertures(self, aperture):
+    def create_pupil_mirror_apertures(self, N_rings):
         """
         Creates a mask to model the finite aperture of the pupil mirror,
         which effectively introduces fringe effects on the PSF at the exit slit
         :param aperture:
         :return:
         """
-        #TODO: find out how to properly define the aperture
+        # The number of PSF zeros (or rings) that we see in the Pupil Mirror plane is
+        # equal to half the number of spaxels per slice we have defined, along each direction
+        # i.e. if we have 20 spaxels_per_slice, we see 10 zeros above and 10 below the PSF core
+
+        N_zeros = self.spaxels_per_slice / 2.
+        aperture_ratio = N_rings / N_zeros
+
+        #TODO: adjust the aperture according the growth of the PSF with wavelength
 
         x0 = np.linspace(-1., 1., self.N_PIX, endpoint=True)
         xx, yy = np.meshgrid(x0, x0)
-        pupil_mirror_mask = np.abs(yy) <= aperture
+        pupil_mirror_mask = np.abs(yy) <= aperture_ratio
         self.pupil_mirror_mask = np.array(pupil_mirror_mask).astype(np.float32)
         self.pupil_mirror_masks_fft = np.stack([self.pupil_mirror_mask]*self.N_slices)
         return
@@ -341,9 +359,15 @@ class SlicerModel(object):
 
             # Pupil Mirror -> Exit Slits
             cu_fft.fft(complex_slicer_gpu, complex_slicer_gpu, plan_batch)
+
+            # pycuda.cumath.fabs(complex_slicer_gpu, out=complex_slicer_gpu)
+
             _slits = complex_slicer_gpu.get()
             slits = np.sum((np.abs(_slits))**2, axis=0)
             PSF_images.append(slits)
+
+            # free, total = cuda.mem_get_info()
+            # print("Memory Usage | Free: %.2f percent" % (free / total * 100))
 
             # free, total = cuda.mem_get_info()
             # print("Memory End | Free: %.2f percent" % (free/total*100))
@@ -419,9 +443,9 @@ class SlicerModel(object):
         """
 
         print("\nPropagating Wavelength: %.2f microns" % wavelength)
-        complex_slicer = slicer.propagate_pupil_to_slicer(wavelength=wavelength, wavefront=wavefront)
-        complex_mirror = slicer.propagate_slicer_to_pupil_mirror(complex_slicer)
-        exit_slits, image_slit = slicer.propagate_pupil_mirror_to_exit_slit(complex_mirror)
+        complex_slicer = self.propagate_pupil_to_slicer(wavelength=wavelength, wavefront=wavefront)
+        complex_mirror = self.propagate_slicer_to_pupil_mirror(complex_slicer)
+        exit_slits, image_slit = self.propagate_pupil_mirror_to_exit_slit(complex_mirror)
 
         if plot:
 
@@ -680,16 +704,17 @@ if __name__ == """__main__""":
     #                                      Speed Comparison on the GPU                                            #
     # ================================================================================================================ #
 
-    slicer_options = {"N_slices": 23, "spaxels_per_slice": 11, "pupil_mirror_aperture": 0.95}
+    slicer_options = {"N_slices": 23, "spaxels_per_slice": 11,
+                      "pupil_mirror_aperture": 0.85, "anamorphic": True}
     N_PIX = 2048
-    spaxel_mas = 0.5        # to get a decent resolution
+    spaxel_mas = 0.25        # to get a decent resolution
 
     slicer = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
-                         spaxel_scale=spaxel_mas, N_waves=1, wave0=1.5, waveN=2.5)
+                         spaxel_scale=spaxel_mas, N_waves=2, wave0=1.5, waveN=2.5)
 
     print("\n---------------------------------------------------------------------")
     print("Running on the CPU")
-    N_PSF = 15
+    N_PSF = 10
     cpu_start = time()
     for i in range(N_PSF):
         complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=False)
@@ -700,8 +725,9 @@ if __name__ == """__main__""":
     print("Time to propagate 1 PSF (%d slices): %.2f seconds" % (slicer.N_slices, cpu_time / N_PSF))
     print("Time to propagate 1 slice: %.2f seconds" % (cpu_time / N_PSF / slicer.N_slices))
 
+    N_PSF = 10
     gpu_start = time()
-    exit_slits = slicer.propagate_gpu_wavelength(wavelength=1.5, wavefront=0, N=5)
+    exit_slits = slicer.propagate_gpu_wavelength(wavelength=1.5, wavefront=0, N=N_PSF)
     gpu_end = time()
     gpu_time = gpu_end - gpu_start
     print("Time to propagate %d PSFs: %.2f seconds" % (N_PSF, gpu_time))
@@ -715,6 +741,66 @@ if __name__ == """__main__""":
         plt.figure()
         plt.imshow(exit_slits[i])
         plt.colorbar()
+    plt.show()
+
+    # ================================================================================================================ #
+    #                                    HARMONI comparison                                                            #
+    # ================================================================================================================ #
+
+    # First we have to match the Slice Size to have a proper clipping at the Slicer Plane
+    # That comes from the product spaxels_per_slice * spaxel_mas
+
+    N_slices = 11
+    spaxels_per_slice = 28
+    spaxel_mas = 0.25  # to get a decent resolution
+
+    # HARMONI fits approximately 6 rings (at each side) at the Pupil Mirror at 1.5 microns
+    # that would
+    # In Python we have 1/2 spaxels_per_slice rings at each side in the Pupil Mirror arrays
+    N_rings = spaxels_per_slice / 2
+    rings_we_want = 5
+    pupil_mirror_aperture = rings_we_want / N_rings
+
+    N_PIX = 2048
+    wave0, waveN = 1.5, 3.0
+
+    slicer_options = {"N_slices": N_slices, "spaxels_per_slice": spaxels_per_slice,
+                      "pupil_mirror_aperture": pupil_mirror_aperture, "anamorphic": True}
+
+    HARMONI = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
+                         spaxel_scale=spaxel_mas, N_waves=2, wave0=wave0, waveN=waveN)
+
+    complex_slicer, complex_mirror, exit_slit = HARMONI.propagate_one_wavelength(wavelength=wave0, wavefront=0)
+
+    masked_slicer = (np.abs(complex_slicer)) ** 2 * HARMONI.slicer_masks[N_slices // 2]
+    masked_slicer /= np.max(masked_slicer)
+    minPix_Y = (N_PIX + 1 - 2 * spaxels_per_slice) // 2         # Show 2 slices
+    maxPix_Y = (N_PIX + 1 + 2 * spaxels_per_slice) // 2
+    minPix_X = (N_PIX + 1 - 6 * spaxels_per_slice) // 2
+    maxPix_X = (N_PIX + 1 + 6 * spaxels_per_slice) // 2
+    masked_slicer = masked_slicer[minPix_Y:maxPix_Y, minPix_X:maxPix_X]
+
+    plt.figure()
+    plt.imshow(masked_slicer, cmap='jet')
+    plt.colorbar(orientation='horizontal')
+    plt.title('HARMONI Slicer: Central Slice @%.2f microns' % wave0)
+    # plt.show()
+
+    masked_pupil_mirror = (np.abs(complex_mirror[N_slices // 2])) ** 2 * HARMONI.pupil_mirror_mask
+    masked_pupil_mirror /= np.max(masked_pupil_mirror)
+    plt.figure()
+    plt.imshow(np.log10(masked_pupil_mirror), cmap='jet')
+    plt.colorbar()
+    plt.clim(vmin=-4)
+    plt.title('Pupil Mirror: Aperture %.2f PSF zeros' % rings_we_want)
+    # plt.show()
+
+    masked_slit = exit_slit * HARMONI.slicer_masks[N_slices // 2]
+    masked_slit = masked_slit[minPix_Y: maxPix_Y, minPix_X: maxPix_X]
+    plt.figure()
+    plt.imshow(masked_slit, cmap='jet')
+    plt.colorbar(orientation='horizontal')
+    plt.title('Exit Slit @%.2f microns (Pupil Mirror: %.2f PSF zeros)' % (wave0, rings_we_want))
     plt.show()
 
     # ================================================================================================================ #
