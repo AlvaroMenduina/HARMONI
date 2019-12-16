@@ -117,6 +117,83 @@ def pupil_mask(xx, yy, rho_aper, rho_obsc, anamorphic=False):
     return pupil
 
 
+# ============================================================================== #
+#                                ZEMAX INTERFACE                                 #
+# ============================================================================== #
+import pyzdde.zdde
+from pyzdde.zfileutils import readBeamFile
+
+class POP_Slicer(object):
+    """
+    Physical Optics Propagation (POP) analysis of an Image Slicer
+    """
+
+    def __init__(self):
+        pass
+
+    def read_beam_file(self, file_name):
+        """
+        Reads a Zemax Beam File and returns the Irradiance
+        of the Magnetic field E
+        """
+        beamData = readBeamFile(file_name)
+        (version, (nx, ny), ispol, units, (dx, dy), (zposition_x, zposition_y),
+         (rayleigh_x, rayleigh_y), (waist_x, waist_y), lamda, index, re, se,
+         (x_matrix, y_matrix), (Ex_real, Ex_imag, Ey_real, Ey_imag)) = beamData
+
+        E_real = np.array([Ex_real, Ey_real])
+        E_imag = np.array([Ex_imag, Ey_imag])
+
+        re = np.linalg.norm(E_real, axis=0)
+        im = np.linalg.norm(E_imag, axis=0)
+
+        irradiance = (re ** 2 + im ** 2).T
+        power = np.sum(irradiance)
+        print('Total Power: ', power)
+        return (nx, ny), (dx, dy), irradiance, power
+
+    def read_all_zemax_files(self, path_zemax, name_convention, file_list):
+        """
+        Goes through the ZBF Zemax Beam Files of all Slices and
+        extracts the beam information (X_size, Y_size) etc
+        as well as the Irradiance distribution
+
+        :param path_zemax:
+        :param name_convention: typically the Zemax file name that generates the POP arrays
+        :param file_list: list of indices for the files, typically each index corresponds to one slice
+        """
+        info, data, powers = [], [], []
+        start = time()
+        N_slices = len(file_list)
+        print("\nReading %d Zemax Beam Files" % N_slices)
+        for k in file_list:
+            print('\n======================================')
+
+            if k < 10:      # The Zemax naming format changes after 10
+                file_id = name_convention + ' ' + str(k) + '_POP.ZBF'
+            else:
+                file_id = name_convention + str(k) + '_POP.ZBF'
+            file_name = os.path.join(path_zemax, file_id)
+
+            print('Reading Beam File: ', file_id)
+
+            NM, deltas, beam_data, power = self.read_beam_file(file_name)
+            Dx, Dy = NM[0] * deltas[0], NM[1] * deltas[1]
+            # info.append([k, Dx, Dy])
+            data.append(beam_data)
+            # powers.append(power)
+
+        # beam_info = np.array(info)
+        irradiance_values = np.array(data)
+        # powers = np.array(powers)
+
+        POP_PSF = np.sum(irradiance_values, axis=0)
+        end = time()
+        print("Total time: %.2f sec" % (end - start))
+        print("1 slice: %.2f sec" % ((end - start)/N_slices))
+        return POP_PSF, irradiance_values
+
+
 class SlicerModel(object):
     """
     Object that models the effect of Image Slicers in light propagation
@@ -704,7 +781,7 @@ if __name__ == """__main__""":
     #                                      Speed Comparison on the GPU                                            #
     # ================================================================================================================ #
 
-    slicer_options = {"N_slices": 23, "spaxels_per_slice": 11,
+    slicer_options = {"N_slices": 38, "spaxels_per_slice": 11,
                       "pupil_mirror_aperture": 0.85, "anamorphic": True}
     N_PIX = 2048
     spaxel_mas = 0.25        # to get a decent resolution
@@ -750,7 +827,7 @@ if __name__ == """__main__""":
     # First we have to match the Slice Size to have a proper clipping at the Slicer Plane
     # That comes from the product spaxels_per_slice * spaxel_mas
 
-    N_slices = 11
+    N_slices = 37
     spaxels_per_slice = 28
     spaxel_mas = 0.25  # to get a decent resolution
 
@@ -758,7 +835,7 @@ if __name__ == """__main__""":
     # that would
     # In Python we have 1/2 spaxels_per_slice rings at each side in the Pupil Mirror arrays
     N_rings = spaxels_per_slice / 2
-    rings_we_want = 5
+    rings_we_want = 3
     pupil_mirror_aperture = rings_we_want / N_rings
 
     N_PIX = 2048
@@ -801,6 +878,56 @@ if __name__ == """__main__""":
     plt.imshow(masked_slit, cmap='jet')
     plt.colorbar(orientation='horizontal')
     plt.title('Exit Slit @%.2f microns (Pupil Mirror: %.2f PSF zeros)' % (wave0, rings_we_want))
+    plt.show()
+
+    # ================================================================================================================ #
+
+    # Compare everything to the Zemax POP PSFs
+    cwd = os.getcwd()
+    path_zemax = os.path.join(cwd, 'ImageSlicerEffects\\HARMONI\\PupilMirror\\2048\\3Rings')
+
+    list_slices = list(np.arange(1, 76, 2))
+    central_slice = 19
+    pop_slicer = POP_Slicer()
+    POP_PSF, POP_slices = pop_slicer.read_all_zemax_files(path_zemax, 'HARMONI_SLICER_EFFECTS 0_', list_slices)
+
+    python_PSF = exit_slit
+
+    plt.figure()
+    ax1 = plt.subplot(1, 2, 1)
+    im1 = ax1.imshow(np.log10(POP_PSF), extent=[-1, 1, -1, 1])
+    im1.set_clim(vmin=-10)
+    ax1.set_title(r'Zemax POP')
+    plt.colorbar(im1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 2, 2)
+    im2 = ax2.imshow(np.log10(python_PSF), extent=[-1, 1, -1, 1])
+    ax2.set_xlim(-0.5, 0.5)
+    ax2.set_ylim(-0.5, 0.5)
+    im2.set_clim(vmin=-10)
+    ax2.set_title('Python')
+    plt.colorbar(im2, ax=ax2, orientation='horizontal')
+    plt.show()
+
+    # Central Slice
+    masked_slit = exit_slit * HARMONI.slicer_masks[N_slices // 2]
+    # masked_slit = masked_slit[minPix_Y: maxPix_Y, minPix_X: maxPix_X]
+    plt.figure()
+    ax1 = plt.subplot(1, 2, 1)
+    im1 = ax1.imshow(POP_slices[central_slice//2], extent=[-2.47, 2.47, -2.47, 2.47], cmap='jet')
+    ax1.set_xlim([-0.13, 0.13])
+    ax1.set_ylim([-0.13, 0.13])
+    # im1.set_clim(vmin=-10)
+    ax1.set_title(r'Zemax POP | Central Slice')
+    plt.colorbar(im1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 2, 2)
+    im2 = ax2.imshow(masked_slit, extent=[-2.47, 2.47, -2.47, 2.47],cmap='jet')
+    # im2.set_clim(vmin=-10)
+    ax2.set_xlim([-0.13/2, 0.13/2])
+    ax2.set_ylim([-0.13/2, 0.13/2])
+    ax2.set_title('Python | Central Slice')
+    plt.colorbar(im2, ax=ax2, orientation='horizontal')
     plt.show()
 
     # ================================================================================================================ #
