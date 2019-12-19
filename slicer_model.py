@@ -197,7 +197,6 @@ class POP_Slicer(object):
 class SlicerModel(object):
     """
     Object that models the effect of Image Slicers in light propagation
-
     """
 
     def __init__(self, slicer_options, N_PIX, spaxel_scale, N_waves=1, wave0=1.5, waveN=1.5):
@@ -321,14 +320,20 @@ class SlicerModel(object):
 
         N_zeros = self.spaxels_per_slice / 2.
         aperture_ratio = N_rings / N_zeros
-
-        #TODO: adjust the aperture according the growth of the PSF with wavelength
-
         x0 = np.linspace(-1., 1., self.N_PIX, endpoint=True)
         xx, yy = np.meshgrid(x0, x0)
-        pupil_mirror_mask = np.abs(yy) <= aperture_ratio
-        self.pupil_mirror_mask = np.array(pupil_mirror_mask).astype(np.float32)
-        self.pupil_mirror_masks_fft = np.stack([self.pupil_mirror_mask]*self.N_slices)
+
+        self.pupil_mirror_mask, self.pupil_mirror_masks_fft = {}, {}
+
+        print("\nCreating Pupil Mirror Apertures:")
+        for i, wave in enumerate(self.waves_ratio):
+            wavelength = self.wave_range[i]
+            print("Wavelength: %.2f microns" % wavelength)
+            _pupil = np.abs(yy) <= aperture_ratio / wave
+            mask = np.array(_pupil).astype(np.float32)
+            self.pupil_mirror_mask[wavelength] = mask
+            self.pupil_mirror_masks_fft[wavelength] = np.stack(mask * self.N_slices)       # For the GPU calculations
+
         return
 
     def propagate_pupil_to_slicer(self, wavelength, wavefront):
@@ -371,17 +376,18 @@ class SlicerModel(object):
             complex_mirror.append(ifft2(_shifted, norm='ortho'))
         return complex_mirror
 
-    def propagate_pupil_mirror_to_exit_slit(self, complex_mirror):
+    def propagate_pupil_mirror_to_exit_slit(self, complex_mirror, wavelength):
         """
         Using the PUPIL MIRROR MASK, it propagates each slice to the corresponding
         exit slit
         :param complex_mirror: complex electric field at the PUPIL MIRROR plane [a list of slices]
+        :param wavelength: wavelength at which to rescale the PUPIL MIRROR apertures
         """
 
         # print("Pupil Mirror Plane -> Exit Slits")
         exit_slits = []
         for c_mirror in complex_mirror:
-            masked_mirror = self.pupil_mirror_mask * c_mirror
+            masked_mirror = self.pupil_mirror_mask[wavelength] * c_mirror
             complex_slit = fftshift(fft2(masked_mirror, norm='ortho'))
             exit_slits.append((np.abs(complex_slit))**2)
         image = np.sum(np.stack(exit_slits), axis=0)
@@ -404,7 +410,7 @@ class SlicerModel(object):
         free, total = cuda.mem_get_info()
         print("Memory Start | Free: %.2f percent" % (free/total*100))
         slicer_masks_gpu = gpuarray.to_gpu(self.slicer_masks_fftshift)
-        mirror_mask_gpu = gpuarray.to_gpu(self.pupil_mirror_masks_fft)
+        mirror_mask_gpu = gpuarray.to_gpu(self.pupil_mirror_masks_fft[wavelength])
 
         plan_batch = cu_fft.Plan((self.N_PIX, self.N_PIX), np.complex64, np.complex64, self.N_slices)
 
@@ -522,7 +528,7 @@ class SlicerModel(object):
         print("\nPropagating Wavelength: %.2f microns" % wavelength)
         complex_slicer = self.propagate_pupil_to_slicer(wavelength=wavelength, wavefront=wavefront)
         complex_mirror = self.propagate_slicer_to_pupil_mirror(complex_slicer)
-        exit_slits, image_slit = self.propagate_pupil_mirror_to_exit_slit(complex_mirror)
+        exit_slits, image_slit = self.propagate_pupil_mirror_to_exit_slit(complex_mirror, wavelength=wavelength)
 
         if plot:
 
@@ -590,7 +596,7 @@ class SlicerModel(object):
             plt.clim(m_res, -m_res)
             plt.title('Exit Slit - No Slicer')
 
-        return complex_slicer, complex_mirror, image_slit
+        return complex_slicer, complex_mirror, image_slit, exit_slits
 
     def plot_slicer_boundaries(self):
         """
@@ -739,7 +745,7 @@ class SlicerPSFCalculator(object):
                 # With Slicer
                 pupil = self.pupil_masks[j]
                 wavefront = pupil * np.dot(self.actuator_matrices[j], coef[i])
-                _slicer, _mirror, slit = self.slicer_model.propagate_one_wavelength(wave, wavefront, plot=False)
+                _slicer, _mirror, slit, slits = self.slicer_model.propagate_one_wavelength(wave, wavefront, plot=False)
                 crop_slit = crop_array(slit, self.slicer_model.N_slices * self.slicer_model.spaxels_per_slice)
                 PSF_slicer_waves.append(crop_slit / self.slicer_model.PEAKs[wave])
 
@@ -794,7 +800,7 @@ if __name__ == """__main__""":
     N_PSF = 10
     cpu_start = time()
     for i in range(N_PSF):
-        complex_slicer, complex_mirror, exit_slit = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=False)
+        complex_slicer, complex_mirror, exit_slit, slits = slicer.propagate_one_wavelength(wavelength=1.5, wavefront=0, plot=False)
     cpu_end = time()
     cpu_time = cpu_end - cpu_start
 
@@ -835,7 +841,7 @@ if __name__ == """__main__""":
     # that would
     # In Python we have 1/2 spaxels_per_slice rings at each side in the Pupil Mirror arrays
     N_rings = spaxels_per_slice / 2
-    rings_we_want = 3
+    rings_we_want = 4
     pupil_mirror_aperture = rings_we_want / N_rings
 
     N_PIX = 2048
@@ -847,88 +853,152 @@ if __name__ == """__main__""":
     HARMONI = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
                          spaxel_scale=spaxel_mas, N_waves=2, wave0=wave0, waveN=waveN)
 
-    complex_slicer, complex_mirror, exit_slit = HARMONI.propagate_one_wavelength(wavelength=wave0, wavefront=0)
+    for wave in HARMONI.wave_range:
 
-    masked_slicer = (np.abs(complex_slicer)) ** 2 * HARMONI.slicer_masks[N_slices // 2]
-    masked_slicer /= np.max(masked_slicer)
-    minPix_Y = (N_PIX + 1 - 2 * spaxels_per_slice) // 2         # Show 2 slices
-    maxPix_Y = (N_PIX + 1 + 2 * spaxels_per_slice) // 2
-    minPix_X = (N_PIX + 1 - 6 * spaxels_per_slice) // 2
-    maxPix_X = (N_PIX + 1 + 6 * spaxels_per_slice) // 2
-    masked_slicer = masked_slicer[minPix_Y:maxPix_Y, minPix_X:maxPix_X]
+        complex_slicer, complex_mirror, exit_slit, slits = HARMONI.propagate_one_wavelength(wavelength=wave, wavefront=0)
 
-    plt.figure()
-    plt.imshow(masked_slicer, cmap='jet')
-    plt.colorbar(orientation='horizontal')
-    plt.title('HARMONI Slicer: Central Slice @%.2f microns' % wave0)
-    # plt.show()
+        masked_slicer = (np.abs(complex_slicer)) ** 2 * HARMONI.slicer_masks[N_slices // 2]
+        masked_slicer /= np.max(masked_slicer)
+        minPix_Y = (N_PIX + 1 - 2 * spaxels_per_slice) // 2         # Show 2 slices
+        maxPix_Y = (N_PIX + 1 + 2 * spaxels_per_slice) // 2
+        minPix_X = (N_PIX + 1 - 6 * spaxels_per_slice) // 2
+        maxPix_X = (N_PIX + 1 + 6 * spaxels_per_slice) // 2
+        masked_slicer = masked_slicer[minPix_Y:maxPix_Y, minPix_X:maxPix_X]
 
-    masked_pupil_mirror = (np.abs(complex_mirror[N_slices // 2])) ** 2 * HARMONI.pupil_mirror_mask
-    masked_pupil_mirror /= np.max(masked_pupil_mirror)
-    plt.figure()
-    plt.imshow(np.log10(masked_pupil_mirror), cmap='jet')
-    plt.colorbar()
-    plt.clim(vmin=-4)
-    plt.title('Pupil Mirror: Aperture %.2f PSF zeros' % rings_we_want)
-    # plt.show()
+        plt.figure()
+        plt.imshow(masked_slicer, cmap='jet')
+        plt.colorbar(orientation='horizontal')
+        plt.title('HARMONI Slicer: Central Slice @%.2f microns' % wave)
+        # plt.show()
 
-    masked_slit = exit_slit * HARMONI.slicer_masks[N_slices // 2]
-    masked_slit = masked_slit[minPix_Y: maxPix_Y, minPix_X: maxPix_X]
-    plt.figure()
-    plt.imshow(masked_slit, cmap='jet')
-    plt.colorbar(orientation='horizontal')
-    plt.title('Exit Slit @%.2f microns (Pupil Mirror: %.2f PSF zeros)' % (wave0, rings_we_want))
+        masked_pupil_mirror = (np.abs(complex_mirror[N_slices // 2])) ** 2 * HARMONI.pupil_mirror_mask[wave]
+        masked_pupil_mirror /= np.max(masked_pupil_mirror)
+        plt.figure()
+        plt.imshow(np.log10(masked_pupil_mirror), cmap='jet')
+        plt.colorbar()
+        plt.clim(vmin=-4)
+        plt.title('Pupil Mirror: Aperture %.2f PSF zeros' % rings_we_want)
+        # plt.show()
+
+        masked_slit = exit_slit * HARMONI.slicer_masks[N_slices // 2]
+        masked_slit = masked_slit[minPix_Y: maxPix_Y, minPix_X: maxPix_X]
+        plt.figure()
+        plt.imshow(masked_slit, cmap='jet')
+        plt.colorbar(orientation='horizontal')
+        plt.title('Exit Slit @%.2f microns (Pupil Mirror: %.2f PSF zeros)' % (wave, rings_we_want))
     plt.show()
 
     # ================================================================================================================ #
 
     # Compare everything to the Zemax POP PSFs
     cwd = os.getcwd()
-    path_zemax = os.path.join(cwd, 'ImageSlicerEffects\\HARMONI\\PupilMirror\\2048\\3Rings')
+    path_zemax = os.path.join(cwd, 'ImageSlicerEffects\\HARMONI\\PupilMirror\\2048\\2Rings')
 
     list_slices = list(np.arange(1, 76, 2))
     central_slice = 19
     pop_slicer = POP_Slicer()
     POP_PSF, POP_slices = pop_slicer.read_all_zemax_files(path_zemax, 'HARMONI_SLICER_EFFECTS 0_', list_slices)
 
+    # HARMONI sampling
+    L_harmoni = 4.94                            # Physical size of POP arrays
+    harmoni_sampling = L_harmoni / 2048         # mm / pixel
+    harmoni_extent = [-L_harmoni/2, L_harmoni/2, -L_harmoni/2, L_harmoni/2]
+
+    physical_slice = 0.13               # mm at Exit Slit
+    python_sampling = physical_slice / HARMONI.spaxels_per_slice    # mm / pixel
+    L_python = python_sampling * HARMONI.N_PIX
+    python_extent = [-L_python/2, L_python/2, -L_python/2, L_python/2]
+
+
     python_PSF = exit_slit
+
+    zoom = 0.75
+    plt.figure()
+    ax1 = plt.subplot(1, 2, 1)
+    im1 = ax1.imshow((POP_PSF), extent=harmoni_extent, cmap='jet')
+    ax1.set_xlim(-zoom, zoom)
+    ax1.set_ylim(-zoom, zoom)
+    ax1.set_title(r'Zemax POP')
+    ax1.set_xlabel('X [mm]')
+    ax1.set_ylabel('Y [mm]')
+    plt.colorbar(im1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 2, 2)
+    im2 = ax2.imshow((python_PSF), extent=python_extent, cmap='jet')
+    ax2.set_xlim(-zoom, zoom)
+    ax2.set_ylim(-zoom, zoom)
+    ax2.set_title('Python')
+    ax2.set_xlabel('X [mm]')
+    ax2.set_ylabel('Y [mm]')
+    plt.colorbar(im2, ax=ax2, orientation='horizontal')
+    plt.show()
 
     plt.figure()
     ax1 = plt.subplot(1, 2, 1)
-    im1 = ax1.imshow(np.log10(POP_PSF), extent=[-1, 1, -1, 1])
+    im1 = ax1.imshow(np.log10(POP_PSF), extent=harmoni_extent)
     im1.set_clim(vmin=-10)
     ax1.set_title(r'Zemax POP')
     plt.colorbar(im1, ax=ax1, orientation='horizontal')
 
     ax2 = plt.subplot(1, 2, 2)
-    im2 = ax2.imshow(np.log10(python_PSF), extent=[-1, 1, -1, 1])
-    ax2.set_xlim(-0.5, 0.5)
-    ax2.set_ylim(-0.5, 0.5)
+    im2 = ax2.imshow(np.log10(python_PSF), extent=python_extent)
+    ax2.set_xlim(-0.5*L_harmoni, 0.5*L_harmoni)
+    ax2.set_ylim(-0.5*L_harmoni, 0.5*L_harmoni)
     im2.set_clim(vmin=-10)
     ax2.set_title('Python')
     plt.colorbar(im2, ax=ax2, orientation='horizontal')
     plt.show()
 
     # Central Slice
-    masked_slit = exit_slit * HARMONI.slicer_masks[N_slices // 2]
+    # masked_slit = exit_slit * HARMONI.slicer_masks[N_slices // 2]
+    masked_slit = slits[N_slices // 2]
     # masked_slit = masked_slit[minPix_Y: maxPix_Y, minPix_X: maxPix_X]
     plt.figure()
     ax1 = plt.subplot(1, 2, 1)
-    im1 = ax1.imshow(POP_slices[central_slice//2], extent=[-2.47, 2.47, -2.47, 2.47], cmap='jet')
-    ax1.set_xlim([-0.13, 0.13])
-    ax1.set_ylim([-0.13, 0.13])
+    im1 = ax1.imshow(POP_slices[central_slice//2], extent=harmoni_extent, cmap='jet')
+    ax1.set_xlim([-physical_slice, physical_slice])
+    ax1.set_ylim([-physical_slice, physical_slice])
+    ax1.set_xlabel('X [mm]')
+    ax1.set_ylabel('Y [mm]')
     # im1.set_clim(vmin=-10)
     ax1.set_title(r'Zemax POP | Central Slice')
     plt.colorbar(im1, ax=ax1, orientation='horizontal')
 
     ax2 = plt.subplot(1, 2, 2)
-    im2 = ax2.imshow(masked_slit, extent=[-2.47, 2.47, -2.47, 2.47],cmap='jet')
+    im2 = ax2.imshow(masked_slit, extent=python_extent,cmap='jet')
     # im2.set_clim(vmin=-10)
-    ax2.set_xlim([-0.13/2, 0.13/2])
-    ax2.set_ylim([-0.13/2, 0.13/2])
+    ax2.set_xlim([-physical_slice, physical_slice])
+    ax2.set_ylim([-physical_slice, physical_slice])
+    ax2.set_xlabel('X [mm]')
+    ax2.set_ylabel('Y [mm]')
     ax2.set_title('Python | Central Slice')
     plt.colorbar(im2, ax=ax2, orientation='horizontal')
     plt.show()
+
+    zoom = 3
+    plt.figure()
+    ax1 = plt.subplot(1, 2, 1)
+    im1 = ax1.imshow(np.log10(POP_slices[central_slice//2]), extent=harmoni_extent, cmap='jet')
+    ax1.set_xlim([-zoom*physical_slice, zoom*physical_slice])
+    ax1.set_ylim([-zoom*physical_slice, zoom*physical_slice])
+    ax1.set_xlabel('X [mm]')
+    ax1.set_ylabel('Y [mm]')
+    im1.set_clim(vmin=-10)
+    ax1.set_title(r'Zemax POP | Central Slice')
+    plt.colorbar(im1, ax=ax1, orientation='horizontal')
+
+    ax2 = plt.subplot(1, 2, 2)
+    im2 = ax2.imshow(np.log10(masked_slit), extent=python_extent,cmap='jet')
+    im2.set_clim(vmin=-6)
+    ax2.set_xlim([-zoom*physical_slice, zoom*physical_slice])
+    ax2.set_ylim([-zoom*physical_slice, zoom*physical_slice])
+    ax2.set_xlabel('X [mm]')
+    ax2.set_ylabel('Y [mm]')
+    ax2.set_title('Python | Central Slice')
+    plt.colorbar(im2, ax=ax2, orientation='horizontal')
+    plt.show()
+
+    #TODO: Ask about Exit Slit masks
 
     # ================================================================================================================ #
     #                                    Impact of the PUPIL MIRROR APERTURE                                           #
@@ -952,7 +1022,7 @@ if __name__ == """__main__""":
         zoom_size = slicer.N_slices * slicer.slice_size_mas / 2
 
         for wave in slicer.wave_range:
-            _complex_slicer, _complex_mirror, image_slit = slicer.propagate_one_wavelength(wavelength=wave, wavefront=0)
+            _complex_slicer, _complex_mirror, image_slit, slits = slicer.propagate_one_wavelength(wavelength=wave, wavefront=0)
 
             # Pupil Mirror plane
             central_slice = (slicer.N_slices - 1) // 2
@@ -1014,7 +1084,7 @@ if __name__ == """__main__""":
 
 
         for wave in slicer.wave_range:
-            _complex_slicer, _complex_mirror, image_slit = slicer.propagate_one_wavelength(wavelength=wave, wavefront=0)
+            _complex_slicer, _complex_mirror, image_slit, slits = slicer.propagate_one_wavelength(wavelength=wave, wavefront=0)
 
             central_slice = (slicer.N_slices - 1) // 2
 
