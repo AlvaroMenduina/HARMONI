@@ -1,26 +1,64 @@
+"""
+Author: Alvaro Menduina
+Sanity check on the effect of Defocus intensity on the Peak and Rings of the PSF
 
+It shows that a defocus of PV = 1 wave suppresses the central Peak
+"""
 
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 import zern_core as zern
 from numpy.fft import fft, fft2, ifft2, fftshift
 
-pix = 30                    # Pixels to crop the PSF
-N_PIX = 2*2048                 # Pixels for the Fourier arrays
-RHO_APER = 1/101              # Size of the aperture relative to the physical size of the Fourier arrays
-
-# SPAXEL SCALE
-wave = 1.5                 # 1 micron
-ELT_DIAM = 39
+pix = 30                                # Pixels to crop the PSF
+N_PIX = 2048                            # Pixels for the Fourier arrays
+wave = 1.5                              # microns
+ELT_DIAM = 39                           # meters
 MILIARCSECS_IN_A_RAD = 206265000
-SPAXEL_RAD = RHO_APER * wave / ELT_DIAM * 1e-6
-SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
-print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wave))
 
-FWHM_RAD = wave * 1e-6 / 39
-FWHM_MAS = FWHM_RAD * MILIARCSECS_IN_A_RAD
-FWHM_PIX = FWHM_MAS / SPAXEL_MAS
+def rho_spaxel_scale(spaxel_scale=4.0, wavelength=1.5):
+    """
+    Compute the aperture radius necessary to have a
+    certain SPAXEL SCALE [in mas] at a certain WAVELENGTH [in microns]
+
+    That would be the aperture radius in an array ranging from [-1, 1] in physical length
+    For example, if rho = 0.5, then the necessary aperture is a circle of half the size of the array
+
+    We can use the inverse of that to get the "oversize" in physical units in our arrays to match a given scale
+    :param spaxel_scale: [mas]
+    :param wavelength: [microns]
+    :return:
+    """
+
+    scale_rad = spaxel_scale / MILIARCSECS_IN_A_RAD
+    rho = scale_rad * ELT_DIAM / (wavelength * 1e-6)
+    return rho
+
+
+def check_spaxel_scale(rho_aper, wavelength):
+    """
+    Checks the spaxel scale at a certain wavelength, for a given aperture radius
+    defined for a [-1, 1] physical array
+    :param rho_aper: radius of the aperture, relative to an array of size [-1, 1]
+    :param wavelength: wavelength of interest (the PSF grows in size with wavelength, changing the spaxel scale)
+    :return:
+    """
+
+    SPAXEL_RAD = rho_aper * wavelength / ELT_DIAM * 1e-6
+    SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
+    print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wavelength))
+
+def compute_FWHM(wavelength):
+    """
+    Compute the Full Width Half Maximum of the PSF at a given Wavelength
+    in miliarcseconds, for the ELT
+    :param wavelength: [microns]
+    :return:
+    """
+    FWHM_RAD = wavelength * 1e-6 / ELT_DIAM  # radians
+    FWHM_MAS = FWHM_RAD * MILIARCSECS_IN_A_RAD
+    return FWHM_MAS
+
 
 def crop_array(array, crop=25):
     PIX = array.shape[0]
@@ -29,12 +67,22 @@ def crop_array(array, crop=25):
     array_crop = array[min_crop:max_crop, min_crop:max_crop]
     return array_crop
 
+
 if __name__ == """__main__""":
 
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
+    spaxel_scale = 0.5      # mas
+    RHO_APER = rho_spaxel_scale(spaxel_scale, wavelength=wave)
+    check_spaxel_scale(RHO_APER, wave)
+    FWHM = compute_FWHM(wave)       # mas
+    crop_pix = 5 * FWHM / spaxel_scale      # How many pixels to cover enough FWHMs
+    crop_pix = int(np.ceil(crop_pix))
+
     """ Impact of Defocus on a Round PSF - Evolution of Rings """
+    # How does the defocus intensity affect the Peak and Rings of the PSF?
+
     x = np.linspace(-1, 1, N_PIX, endpoint=True)
     xx, yy = np.meshgrid(x, x)
     rho, theta = np.sqrt(xx**2 + (2*yy)**2), np.arctan2(xx, yy)
@@ -42,35 +90,39 @@ if __name__ == """__main__""":
     rho, theta = rho[pupil], theta[pupil]
     zernike = zern.ZernikeNaive(mask=pupil)
     _phase = zernike(coef=np.zeros(10), rho=rho/RHO_APER, theta=theta, normalize_noll=False, mode='Jacobi', print_option='Silent')
-    H_flat = zernike.model_matrix[:,3:]   # remove the piston and tilts
+    H_flat = zernike.model_matrix[:, 3:]   # remove the piston and tilts
     H_matrix = zern.invert_model_matrix(H_flat, pupil)
-    defocus = 0.5 * H_matrix[:,:,1].copy()
 
-    pupil_f = pupil * np.exp(2*np.pi * 1j * np.zeros_like(pupil))
-    image = (np.abs(fftshift(fft2(pupil_f))))**2
-    PEAK = np.max(image)
-    image /= PEAK
+    # Rescale by 1/2 to have a Peak-To-Valley of 1 wave
+    defocus = 0.5 * H_matrix[:, :, 1].copy()
 
+    # Compute nominal PSF -> Pupil = Aperture * exp(2 PI wavefront)
+    pupil_nom = pupil * np.exp(2*np.pi * 1j * np.zeros_like(pupil))
+    image_nom = (np.abs(fftshift(fft2(pupil_nom))))**2
+    PEAK = np.max(image_nom)
+    image_nom /= PEAK
 
-
-    # focus = np.linspace(0., 0.75, 25)
-    # focus = [0, 0.25, 0.5, 0.75, 1.0]
     focus = [0, 0.25, 0.5, 1.0]
     img = []
-    # focus = np.linspace(0, 2*np.pi, 10)
+    mas = spaxel_scale * np.linspace(-crop_pix//2, crop_pix//2, crop_pix)
     plt.figure()
     for eps in focus:
+
         pupil_foc = pupil * np.exp(2*np.pi * 1j * eps * defocus)
         image_foc = (np.abs(fftshift(fft2(pupil_foc))))**2
         image_foc /= PEAK
-        img.append(crop_array(image_foc, crop=100))
+        cropped = crop_array(image_foc, crop=crop_pix)
+        img.append(cropped)
 
-        psf_2d = crop_array(image_foc, crop=150)[75, :]
+        psf_2d = cropped[crop_pix//2, :]
 
-
-        plt.plot(np.log10(psf_2d), label=eps)
-    plt.legend()
+        plt.plot(mas, (psf_2d), label=eps)
+    plt.xlabel('mas')
+    plt.legend(title='Defocus Strength $f$')
+    plt.title(r'PSF($\exp{(2\pi f Z_f)}$)')
     plt.show()
+
+    # Having a defocus of PV=1 effectively suppresses the central peak
 
     cm = 'viridis'
     f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
@@ -101,6 +153,9 @@ if __name__ == """__main__""":
     ax4.get_yaxis().set_visible(False)
     plt.show()
 
+
+    #### OLD stuff
+
     # ================================================================================================================ #
     """ If the Slice Width is 1.0 FWHM """
     # slice_width = 11     # 11 pixels is the FWHM
@@ -125,13 +180,13 @@ if __name__ == """__main__""":
         # plt.title(r'Slice Width = %d pix [FWHM_Y = %d pix]' %(width, 22))
         return sliced, mask_slice
 
-    central, mask_slice = slice_mask(image, width=101, i_slice=0, crop=50)
+    central, mask_slice = slice_mask(image_nom, width=101, i_slice=0, crop=50)
     plt.show()
     plt.figure()
     plt.imshow(central)
     plt.show()
 
-    total = np.sum(crop_array(image, crop=250))
+    total = np.sum(crop_array(image_nom, crop=250))
 
     # focus = [0, 0.25, 0.5, 1.0]
     focus = np.linspace(0, 1, 15, endpoint=True)

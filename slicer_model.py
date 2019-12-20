@@ -63,7 +63,7 @@ def crop_array(array, crop):
     return array_crop
 
 
-def rho_spaxel_scale(spaxel_scale=4, wavelength=1.5):
+def rho_spaxel_scale(spaxel_scale=4.0, wavelength=1.5):
     """
     Compute the aperture radius necessary to have a
     certain SPAXEL SCALE [in mas] at a certain WAVELENGTH [in microns]
@@ -841,7 +841,7 @@ if __name__ == """__main__""":
     # that would
     # In Python we have 1/2 spaxels_per_slice rings at each side in the Pupil Mirror arrays
     N_rings = spaxels_per_slice / 2
-    rings_we_want = 4
+    rings_we_want = 2
     pupil_mirror_aperture = rings_we_want / N_rings
 
     N_PIX = 2048
@@ -892,12 +892,13 @@ if __name__ == """__main__""":
 
     # Compare everything to the Zemax POP PSFs
     cwd = os.getcwd()
-    path_zemax = os.path.join(cwd, 'ImageSlicerEffects\\HARMONI\\PupilMirror\\2048\\2Rings')
+    path_zemax = os.path.join(cwd, 'ImageSlicerEffects\\HARMONI\\PupilMirror\\2048\\2Rings\\3 um')
 
     list_slices = list(np.arange(1, 76, 2))
     central_slice = 19
     pop_slicer = POP_Slicer()
     POP_PSF, POP_slices = pop_slicer.read_all_zemax_files(path_zemax, 'HARMONI_SLICER_EFFECTS 0_', list_slices)
+    POP_PSF /= np.max(POP_PSF)
 
     # HARMONI sampling
     L_harmoni = 4.94                            # Physical size of POP arrays
@@ -906,16 +907,18 @@ if __name__ == """__main__""":
 
     physical_slice = 0.13               # mm at Exit Slit
     python_sampling = physical_slice / HARMONI.spaxels_per_slice    # mm / pixel
+    new_spaxels_per_slice = physical_slice / harmoni_sampling
     L_python = python_sampling * HARMONI.N_PIX
     python_extent = [-L_python/2, L_python/2, -L_python/2, L_python/2]
 
-
+    complex_slicer, complex_mirror, exit_slit, slits = HARMONI.propagate_one_wavelength(wavelength=1.5, wavefront=0)
     python_PSF = exit_slit
+    python_PSF /= np.max(python_PSF)
 
     zoom = 0.75
     plt.figure()
     ax1 = plt.subplot(1, 2, 1)
-    im1 = ax1.imshow((POP_PSF), extent=harmoni_extent, cmap='jet')
+    im1 = ax1.imshow(POP_PSF, extent=harmoni_extent, cmap='jet')
     ax1.set_xlim(-zoom, zoom)
     ax1.set_ylim(-zoom, zoom)
     ax1.set_title(r'Zemax POP')
@@ -924,7 +927,7 @@ if __name__ == """__main__""":
     plt.colorbar(im1, ax=ax1, orientation='horizontal')
 
     ax2 = plt.subplot(1, 2, 2)
-    im2 = ax2.imshow((python_PSF), extent=python_extent, cmap='jet')
+    im2 = ax2.imshow(python_PSF, extent=python_extent, cmap='jet')
     ax2.set_xlim(-zoom, zoom)
     ax2.set_ylim(-zoom, zoom)
     ax2.set_title('Python')
