@@ -911,6 +911,8 @@ if __name__ == """__main__""":
     L_python = python_sampling * HARMONI.N_PIX
     python_extent = [-L_python/2, L_python/2, -L_python/2, L_python/2]
 
+
+
     complex_slicer, complex_mirror, exit_slit, slits = HARMONI.propagate_one_wavelength(wavelength=1.5, wavefront=0)
     python_PSF = exit_slit
     python_PSF /= np.max(python_PSF)
