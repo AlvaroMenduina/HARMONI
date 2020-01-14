@@ -18,9 +18,6 @@ pix = 50                    # Pixels to crop the PSF
 N_PIX = 1024                 # Pixels for the Fourier arrays
 minPix, maxPix = (N_PIX + 1 - pix) // 2, (N_PIX + 1 + pix) // 2
 
-# SPAXEL SCALE
-wave = 1.0                 # 1 micron
-SPAXEL_MAS = 0.5            # mas
 ELT_DIAM = 39
 MILIARCSECS_IN_A_RAD = 206265000
 
@@ -67,6 +64,14 @@ def check_spaxel_scale(rho_aper, wavelength):
     SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
     print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wavelength))
 
+
+# SPAXEL SCALE
+wave = 0.75                 # 1 micron
+SPAXEL_MAS = 0.5            # mas
+
+# WATCH OUT:
+# We want the spaxel scale to be 4 mas at 1.5 um
+# But that means that it won't be 4 mas at whatever other wavelength
 
 RHO_APER = rho_spaxel_scale(spaxel_scale=SPAXEL_MAS, wavelength=wave)
 RHO_OBSC = 0.3*RHO_APER     # Central obscuration (30% of ELT)
@@ -221,9 +226,22 @@ class PointSpreadFunction(object):
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
 
-def ensquared_one_pix(array, new_scale=40, plot=True):
 
-    n = int(new_scale // SPAXEL_MAS)
+def ensquared_one_pix(array, pix_scale, new_scale=40, plot=True):
+    """
+    Given an oversampled PSF (typically 0.5-1.0 mas spaxels), it calculates
+    the Ensquared Energy of the central spaxel in a new_scale (4, 10, 20 mas)
+
+    It selects a window of size new_scale and adds up the Intensity of those pixels
+
+    :param array: PSF
+    :param pix_scale: size in [mas] of the spaxels in the PSF
+    :param new_scale: new spaxel scale [mas]
+    :param plot: whether to plot the array and windows
+    :return:
+    """
+
+    n = int(new_scale // pix_scale)
     minPix, maxPix = (pix + 1 - n) // 2, (pix + 1 + n) // 2
     ens = array[minPix:maxPix, minPix:maxPix]
     # print(ens.shape)
@@ -236,7 +254,7 @@ def ensquared_one_pix(array, new_scale=40, plot=True):
         square = Rectangle((minPix-0.5, minPix-0.5), n, n, linestyle='--', fill=None, color='white')
         ax1.add_patch(square)
         img1 = ax1.imshow(array, cmap=mapp)
-        ax1.set_title('%.1f mas pixels' % (SPAXEL_MAS))
+        ax1.set_title('%.1f mas pixels' % (pix_scale))
         img1.set_clim(0, 1)
         plt.colorbar(img1, ax=ax1, orientation='horizontal')
 
@@ -254,8 +272,25 @@ if __name__ == "__main__":
     plt.rc('font', family='serif')
     plt.rc('text', usetex=False)
 
-    """ Zernike """
+    """ Zernike Polynomials """
 
+
+    # WATCH OUT:
+    # We want the spaxel scale to be 4 mas at 1.5 um
+    # But that means that it won't be 4 mas at whatever other wavelength
+
+    # SPAXEL SCALE
+    wave0 = 1.5         # Nominal wavelength at which to force a given spaxel scale
+    SPAXEL_MAS = 0.5    # [mas] spaxel scale at wave0
+    RHO_4MAS = rho_spaxel_scale(spaxel_scale=SPAXEL_MAS, wavelength=wave0)
+
+    # Rescale the aperture radius to mimic the wavelength scaling of the PSF
+    wave = 0.85  # 1 micron
+    RHO_APER = wave0 / wave * RHO_4MAS
+    RHO_OBSC = 0.3 * RHO_APER  # Central obscuration (30% of ELT)
+    check_spaxel_scale(RHO_APER, wave0)
+
+    # Define the Pupil Masks and the Rho, Thetha (masked) arrays
     x0 = np.linspace(-1., 1., N_PIX, endpoint=True)
     xx, yy = np.meshgrid(x0, x0)
     rho = np.sqrt(xx ** 2 + yy ** 2)
@@ -265,78 +300,159 @@ if __name__ == "__main__":
     theta = theta[pupil]
 
     triang = triangular_numbers(N_levels=15)
-    Level = 11
-    exp = Level - 1
-    N_zern = triang[Level]
-    _coef = np.zeros(N_zern)
-    z = zern.ZernikeNaive(mask=pupil)
-    _phase = z(coef=_coef, rho=rho/RHO_APER, theta=theta, normalize_noll=False, mode='Jacobi',
-               print_option=None)
-    model_matrix_flat = z.model_matrix
-    model_matrix = zern.invert_model_matrix(z.model_matrix, pupil)
-    model_matrix = model_matrix[:, :, 3:]   # remove piston and tilts
-    model_matrix_flat = model_matrix_flat[:, 3:]
-    N_zern = model_matrix.shape[-1]
 
-    PSF_zern = PointSpreadFunction([model_matrix, pupil, model_matrix_flat])
-    c_zern = np.random.uniform(-0.10, 0.10, size=N_zern)
-    phase0 = np.dot(model_matrix, c_zern)
-    p0 = min(phase0.min(), -phase0.max())
+    # Decide whether you want to use Zernike polynomials
+    # "up to a certain row" row_by_row == False
+    # or whether you want it row_by_row == True
+    # This is because low order and high order aberrations behave differently wrt EE
+    row_by_row = False
 
-    # plt.figure()
-    # plt.imshow(phase0, extent=(-1, 1, -1, 1), cmap='coolwarm')
-    # plt.colorbar()
-    # plt.clim(p0, -p0)
+    for level in np.arange(10, 11):
+        print("\nZernike Level: ", level)
+
+        # Calculate how many Zernikes we need to have up to a certain Radial level
+        exp = level - 1                         # Exponent of the Zernike radial polynomial
+        N_zern = triang[level]                  # How many Zernikes in total to ask zern to use
+        _coef = np.zeros(N_zern)
+        z = zern.ZernikeNaive(mask=pupil)
+        _phase = z(coef=_coef, rho=rho/RHO_APER, theta=theta, normalize_noll=False, mode='Jacobi',
+                   print_option=None)
+        model_matrix_flat = z.model_matrix
+        model_matrix = zern.invert_model_matrix(z.model_matrix, pupil)
+
+        model_matrix = model_matrix[:, :, 3:]   # remove piston and tilts
+        model_matrix_flat = model_matrix_flat[:, 3:]
+
+        if row_by_row:      # Select only a specific row (radial order) of Zernike
+            # Number of polynomials in that last Zernike row
+            poly_in_row = triang[level] - triang[level - 1]
+            model_matrix = model_matrix[:, :, -poly_in_row:]   # select only the high orders
+            model_matrix_flat = model_matrix_flat[:, -poly_in_row:]
+
+        N_zern = model_matrix.shape[-1]         # Update the N_zern after removing Piston and Tilts
+
+        PSF_zern = PointSpreadFunction([model_matrix, pupil, model_matrix_flat])
+
+        plt.figure()
+        colors = ['blue', 'green', 'red']
+        scales = [4, 10, 20]                # [mas] spaxels
+
+        for scale, color in zip(scales, colors):
+            print("%d mas spaxel scale" % scale)
+            N_trials = 10           # Random wavefronts
+            N_rms = 50              # Number of sample points within a given RMS range
+            data = np.zeros((2, N_trials*N_rms))
+            amplitudes = np.linspace(0.0, 0.125, N_rms)
+            i = 0
+
+            p0, s0 = PSF_zern.compute_PSF(np.zeros(N_zern))     # Nominal PSF
+            # Calculate the EE for the nominal PSF so that you can compare
+            EE0 = ensquared_one_pix(p0, pix_scale=SPAXEL_MAS, new_scale=scale, plot=False)
+            # plt.figure()
+            for amp in amplitudes:
+                # print(amp)
+                for k in range(N_trials):
+                    c_act = np.random.uniform(-amp, amp, size=N_zern)
+                    phase_flat = np.dot(model_matrix_flat, c_act)
+                    rms = wave * 1e3 * np.std(phase_flat)
+                    p, s = PSF_zern.compute_PSF(c_act)
+                    EE = ensquared_one_pix(p, pix_scale=SPAXEL_MAS, new_scale=scale, plot=False)
+                    dEE = EE / EE0 * 100
+                    data[:, i] = [rms, dEE]
+                    i += 1
+
+            plt.scatter(data[0], data[1], color=color, s=3, label=scale)
+
+        plt.axhline(y=95, color='darksalmon', linestyle='--')
+        plt.axhline(y=90, color='lightsalmon', linestyle='-.')
+        plt.xlabel(r'RMS wavefront [nm]')
+        plt.ylabel(r'Relative Encircled Energy [per cent]')
+        plt.legend(title='Spaxel [mas]', loc=3)
+        plt.ylim([80, 100])
+        plt.xlim([0, 125])
+        plt.title(r'%d Zernike ($\rho^{%d}$)' % (N_zern, exp))
+        plt.savefig('%d Zernike' % N_zern)
+
+
+    """ Fourier thoughts """
+    # Why is there a dependency on the Zernike order?
+    # High order aberrations seem to degrade the EE of the central spaxel
+    # much quicker than low order aberrations
+
+    # Let us consider a 1D PSF
+
+    import numpy as np
+    from numpy.fft import fft, fftshift, fftfreq
+    import matplotlib.pyplot as plt
+    Lx = 2.0
+    N = 2048
+    x = np.linspace(-Lx/2, Lx/2, N, endpoint=True)
+    y = np.ones_like(x)
+    eps = 0.10          # arbitrary aperture
+    mask_y = np.abs(x) <= eps
+
+    # Spatial frequency sampling
+    diam = 2*eps        # Aperture diameter we are using
+    N_diam = Lx/diam     # How many Diameters is our window [-1, 1]
+    # Very useful the fftfreq. It calculates the frequencies array for
+    # a given number of samples N, which span a window of size N_diam
+    freq = fftshift(fftfreq(n=N, d=N_diam/N))
+
+    # Useless sanity checks
+    plt.figure()
+    plt.plot(x, y * mask_y)
+    plt.show()
+
+    masked = y * mask_y
+
+    pup0 = masked * np.exp(1j * masked)
+
+    f = fftshift(fft(pup0, norm='ortho'))
+    psf0 = (np.abs(f))**2
+    PEAK = np.max(psf0)
+    psf0 /= PEAK
+
+    plt.figure()
+    plt.plot(psf0)
     # plt.show()
-    #
-    # p0, s0 = PSF_zern.compute_PSF(c_zern)
-    # EE0 = ensquared_one_pix(p0, new_scale=20)         # Perfect EE for central pixel
-    # plt.show()
-    #
-    # plt.figure()
-    # plt.imshow(p0)
-    # plt.colorbar()
-    # plt.show()
 
-    colors = ['blue', 'green', 'red']
-    scales = [4, 10, 20]
+    # Compare the Nominal PSF to that of a PSF with aberrations
+    # in the form of Cosine Waves of a given spatial frequency [cycles / Diameter]
+    plt.figure()
+    plt.plot(freq, psf0, linestyle='--')        # Nominal PSF for reference
+    for fx in np.arange(2, 8, 2):       # [cycles / Diam]
 
-    for scale, color in zip(scales, colors):
-        N_trials = 10
-        N_rms = 50
-        data = np.zeros((2, N_trials*N_rms))
-        amplitudes = np.linspace(0.0, 0.08, N_rms)
-        i = 0
-        # scale = 20
-        p0, s0 = PSF_zern.compute_PSF(np.zeros(N_zern))
-        EE0 = ensquared_one_pix(p0, new_scale=scale, plot=False)
+        ee = 0.1
+        # A wave that fits "fx" cycles within the aperture diameter
+        cosx = ee * mask_y * np.cos(2*np.pi * fx * x / (2*eps))
         # plt.figure()
-        for amp in amplitudes:
-            print(amp)
-            for k in range(N_trials):
-                c_act = np.random.uniform(-amp, amp, size=N_zern)
-                phase_flat = np.dot(model_matrix_flat, c_act)
-                rms = wave * 1e3 * np.std(phase_flat)
-                p, s = PSF_zern.compute_PSF(c_act)
-                EE = ensquared_one_pix(p, new_scale=scale, plot=False)
-                dEE = EE / EE0 * 100
-                data[:, i] = [rms, dEE]
-                i += 1
+        # plt.plot(x, sinx)
+        # plt.show()
 
-        plt.scatter(data[0], data[1], color=color, s=3, label=scale)
-    # plt.xlabel(r'RMS wavefront [$\lambda$]')
-    plt.xlabel(r'RMS wavefront [nm]')
-    plt.ylabel(r'Relative Encircled Energy [per cent]')
-    plt.legend(title='Spaxel [mas]', loc=3)
-    plt.ylim([80, 100])
-    plt.xlim([0, 125])
-    plt.title(r'%d Zernike ($\rho^{%d}$)' % (N_zern, exp))
-    plt.savefig('%d Zernike' % N_zern)
+        pup = masked * np.exp(1j * 2*np.pi * cosx)
+        f = fftshift(fft(pup, norm='ortho'))
+        psf = (np.abs(f))**2
+        psf /= PEAK
 
+        # plt.figure()
+        # plt.plot(psf0)
+        # plt.plot(psf)
 
+        # Offset each case to visualize
+        plt.plot(freq, psf - psf0 + (-0.1*fx + 0.9), label=fx)
+        plt.xlim([-8, 8])
+        plt.ylim([0, 1])
+        plt.grid(True)
+    plt.legend(title='Freq [cycles / D]')
+    plt.title(r'PSF - PSF(0)')
+    plt.xlabel(r'Spatial Frequency [cycles / D]')
+    plt.ylabel(r'Image Difference (+ constant)')
     plt.show()
 
 
+
+    # With the actuator model, as it contains high spatial frequencies
+    # there is little influence of the RMS across scales
 
 
     """ (1) Define the ACTUATORS """
