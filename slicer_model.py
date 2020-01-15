@@ -1006,6 +1006,76 @@ if __name__ == """__main__""":
     #TODO: Ask about Exit Slit masks
 
     # ================================================================================================================ #
+    #                                    Pixelation                                                           #
+    # ================================================================================================================ #
+
+    # First we have to match the Slice Size to have a proper clipping at the Slicer Plane
+    # That comes from the product spaxels_per_slice * spaxel_mas
+
+    N_slices = 37
+    spaxels_per_slice = 28
+    spaxel_mas = 0.25  # to get a decent resolution
+
+    # HARMONI fits approximately 6 rings (at each side) at the Pupil Mirror at 1.5 microns
+    # that would
+    # In Python we have 1/2 spaxels_per_slice rings at each side in the Pupil Mirror arrays
+    N_rings = spaxels_per_slice / 2
+    rings_we_want = 6
+    pupil_mirror_aperture = rings_we_want / N_rings
+
+    N_PIX = 2048
+    wave0, waveN = 1.5, 1.5
+
+    slicer_options = {"N_slices": N_slices, "spaxels_per_slice": spaxels_per_slice,
+                      "pupil_mirror_aperture": pupil_mirror_aperture, "anamorphic": True}
+
+    HARMONI = SlicerModel(slicer_options=slicer_options, N_PIX=N_PIX,
+                         spaxel_scale=spaxel_mas, N_waves=1, wave0=wave0, waveN=waveN)
+
+    for wave in HARMONI.wave_range:
+
+        complex_slicer, complex_mirror, exit_slit, slits = HARMONI.propagate_one_wavelength(wavelength=wave, wavefront=0)
+
+        masked_slicer = (np.abs(complex_slicer)) ** 2 * HARMONI.slicer_masks[N_slices // 2]
+        masked_slicer /= np.max(masked_slicer)
+        minPix_Y = (N_PIX + 1 - 2 * spaxels_per_slice) // 2         # Show 2 slices
+        maxPix_Y = (N_PIX + 1 + 2 * spaxels_per_slice) // 2
+        minPix_X = (N_PIX + 1 - 6 * spaxels_per_slice) // 2
+        maxPix_X = (N_PIX + 1 + 6 * spaxels_per_slice) // 2
+        masked_slicer = masked_slicer[minPix_Y:maxPix_Y, minPix_X:maxPix_X]
+
+        plt.figure()
+        plt.imshow(masked_slicer, cmap='jet')
+        plt.colorbar(orientation='horizontal')
+        plt.title('HARMONI Slicer: Central Slice @%.2f microns' % wave)
+        # plt.show()
+
+        masked_pupil_mirror = (np.abs(complex_mirror[N_slices // 2])) ** 2 * HARMONI.pupil_mirror_mask[wave]
+        masked_pupil_mirror /= np.max(masked_pupil_mirror)
+        plt.figure()
+        plt.imshow(np.log10(masked_pupil_mirror), cmap='jet')
+        plt.colorbar()
+        plt.clim(vmin=-4)
+        plt.title('Pupil Mirror: Aperture %.2f PSF zeros' % rings_we_want)
+        # plt.show()
+
+        masked_slit = exit_slit * HARMONI.slicer_masks[N_slices // 2]
+        masked_slit = masked_slit[minPix_Y: maxPix_Y, minPix_X: maxPix_X]
+        plt.figure()
+        plt.imshow(masked_slit, cmap='jet')
+        plt.colorbar(orientation='horizontal')
+        plt.title('Exit Slit @%.2f microns (Pupil Mirror: %.2f PSF zeros)' % (wave, rings_we_want))
+    plt.show()
+
+    plt.figure()
+    plt.imshow(exit_slit, cmap='jet')
+    plt.colorbar(orientation='horizontal')
+    plt.title('Exit Slit @%.2f microns (Pupil Mirror: %.2f PSF zeros)')
+
+
+
+
+    # ================================================================================================================ #
     #                                    Impact of the PUPIL MIRROR APERTURE                                           #
     # ================================================================================================================ #
 

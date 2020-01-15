@@ -14,7 +14,7 @@ import zern_core as zern
 
 # PARAMETERS
 Z = 1.25                    # Strength of the aberrations -> relates to the Strehl ratio
-pix = 50                    # Pixels to crop the PSF
+pix = 150                    # Pixels to crop the PSF
 N_PIX = 1024                 # Pixels for the Fourier arrays
 minPix, maxPix = (N_PIX + 1 - pix) // 2, (N_PIX + 1 + pix) // 2
 
@@ -285,7 +285,7 @@ if __name__ == "__main__":
     RHO_4MAS = rho_spaxel_scale(spaxel_scale=SPAXEL_MAS, wavelength=wave0)
 
     # Rescale the aperture radius to mimic the wavelength scaling of the PSF
-    wave = 0.85  # 1 micron
+    wave = 1.5  # 1 micron
     RHO_APER = wave0 / wave * RHO_4MAS
     RHO_OBSC = 0.3 * RHO_APER  # Central obscuration (30% of ELT)
     check_spaxel_scale(RHO_APER, wave0)
@@ -307,7 +307,7 @@ if __name__ == "__main__":
     # This is because low order and high order aberrations behave differently wrt EE
     row_by_row = False
 
-    for level in np.arange(10, 11):
+    for level in np.arange(4, 11, 2):
         print("\nZernike Level: ", level)
 
         # Calculate how many Zernikes we need to have up to a certain Radial level
@@ -337,31 +337,33 @@ if __name__ == "__main__":
         colors = ['blue', 'green', 'red']
         scales = [4, 10, 20]                # [mas] spaxels
 
-        for scale, color in zip(scales, colors):
-            print("%d mas spaxel scale" % scale)
-            N_trials = 10           # Random wavefronts
-            N_rms = 50              # Number of sample points within a given RMS range
-            data = np.zeros((2, N_trials*N_rms))
-            amplitudes = np.linspace(0.0, 0.125, N_rms)
-            i = 0
+        # for scale, color in zip(scales, colors):
+        scale = 40
+        color = 'red'
+        print("%d mas spaxel scale" % scale)
+        N_trials = 10           # Random wavefronts
+        N_rms = 50              # Number of sample points within a given RMS range
+        data = np.zeros((2, N_trials*N_rms))
+        amplitudes = np.linspace(0.0, 0.2, N_rms)
+        i = 0
 
-            p0, s0 = PSF_zern.compute_PSF(np.zeros(N_zern))     # Nominal PSF
-            # Calculate the EE for the nominal PSF so that you can compare
-            EE0 = ensquared_one_pix(p0, pix_scale=SPAXEL_MAS, new_scale=scale, plot=False)
-            # plt.figure()
-            for amp in amplitudes:
-                # print(amp)
-                for k in range(N_trials):
-                    c_act = np.random.uniform(-amp, amp, size=N_zern)
-                    phase_flat = np.dot(model_matrix_flat, c_act)
-                    rms = wave * 1e3 * np.std(phase_flat)
-                    p, s = PSF_zern.compute_PSF(c_act)
-                    EE = ensquared_one_pix(p, pix_scale=SPAXEL_MAS, new_scale=scale, plot=False)
-                    dEE = EE / EE0 * 100
-                    data[:, i] = [rms, dEE]
-                    i += 1
+        p0, s0 = PSF_zern.compute_PSF(np.zeros(N_zern))     # Nominal PSF
+        # Calculate the EE for the nominal PSF so that you can compare
+        EE0 = ensquared_one_pix(p0, pix_scale=SPAXEL_MAS, new_scale=scale, plot=False)
+        # plt.figure()
+        for amp in amplitudes:
+            # print(amp)
+            for k in range(N_trials):
+                c_act = np.random.uniform(-amp, amp, size=N_zern)
+                phase_flat = np.dot(model_matrix_flat, c_act)
+                rms = wave * 1e3 * np.std(phase_flat)
+                p, s = PSF_zern.compute_PSF(c_act)
+                EE = ensquared_one_pix(p, pix_scale=SPAXEL_MAS, new_scale=scale, plot=False)
+                dEE = EE / EE0 * 100
+                data[:, i] = [rms, dEE]
+                i += 1
 
-            plt.scatter(data[0], data[1], color=color, s=3, label=scale)
+        plt.scatter(data[0], data[1], color=color, s=3, label=scale)
 
         plt.axhline(y=95, color='darksalmon', linestyle='--')
         plt.axhline(y=90, color='lightsalmon', linestyle='-.')
@@ -369,8 +371,8 @@ if __name__ == "__main__":
         plt.ylabel(r'Relative Encircled Energy [per cent]')
         plt.legend(title='Spaxel [mas]', loc=3)
         plt.ylim([80, 100])
-        plt.xlim([0, 125])
-        plt.title(r'%d Zernike ($\rho^{%d}$)' % (N_zern, exp))
+        plt.xlim([0, 300])
+        plt.title(r'%d Zernike ($\rho^{%d}$) [%.2f $\mu m$]' % (N_zern, exp, wave))
         plt.savefig('%d Zernike' % N_zern)
 
 
