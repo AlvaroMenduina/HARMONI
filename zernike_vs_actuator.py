@@ -259,7 +259,7 @@ class PointSpreadFunctionFast(object):
         """
         phase_flat = np.dot(self.RBF_flat, coef)
         phase_datacube = invert_mask(phase_flat, self.pupil_mask)
-        pupil_function = self.pupil_mask * np.exp(1j * phase_datacube)
+        pupil_function = self.pupil_mask * np.exp(1j * 2*np.pi * phase_datacube)
 
         # print("\nSize of Complex Pupil Function array: %.3f Gbytes" %(pupil_function.nbytes / 1e9))
 
@@ -433,12 +433,12 @@ if __name__ == "__main__":
     rbf_mat = actuator_matrix(centers, alpha_pc=alpha_pc)        # Actuator matrix
     pupil = rbf_mat[1]
 
-    c_act = np.random.uniform(-1, 1, size=N_act)
+    c_act = 1/(2*np.pi) * np.random.uniform(-1, 1, size=N_act)
     phase0 = np.dot(rbf_mat[0], c_act)
     p0 = min(np.min(phase0), -np.max(phase0))
 
     plt.figure()
-    plt.imshow(phase0, extent=(-1,1,-1,1), cmap='bwr')
+    plt.imshow(phase0, extent=(-1, 1, -1, 1), cmap='bwr')
     plt.colorbar()
     plt.clim(p0, -p0)
     for c in centers[0]:
@@ -470,9 +470,9 @@ if __name__ == "__main__":
 
     ### Show the LS fit error when going back and forth
     fit = Zernike_fit(PSF_zernike, PSF_actuator)
-    rand_zern = np.random.uniform(low=-1, high=1, size=(1, N_zern))
+    rand_zern = 1/(2*np.pi) *np.random.uniform(low=-1, high=1, size=(1, N_zern))
     fit_actu = fit.fit_zernike_wave_to_actuators(rand_zern, plot=True, cmap='seismic').T
-    rand_actu = 2*np.random.uniform(low=-1, high=1, size=(1, N_act))
+    rand_actu = 1/(2*np.pi) * 2*np.random.uniform(low=-1, high=1, size=(1, N_act))
     back_zern = fit.fit_actuator_wave_to_zernikes(rand_actu, plot=True, cmap='seismic')
     plt.show()
 
@@ -500,9 +500,9 @@ if __name__ == "__main__":
         dataset = np.empty((N_samples, pix, pix, 2))
 
         # Zernike Coefficient
-        coef_zern = np.random.uniform(low=-Z, high=Z, size=(N_samples, N_zern))
+        coef_zern = 1/(2*np.pi) * np.random.uniform(low=-Z, high=Z, size=(N_samples, N_zern))
         defocus = np.zeros(N_zern)
-        defocus[1] = defocus_strength
+        defocus[1] = 1/(2*np.pi) * defocus_strength
 
         # Fit Zernikes to Actuator Commands to get the "ground-truth" for the ML model
         print("\nRunning LS fit")
@@ -525,13 +525,49 @@ if __name__ == "__main__":
                coef_actu[:N_train], coef_actu[N_train:]
 
 
-    N_train, N_test = 15000, 500
-    # N_train, N_test = 50, 10
+    N_train, N_test = 10000, 1000
+    # N_train, N_test = 50, 100
 
     train_PSF, test_PSF, train_zern, \
     test_zern, train_actu, test_actu = generate_training_set_zernike(PSF_zernike,
                                                                      PSF_actuator,
                                                                      N_train, N_test)
+
+    # Mutual Information check
+    from sklearn.feature_selection import mutual_info_regression
+    # reshape the PSF
+    features = test_PSF[:, :, :, :].reshape((N_test, 2*pix**2))
+    neighbors = 100
+    for i_zern in range(10):
+        # i_zern = 0
+        mi_zern = mutual_info_regression(X=features, y=test_zern[:, i_zern], n_neighbors=neighbors)
+        mi_zern_ = mi_zern.reshape((pix, pix, 2))
+        plt.figure()
+        plt.imshow(mi_zern_[:, :, 1])
+        plt.colorbar()
+        # plt.title(np.sum(mi_zern_))
+        MI = np.sum(mi_zern_)
+        plt.title(r'Mutual Information = %.2f' % MI)
+    plt.show()
+
+    for i_actu in range(20):
+        # i_actu = 0
+        print(i_actu)
+        mi_actu = mutual_info_regression(X=features, y=test_actu[:, i_actu], n_neighbors=neighbors)
+        mi_actu_ = mi_actu.reshape((pix, pix, 2))
+        plt.figure()
+        im_mi = plt.imshow(mi_actu_[:, :, 1], extent=[-1, 1, -1, 1], origin='lower')
+        x_cent, y_cent = centers[0][i_actu][0] / RHO_APER, centers[0][i_actu][1] /RHO_APER
+        plt.scatter(x_cent, y_cent, color='red')
+        plt.colorbar(im_mi)
+        MI = np.sum(mi_actu_)
+        plt.title(r'Mutual Information = %.2f' % MI)
+        # plt.savefig(i_actu)
+    plt.show()
+
+
+    mi_actu = mutual_info_regression(X=features, y=test_actu)
+
 
     """ Check the Fitting Error """
     # Make sure that when you LS fit the Zernike wavefront to
@@ -546,7 +582,7 @@ if __name__ == "__main__":
 
     rms0, rms_fit = [], []
     # for k in range(N_train + N_test):
-    for k in range(500):
+    for k in range(N_test):
         if k % 100 == 0:
             print(k)
         _phas = np.dot(PSF_zernike.RBF_mat, zern_coef[k])
@@ -555,7 +591,7 @@ if __name__ == "__main__":
         _fit = _phas - np.dot(PSF_actuator.RBF_mat, actu_coef[k])
         rms_fit.append(np.std(_fit[pupil]))
 
-    XMAX = 1.25
+    XMAX = 0.20
     _x = np.linspace(0, XMAX, 100)
     _10p = 0.1 * _x
     _5p = 0.05 * _x
@@ -568,7 +604,7 @@ if __name__ == "__main__":
     plt.xlabel(r'RMS wavefont BEFORE fit [$\lambda$]')
     plt.ylabel(r'RMS wavefont residual AFTER fit [$\lambda$]')
     plt.xlim([0, XMAX])
-    plt.ylim([0, 0.075])
+    plt.ylim([0, 0.05*XMAX])
     plt.legend(title='Residual [percent]')
     plt.show()
 
@@ -605,7 +641,7 @@ if __name__ == "__main__":
     zern_model = create_model("ZERNIKE", N_output=N_zern)
 
     train_history_zern = zern_model.fit(x=train_PSF, y=train_zern, validation_data=(test_PSF, test_zern),
-                                   epochs=50, batch_size=32, shuffle=True, verbose=1)
+                                   epochs=25, batch_size=32, shuffle=True, verbose=1)
     guess_zern = zern_model.predict(test_PSF)
     residual_zern = test_zern - guess_zern
     norm_zern = np.mean(norm(residual_zern, axis=-1)) / N_zern
@@ -614,7 +650,7 @@ if __name__ == "__main__":
     actu_model = create_model("ACTUATOR", N_output=N_act)
 
     train_history_actu = actu_model.fit(x=train_PSF, y=train_actu, validation_data=(test_PSF, test_actu),
-                                        epochs=50, batch_size=32, shuffle=True, verbose=1)
+                                        epochs=25, batch_size=32, shuffle=True, verbose=1)
     guess_actu = actu_model.predict(test_PSF)
     residual_actu = test_actu - guess_actu
     norm_actu = np.mean(norm(residual_actu, axis=-1)) / N_act
@@ -630,8 +666,11 @@ if __name__ == "__main__":
 
     # Distribution on the Command Errors
     # are some actuators more difficult to predict?
-    mean_error = np.mean((residual_actu)**2, axis=0)
-    mean_error_img = draw_actuator_commands(commands=mean_error, centers=centers)
+    residual_nm = residual_actu * WAVE * 1e3
+    mean_error = np.mean((residual_nm)**2, axis=0)
+    rms_nm = np.std(residual_nm, axis=0)
+    bias_nm = np.mean(residual_nm, axis=0)
+    mean_error_img = draw_actuator_commands(commands=rms_nm, centers=centers)
 
     min_err = np.min(mean_error_img[np.nonzero(mean_error_img)])
     max_err = np.max(mean_error_img)
@@ -641,7 +680,7 @@ if __name__ == "__main__":
     plt.xlim([-1.1*RHO_APER, 1.1*RHO_APER])
     plt.ylim([-1.1*RHO_APER, 1.1*RHO_APER])
     plt.colorbar()
-    plt.title(r'Mean Squared Error | Actuator Residual [$\lambda^2$]')
+    plt.title(r'Actuator Residual Error $\sigma$ [nm]')
     plt.show()
 
 
@@ -658,7 +697,7 @@ if __name__ == "__main__":
         mapp = 'RdBu'
         RMS_zern, RMS_actu = [], []
         pupil = PSF_zernike.pupil_mask
-        for k in range(N_test):
+        for k in range(100):
 
             err_zern = np.dot(PSF_zernike.RBF_mat, residual_zern[k])
             err_actu = np.dot(PSF_actuator.RBF_mat, residual_actu[k])
@@ -695,13 +734,14 @@ if __name__ == "__main__":
         plt.hist(RMS_actu, bins=20, histtype='step', label='Actuator Model')
         med_actu = np.median(RMS_actu)
         plt.axvline(med_actu, linestyle='--', label=r'Median = %.3f $\lambda$' % med_actu)
-        plt.xlim([0, 0.50])
+        plt.xlim([0, 0.10])
         plt.xlabel(r'RMS wavefront [$\lambda$]')
         plt.legend()
         return
 
     ### Evaluate the RELATIVE performance (How good is each model in Machine Learning terms?)
     relative_performance(PSF_zernike, PSF_actuator, residual_zern, residual_actu)
+    plt.show()
 
     def absolute_performance(PSF_zernike, PSF_actuator, test_true, guess_zern, guess_actu, basis="zernike"):
 
@@ -714,19 +754,27 @@ if __name__ == "__main__":
         else:
             Exception("basis should be either 'zernike' or 'actuator'")
 
-        for k in range(N_test):
+        for k in range(100):
 
-            true_wave = np.dot(PSF_basis.RBF_mat, test_true[k])
+            true_wave = WAVE * 1e3 * np.dot(PSF_basis.RBF_mat, test_true[k])
+            # PV0 = np.max(true_wave) - np.min(true_wave)
+            plt.figure()
+            plt.plot(np.sort(true_wave[pupil]))
             rms0 = np.std(true_wave[pupil])
+            # print(PV0)
             RMS0.append(rms0)
-            corr_zern = np.dot(PSF_zernike.RBF_mat, guess_zern[k])
-            corr_actu = np.dot(PSF_actuator.RBF_mat, guess_actu[k])
+            corr_zern = WAVE * 1e3 * np.dot(PSF_zernike.RBF_mat, guess_zern[k])
+            corr_actu = WAVE * 1e3 * np.dot(PSF_actuator.RBF_mat, guess_actu[k])
 
             res_zern = true_wave - corr_zern
             rms_zern = np.std(res_zern[pupil])
             RMS_zern.append(rms_zern)
             res_actu = true_wave - corr_actu
+            # PV_actu = np.max(res_actu) - np.min(res_actu)
+
             rms_actu = np.std(res_actu[pupil])
+            # ratio = PV_actu/rms_actu
+            # print(ratio)
             RMS_actu.append(rms_actu)
 
             if k < 10:
@@ -736,37 +784,41 @@ if __name__ == "__main__":
                 ax1 = plt.subplot(1, 3, 1)
                 img1 = ax1.imshow(true_wave, cmap=mapp, extent=extent)
                 fix_axes(ax1)
-                ax1.set_title(r'True Wavefront ($\sigma=%.3f \lambda$)' %rms0)
+                ax1.set_title(r'True Wavefront ($\sigma=%.1f$ nm) $\lambda=%.1f$ $\mu$m ' % (rms0, WAVE))
                 img1.set_clim(m, -m)
                 plt.colorbar(img1, ax=ax1, orientation='horizontal')
 
                 ax2 = plt.subplot(1, 3, 2)
                 img2 = ax2.imshow(res_zern, cmap=mapp, extent=extent)
                 fix_axes(ax2)
-                ax2.set_title('Residual ML [Zernike Model] ($\sigma=%.3f \lambda$)' %rms_zern)
+                ax2.set_title('Residual ML [Zernike Model] ($\sigma=%.1f$ nm)' %rms_zern)
                 img2.set_clim(m, -m)
                 plt.colorbar(img2, ax=ax2, orientation='horizontal')
 
                 ax3 = plt.subplot(1, 3, 3)
                 img3 = ax3.imshow(res_actu, cmap=mapp, extent=extent)
                 fix_axes(ax3)
-                ax3.set_title('Residual ML [Actuator Model] ($\sigma=%.3f \lambda$)' %rms_actu)
+                ax3.set_title('Residual ML [Actuator Model] ($\sigma=%.1f$ nm)' %rms_actu)
                 img3.set_clim(m, -m)
                 plt.colorbar(img3, ax=ax3, orientation='horizontal')
 
         plt.figure()
         plt.hist(RMS0, bins=20, histtype='step', label='Initial')
-        med_zern = np.median(RMS_zern)
-        plt.axvline(med_zern, linestyle='--', color='red', label=r'Median = %.3f $\lambda$' % med_zern)
+        med_zern = np.median(RMS_zern)         # [nm]
+        sigma_zern = np.std(RMS_zern)
+        plt.axvline(med_zern, linestyle='--', color='red', label=r'Median = %.1f nm,  $\sigma$ = %.1f nm' % (med_zern, sigma_zern))
         plt.hist(RMS_zern, bins=20, histtype='step', color='red', label='Zernike Model')
 
         med_actu = np.median(RMS_actu)
-        plt.axvline(med_actu, linestyle='--', color='green', label=r'Median = %.3f $\lambda$' % med_actu)
+        sigma_actu = np.std(RMS_actu)
+        plt.axvline(med_actu, linestyle='--', color='green', label=r'Median = %.1f nm,  $\sigma$ = %.1f nm' % (med_actu, sigma_actu))
         plt.hist(RMS_actu, bins=20, histtype='step', color='green', label='Actuator Model')
         plt.legend()
         plt.xlabel(r'RMS wavefront [$\lambda$]')
+
+        plt.xlim([0.0, 250])
         plt.show()
-    plt.show()
+
 
     absolute_performance(PSF_zernike, PSF_actuator, test_zern, guess_zern, guess_actu, basis="zernike")
 
