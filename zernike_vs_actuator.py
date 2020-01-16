@@ -27,8 +27,57 @@ from numpy.linalg import norm as norm
 Z = 0.75                    # Strength of the aberrations -> relates to the Strehl ratio
 pix = 30                    # Pixels to crop the PSF
 N_PIX = 1024                 # Pixels for the Fourier arrays
-RHO_APER = 0.5             # Size of the aperture relative to the physical size of the Fourier arrays
-RHO_OBSC = 0.15             # Central obscuration
+
+ELT_DIAM = 39
+MILIARCSECS_IN_A_RAD = 206265000
+
+def spaxel_scale(scale=4, wave=1.0):
+    """
+    Compute the aperture radius necessary to have a
+    certain SPAXEL SCALE [in mas] at a certain WAVELENGTH [in microns]
+    :param scale:
+    :return:
+    """
+
+    scale_rad = scale / MILIARCSECS_IN_A_RAD
+    rho = scale_rad * ELT_DIAM / (wave * 1e-6)
+    print(rho)
+
+def rho_spaxel_scale(spaxel_scale=4.0, wavelength=1.0):
+    """
+    Compute the aperture radius necessary to have a
+    certain SPAXEL SCALE [in mas] at a certain WAVELENGTH [in microns]
+
+    That would be the aperture radius in an array ranging from [-1, 1] in physical length
+    For example, if rho = 0.5, then the necessary aperture is a circle of half the size of the array
+
+    We can use the inverse of that to get the "oversize" in physical units in our arrays to match a given scale
+    :param spaxel_scale: [mas]
+    :param wavelength: [microns]
+    :return:
+    """
+
+    scale_rad = spaxel_scale / MILIARCSECS_IN_A_RAD
+    rho = scale_rad * ELT_DIAM / (wavelength * 1e-6)
+    return rho
+
+def check_spaxel_scale(rho_aper, wavelength):
+    """
+    Checks the spaxel scale at a certain wavelength, for a given aperture radius
+    defined for a [-1, 1] physical array
+    :param rho_aper: radius of the aperture, relative to an array of size [-1, 1]
+    :param wavelength: wavelength of interest (the PSF grows in size with wavelength, changing the spaxel scale)
+    :return:
+    """
+
+    SPAXEL_RAD = rho_aper * wavelength / ELT_DIAM * 1e-6
+    SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
+    print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wavelength))
+
+WAVE = 1.5
+SPAXEL_MAS = 4
+RHO_APER = rho_spaxel_scale(SPAXEL_MAS, WAVE)
+RHO_OBSC = 0.30 * RHO_APER             # Central obscuration
 
 
 def invert_mask(x, mask):
@@ -73,7 +122,7 @@ def actuator_centres(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC, radial=T
     :return: [act (list of actuator centres), delta (actuator separation)], max_freq (max spatial frequency we sense)
     """
 
-    x0 = np.linspace(-4., 4., N_actuators, endpoint=True)
+    x0 = np.linspace(-1., 1., N_actuators, endpoint=True)
     delta = x0[1] - x0[0]
     N_in_D = 2*RHO_APER/delta
     print('%.2f actuators in D' %N_in_D)
@@ -141,7 +190,7 @@ def actuator_matrix(centres, alpha_pc=1, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     cent, delta = centres
     N_act = len(cent)
     matrix = np.empty((N_PIX, N_PIX, N_act))
-    x0 = np.linspace(-4., 4., N_PIX, endpoint=True)
+    x0 = np.linspace(-1., 1., N_PIX, endpoint=True)
     xx, yy = np.meshgrid(x0, x0)
     rho = np.sqrt(xx ** 2 + yy ** 2)
     pupil = (rho <= rho_aper) & (rho >= rho_obsc)
@@ -154,6 +203,23 @@ def actuator_matrix(centres, alpha_pc=1, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     mat_flat = matrix[pupil]
 
     return matrix, pupil, mat_flat
+
+def draw_actuator_commands(commands, centers):
+    """
+    Plot of each actuator commands
+    :param commands:
+    :param centers:
+    :return:
+    """
+    cent, delta = centers
+    x = np.linspace(-1, 1, 2*N_PIX, endpoint=True)
+    xx, yy = np.meshgrid(x, x)
+    image = np.zeros((2*N_PIX, 2*N_PIX))
+    for i, (xc, yc) in enumerate(cent):
+        act_mask = (xx - xc)**2 + (yy - yc)**2 <= (delta/3)**2
+        image += commands[i] * act_mask
+
+    return image
 
 
 # ==================================================================================================================== #
@@ -235,7 +301,7 @@ class Zernike_fit(object):
 
         self.pupil_mask = self.PSF_zernike.pupil_mask.copy()
 
-    def plot_example(self, zern_coef, actu_coef, ground_truth='zernike', k=0):
+    def plot_example(self, zern_coef, actu_coef, ground_truth='zernike', k=0, cmap='bwr'):
 
         if ground_truth == "zernike":
             true_phase = np.dot(self.H_zernike, zern_coef.T)[:, :, k]
@@ -256,28 +322,34 @@ class Zernike_fit(object):
         mins = min(true_phase.min(), fit_phase.min())
         maxs = max(true_phase.max(), fit_phase.max())
         m = min(mins, -maxs)
-        mapp = 'bwr'
+        # mapp = 'bwr'
 
         f, (ax1, ax2, ax3) = plt.subplots(1, 3)
         ax1 = plt.subplot(1, 3, 1)
-        img1 = ax1.imshow(true_phase, cmap=mapp)
+        img1 = ax1.imshow(true_phase, cmap=cmap, extent=[-1, 1, -1, 1])
         ax1.set_title('%s Wavefront [$\sigma=%.3f \lambda$]' % (names[0], rms0))
         img1.set_clim(m, -m)
+        ax1.set_xlim([-RHO_APER, RHO_APER])
+        ax1.set_ylim([-RHO_APER, RHO_APER])
         plt.colorbar(img1, ax=ax1, orientation='horizontal')
 
         ax2 = plt.subplot(1, 3, 2)
-        img2 = ax2.imshow(fit_phase, cmap=mapp)
+        img2 = ax2.imshow(fit_phase, cmap=cmap, extent=[-1, 1, -1, 1])
         ax2.set_title('%s Fit Wavefront' % names[1])
         img2.set_clim(m, -m)
+        ax2.set_xlim([-RHO_APER, RHO_APER])
+        ax2.set_ylim([-RHO_APER, RHO_APER])
         plt.colorbar(img2, ax=ax2, orientation='horizontal')
 
         ax3 = plt.subplot(1, 3, 3)
-        img3 = ax3.imshow(residual, cmap=mapp)
+        img3 = ax3.imshow(residual, cmap=cmap, extent=[-1, 1, -1, 1])
         ax3.set_title('Residual [$\sigma=%.3f \lambda$]' % rms)
         img3.set_clim(m, -m)
+        ax3.set_xlim([-RHO_APER, RHO_APER])
+        ax3.set_ylim([-RHO_APER, RHO_APER])
         plt.colorbar(img3, ax=ax3, orientation='horizontal')
 
-    def fit_actuator_wave_to_zernikes(self, actu_coef, plot=False):
+    def fit_actuator_wave_to_zernikes(self, actu_coef, plot=False, cmap='bwr'):
         """
         Fit a Wavefront defined in terms of Actuator commands to
         Zernike polynomials
@@ -290,11 +362,12 @@ class Zernike_fit(object):
         actu_wave = np.dot(self.H_actuator_flat, actu_coef.T)
         x_zern = self.least_squares(y_obs=actu_wave, H=self.H_zernike_flat)
 
-        self.plot_example(x_zern, actu_coef, ground_truth="actuator")
+        if plot:
+            self.plot_example(x_zern, actu_coef, ground_truth="actuator", cmap=cmap)
 
         return x_zern
 
-    def fit_zernike_wave_to_actuators(self, zern_coef, plot=False):
+    def fit_zernike_wave_to_actuators(self, zern_coef, plot=False, cmap='bwr'):
         """
         Fit a Wavefront defined in terms of Zernike polynomials to the
         model of Actuator Commands
@@ -308,7 +381,8 @@ class Zernike_fit(object):
         zern_wave = np.dot(self.H_zernike_flat, zern_coef.T)
         x_act = self.least_squares(y_obs=zern_wave, H=self.H_actuator_flat)
 
-        self.plot_example(zern_coef, x_act, ground_truth="zernike")
+        if plot:
+            self.plot_example(zern_coef, x_act, ground_truth="zernike", cmap=cmap)
 
         return x_act
 
@@ -350,12 +424,12 @@ if __name__ == "__main__":
 
     """ (1) Define the ACTUATOR model for the WAVEFRONT """
 
-    N_actuators = 25 * 2
+    N_actuators = 25
     centers, MAX_FREQ = actuator_centres(N_actuators)
     N_act = len(centers[0])
     plot_actuators(centers)
 
-    alpha_pc = 25       # Height [percent] at the neighbour actuator
+    alpha_pc = 30       # Height [percent] at the neighbour actuator
     rbf_mat = actuator_matrix(centers, alpha_pc=alpha_pc)        # Actuator matrix
     pupil = rbf_mat[1]
 
@@ -369,20 +443,21 @@ if __name__ == "__main__":
     plt.clim(p0, -p0)
     for c in centers[0]:
         plt.scatter(c[0], c[1], color='black', s=4)
-    plt.xlim([-1, 1])
-    plt.ylim([-1, 1])
+    plt.xlim([-1.1*RHO_APER, 1.1*RHO_APER])
+    plt.ylim([-1.1*RHO_APER, 1.1*RHO_APER])
+    plt.title(r'%d Actuators | Wavefront [$\lambda$]' % N_act)
     plt.show()
 
     """ (2) Define the ZERNIKE model for the WAVEFRONT """
 
     N_zern = 50
-    x = np.linspace(-4, 4, N_PIX, endpoint=True)
+    x = np.linspace(-1, 1, N_PIX, endpoint=True)
     xx, yy = np.meshgrid(x, x)
     rho, theta = np.sqrt(xx ** 2 + yy ** 2), np.arctan2(xx, yy)
 
     rho, theta = rho[pupil], theta[pupil]
     zernike = zern.ZernikeNaive(mask=pupil)
-    _phase = zernike(coef=np.zeros(N_zern), rho=rho / (RHO_APER), theta=theta, normalize_noll=False,
+    _phase = zernike(coef=np.zeros(N_zern), rho=rho / (1.15*RHO_APER), theta=theta, normalize_noll=False,
                      mode='Jacobi', print_option='Silent')
     H_flat = zernike.model_matrix[:, 3:]
     H_matrix = zern.invert_model_matrix(H_flat, pupil)
@@ -396,9 +471,9 @@ if __name__ == "__main__":
     ### Show the LS fit error when going back and forth
     fit = Zernike_fit(PSF_zernike, PSF_actuator)
     rand_zern = np.random.uniform(low=-1, high=1, size=(1, N_zern))
-    fit_actu = fit.fit_zernike_wave_to_actuators(rand_zern, plot=True).T
+    fit_actu = fit.fit_zernike_wave_to_actuators(rand_zern, plot=True, cmap='seismic').T
     rand_actu = 2*np.random.uniform(low=-1, high=1, size=(1, N_act))
-    back_zern = fit.fit_actuator_wave_to_zernikes(rand_actu, plot=True)
+    back_zern = fit.fit_actuator_wave_to_zernikes(rand_actu, plot=True, cmap='seismic')
     plt.show()
 
     """ (4) Generate the TRAINING sets """
@@ -450,7 +525,8 @@ if __name__ == "__main__":
                coef_actu[:N_train], coef_actu[N_train:]
 
 
-    N_train, N_test = 15000, 1000
+    N_train, N_test = 15000, 500
+    # N_train, N_test = 50, 10
 
     train_PSF, test_PSF, train_zern, \
     test_zern, train_actu, test_actu = generate_training_set_zernike(PSF_zernike,
@@ -458,11 +534,19 @@ if __name__ == "__main__":
                                                                      N_train, N_test)
 
     """ Check the Fitting Error """
+    # Make sure that when you LS fit the Zernike wavefront to
+    # the Actuator model, the residual error is sufficiently small
+    # less thatn 20% RMS or less
+
+    # as this residual error will be translated into performance error
+    # after calibration. Ideally it should be smaller than the
+    # Calibration error of the Zernike CNN Model
     zern_coef = np.concatenate([train_zern, test_zern], axis=0)
     actu_coef = np.concatenate([train_actu, test_actu], axis=0)
 
     rms0, rms_fit = [], []
-    for k in range(N_train + N_test):
+    # for k in range(N_train + N_test):
+    for k in range(500):
         if k % 100 == 0:
             print(k)
         _phas = np.dot(PSF_zernike.RBF_mat, zern_coef[k])
@@ -543,6 +627,26 @@ if __name__ == "__main__":
     ### ============================================================================================================ ###
     #                                            PERFOMANCE checks
     ### ============================================================================================================ ###
+
+    # Distribution on the Command Errors
+    # are some actuators more difficult to predict?
+    mean_error = np.mean((residual_actu)**2, axis=0)
+    mean_error_img = draw_actuator_commands(commands=mean_error, centers=centers)
+
+    min_err = np.min(mean_error_img[np.nonzero(mean_error_img)])
+    max_err = np.max(mean_error_img)
+
+    plt.figure()
+    plt.imshow(mean_error_img, cmap='Reds', extent=[-1, 1, -1, 1])
+    plt.xlim([-1.1*RHO_APER, 1.1*RHO_APER])
+    plt.ylim([-1.1*RHO_APER, 1.1*RHO_APER])
+    plt.colorbar()
+    plt.title(r'Mean Squared Error | Actuator Residual [$\lambda^2$]')
+    plt.show()
+
+
+
+
     def fix_axes(ax):
         ax.set_xlim([-RHO_APER, RHO_APER])
         ax.set_ylim([-RHO_APER, RHO_APER])

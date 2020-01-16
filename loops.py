@@ -249,6 +249,8 @@ if __name__ == "__main__":
     # plt.scatter(0.10, -0.10, color='red')
 
     """ FPS algorithm """
+    # Simulate what happens when we ran multiple trials
+    # of the FPS algorithm from random wavefront maps
 
     triang = triangular_numbers(N_levels=15)
     level = 14
@@ -270,6 +272,10 @@ if __name__ == "__main__":
     PSF_zern = PointSpreadFunction([model_matrix, pupil, model_matrix_flat])
 
 
+    """ Approach A - Loop / Select / Correct All """
+    # For each aberration we try multiple corrections.
+    # We decide the best one
+    # We apply all corrections simultaneously at the end of the FPS loop
     Z = 0.15
     DM_STEPS = 11
     dm = np.linspace(-Z, Z, DM_STEPS, endpoint=True)
@@ -312,17 +318,52 @@ if __name__ == "__main__":
     ss = np.array(STREHLS)
 
     iters = list(range(N_runs + 1))
-    ss = np.array([[0.1, 0.2, 0.3],
-                   [0.15, 0.17, 0.5]])
+    # ss = np.array([[0.1, 0.2, 0.3],
+    #                [0.15, 0.17, 0.5]])
 
     plt.figure()
-    for i in range(ss.shape[0]):
-        plt.scatter(iters, ss[i])
+    # for i in range(ss.shape[0]):
+    #     plt.scatter(iters, ss[i])
+    plt.plot(ss.T)
     plt.xlabel(r'FPS iteration')
     plt.ylabel(r'Strehl ratio [ ]')
     plt.ylim([0.0, 1.0])
     plt.xticks(iters)
     plt.show()
+
+    """ Approach B - Loop / Correct / Continue """
+    # For each aberration we try multiple corrections.
+    # We decide the best correction and APPLY it directly
+    # We move to the next aberration
+
+    N_trials = 20
+    N_runs = 2
+    STREHLS_B = []
+
+    for k in range(N_trials):
+
+        # Initial State
+        coef0 = np.random.uniform(low=-Z, high=Z, size=N_zern)
+        im0, s0 = PSF_zern.compute_PSF(coef0)
+        _strehl = [s0]
+        print("\nInitial Strehl ratio: %.3f" % s0)
+
+        for j in range(N_runs):
+            for i_aberr in range(N_zern):
+                print("Correcting Aberration %d / %d" % (i_aberr + 1, N_zern))
+                strehls = []
+                for correction in dm:
+                    new_coef = coef0.copy()
+                    new_coef[i_aberr] += correction
+                    im, s = PSF_zern.compute_PSF(new_coef)
+                    strehls.append(s)
+                best_corr = dm[np.argmax(strehls)]
+                coef0 += best_corr      # Apply the correction
+            im_final, s_final = PSF_zern.compute_PSF(coef0)
+            _strehl.append(s_final)
+            print("Final Strehl ratio: %.3f" % s_final)
+        STREHLS_B.append(_strehl)
+
 
 
 
