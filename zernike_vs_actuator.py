@@ -304,14 +304,14 @@ class Zernike_fit(object):
     def plot_example(self, zern_coef, actu_coef, ground_truth='zernike', k=0, cmap='bwr'):
 
         if ground_truth == "zernike":
-            true_phase = np.dot(self.H_zernike, zern_coef.T)[:, :, k]
-            fit_phase = np.dot(self.H_actuator, actu_coef)[:, :, k]
+            true_phase = WAVE * 1e3 * np.dot(self.H_zernike, zern_coef.T)[:, :, k]
+            fit_phase = WAVE * 1e3 * np.dot(self.H_actuator, actu_coef)[:, :, k]
             names = ['Zernike', 'Actuator']
             print(0)
 
         elif ground_truth == "actuator":
-            true_phase = np.dot(self.H_actuator, actu_coef.T)[:, :, k]
-            fit_phase = np.dot(self.H_zernike, zern_coef)[:, :, k]
+            true_phase = WAVE * 1e3 * np.dot(self.H_actuator, actu_coef.T)[:, :, k]
+            fit_phase = WAVE * 1e3 * np.dot(self.H_zernike, zern_coef)[:, :, k]
             names = ['Actuator', 'Zernike']
             print(1)
 
@@ -327,7 +327,7 @@ class Zernike_fit(object):
         f, (ax1, ax2, ax3) = plt.subplots(1, 3)
         ax1 = plt.subplot(1, 3, 1)
         img1 = ax1.imshow(true_phase, cmap=cmap, extent=[-1, 1, -1, 1])
-        ax1.set_title('%s Wavefront [$\sigma=%.3f \lambda$]' % (names[0], rms0))
+        ax1.set_title('%s Wavefront [$\sigma=%.1f$ nm]' % (names[0], rms0))
         img1.set_clim(m, -m)
         ax1.set_xlim([-RHO_APER, RHO_APER])
         ax1.set_ylim([-RHO_APER, RHO_APER])
@@ -343,7 +343,7 @@ class Zernike_fit(object):
 
         ax3 = plt.subplot(1, 3, 3)
         img3 = ax3.imshow(residual, cmap=cmap, extent=[-1, 1, -1, 1])
-        ax3.set_title('Residual [$\sigma=%.3f \lambda$]' % rms)
+        ax3.set_title('Residual [$\sigma=%.1f$ nm]' % rms)
         img3.set_clim(m, -m)
         ax3.set_xlim([-RHO_APER, RHO_APER])
         ax3.set_ylim([-RHO_APER, RHO_APER])
@@ -450,7 +450,8 @@ if __name__ == "__main__":
 
     """ (2) Define the ZERNIKE model for the WAVEFRONT """
 
-    N_zern = 50
+    # N_zern = 50
+    N_zern = 75
     x = np.linspace(-1, 1, N_PIX, endpoint=True)
     xx, yy = np.meshgrid(x, x)
     rho, theta = np.sqrt(xx ** 2 + yy ** 2), np.arctan2(xx, yy)
@@ -472,6 +473,7 @@ if __name__ == "__main__":
     fit = Zernike_fit(PSF_zernike, PSF_actuator)
     rand_zern = 1/(2*np.pi) *np.random.uniform(low=-1, high=1, size=(1, N_zern))
     fit_actu = fit.fit_zernike_wave_to_actuators(rand_zern, plot=True, cmap='seismic').T
+
     rand_actu = 1/(2*np.pi) * 2*np.random.uniform(low=-1, high=1, size=(1, N_act))
     back_zern = fit.fit_actuator_wave_to_zernikes(rand_actu, plot=True, cmap='seismic')
     plt.show()
@@ -526,7 +528,7 @@ if __name__ == "__main__":
 
 
     N_train, N_test = 10000, 1000
-    # N_train, N_test = 50, 100
+    # N_train, N_test = 50, 50
 
     train_PSF, test_PSF, train_zern, \
     test_zern, train_actu, test_actu = generate_training_set_zernike(PSF_zernike,
@@ -550,8 +552,8 @@ if __name__ == "__main__":
         plt.title(r'Mutual Information = %.2f' % MI)
     plt.show()
 
-    for i_actu in range(20):
-        # i_actu = 0
+    for k in range(20):
+        i_actu = 20 + k
         print(i_actu)
         mi_actu = mutual_info_regression(X=features, y=test_actu[:, i_actu], n_neighbors=neighbors)
         mi_actu_ = mi_actu.reshape((pix, pix, 2))
@@ -622,14 +624,15 @@ if __name__ == "__main__":
     ### ============================================================================================================ ###
 
     def create_model(name, N_output):
+        k_size = 3
         N_channels = 2
         input_shape = (pix, pix, N_channels,)
         model = Sequential()
         model.name = name
-        model.add(Conv2D(256, kernel_size=(3, 3), strides=(1, 1), activation='relu', input_shape=input_shape))
-        model.add(Conv2D(128, (3, 3), activation='relu'))
-        model.add(Conv2D(32, (3, 3), activation='relu'))
-        model.add(Conv2D(8, (3, 3), activation='relu'))
+        model.add(Conv2D(256, kernel_size=(k_size, k_size), strides=(1, 1), activation='relu', input_shape=input_shape))
+        model.add(Conv2D(128, (k_size, k_size), activation='relu'))
+        model.add(Conv2D(32, (k_size, k_size), activation='relu'))
+        model.add(Conv2D(8, (k_size, k_size), activation='relu'))
         model.add(Flatten())
         model.add(Dense(N_output))
         model.summary()
@@ -682,9 +685,6 @@ if __name__ == "__main__":
     plt.colorbar()
     plt.title(r'Actuator Residual Error $\sigma$ [nm]')
     plt.show()
-
-
-
 
     def fix_axes(ax):
         ax.set_xlim([-RHO_APER, RHO_APER])
@@ -743,6 +743,47 @@ if __name__ == "__main__":
     relative_performance(PSF_zernike, PSF_actuator, residual_zern, residual_actu)
     plt.show()
 
+    def strehl_ratios(PSF_zernike, PSF_actuator, test_PSF, test_zern, test_actu, guess_zern, guess_actu):
+        """
+        Calculate the Strehl ratio before and after calibration
+        """
+        N_test = test_PSF.shape[0]
+        strehl_before = np.max(test_PSF[:, :, :, 0], axis=(1, 2))
+
+        residual_zern = test_zern - guess_zern
+        residual_actu = test_actu - guess_actu
+
+        strehl_zern, strehl_actu = [], []
+        for k in range(300):
+            if k % 25 == 0:
+                print(k)
+            im, _sz = PSF_zernike.compute_PSF(residual_zern[k])
+            strehl_zern.append([_sz])
+            im, _sa = PSF_actuator.compute_PSF(residual_actu[k])
+            strehl_actu.append(_sa)
+
+        plt.figure()
+        plt.hist(strehl_before, bins=20, histtype='step', label='Initial')
+
+        med_zern = np.median(strehl_zern)         # [nm]
+        sigma_zern = np.std(strehl_zern)
+        plt.axvline(med_zern, linestyle='--', color='red', label=r'Median = %.1f,  $\sigma$ = %.1f' % (med_zern, sigma_zern))
+        plt.hist(strehl_zern, bins=20, histtype='step', color='red', label='Zernike Model')
+
+        med_actu = np.median(strehl_actu)
+        sigma_actu = np.std(strehl_actu)
+        plt.axvline(med_actu, linestyle='--', color='green', label=r'Median = %.1f,  $\sigma$ = %.1f' % (med_actu, sigma_actu))
+        plt.hist(strehl_actu, bins=20, histtype='step', color='green', label='Actuator Model')
+        plt.legend()
+        plt.xlabel(r'Strehl ratio [ ]')
+
+        plt.xlim([0.0, 1.0])
+
+
+    strehl_ratios(PSF_zernike, PSF_actuator, test_PSF, test_zern, test_actu, guess_zern, guess_actu)
+
+
+
     def absolute_performance(PSF_zernike, PSF_actuator, test_true, guess_zern, guess_actu, basis="zernike"):
 
         pupil = PSF_zernike.pupil_mask
@@ -754,12 +795,12 @@ if __name__ == "__main__":
         else:
             Exception("basis should be either 'zernike' or 'actuator'")
 
-        for k in range(100):
+        for k in range(N_test):
 
             true_wave = WAVE * 1e3 * np.dot(PSF_basis.RBF_mat, test_true[k])
             # PV0 = np.max(true_wave) - np.min(true_wave)
-            plt.figure()
-            plt.plot(np.sort(true_wave[pupil]))
+            # plt.figure()
+            # plt.plot(np.sort(true_wave[pupil]))
             rms0 = np.std(true_wave[pupil])
             # print(PV0)
             RMS0.append(rms0)
