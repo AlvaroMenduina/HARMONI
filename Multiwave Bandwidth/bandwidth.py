@@ -66,10 +66,10 @@ SPAXEL_MAS = 4.0    # [mas] spaxel scale at wave0
 RHO_APER = rho_spaxel_scale(spaxel_scale=SPAXEL_MAS, wavelength=WAVE)
 RHO_OBSC = 0.3 * RHO_APER  # Central obscuration (30% of ELT)
 
-BANDWIDTH = 50 * 1e-3      # [nm] -> [microns]
+BANDWIDTH = 1000 * 1e-3      # [nm] -> [microns]
 WAVE_MIN = WAVE - BANDWIDTH / 2.0
 WAVE_MAX = WAVE + BANDWIDTH / 2.0
-N_WAVES = 5
+N_WAVES = 25
 
 
 " Actuators "
@@ -156,7 +156,7 @@ class PointSpreadFunction(object):
     N_pix = N_PIX             # Number of pixels for the FFT computations
     minPix, maxPix = (N_pix + 1 - pix) // 2, (N_pix + 1 + pix) // 2
 
-    def __init__(self, RBF_matrices, N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX):
+    def __init__(self, RBF_matrices, N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX, all_one=True):
 
         self.N_act = RBF_matrices[0][0].shape[-1]
         self.RBF_mat = [r[0] for r in RBF_matrices]
@@ -164,17 +164,29 @@ class PointSpreadFunction(object):
         self.RBF_flat = [r[2] for r in RBF_matrices]
         self.waves_ratio = np.linspace(1., waveN / wave0, N_waves, endpoint=True)
 
-        self.PEAKS = self.peak_PSF(N_waves)
+        self.PEAKS = self.peak_PSF(N_waves, all_one)
 
-    def peak_PSF(self, N_waves):
+    def peak_PSF(self, N_waves, all_one=True):
         """
         Compute the PEAK of the PSF without aberrations so that we can
         normalize everything by it
         """
-        PEAKS = []
-        for k in range(N_waves):
-            im, strehl = self.compute_PSF(np.zeros(self.N_act), wave_idx=k)
-            PEAKS.append(strehl)
+
+        if all_one:     # All PSF normalized so that they have Strehl 1.0 at no aberrations
+            PEAKS = []
+            for k in range(N_waves):
+                im, strehl = self.compute_PSF(np.zeros(self.N_act), wave_idx=k)
+                PEAKS.append(strehl)
+        else:           # Normalized so that the nominal PSF has peak 1.0 [N_WAVES//2]
+            im, strehl = self.compute_PSF(np.zeros(self.N_act), wave_idx=N_WAVES//2)
+            energy0 = np.sum(im)
+
+            PEAKS = []
+            for k in range(N_waves):
+                im, strehl = self.compute_PSF(np.zeros(self.N_act), wave_idx=k)
+                energy = np.sum(im)
+                PEAKS.append(strehl * energy0 / energy)
+
         return PEAKS
 
 
@@ -300,17 +312,19 @@ if __name__ == "__main__":
         plt.ylim([-1, 1])
         # plt.title('%d actuators' %N_act)
         plt.title('%.3f Wave' %wave_r)
-    plt.show()
+    # plt.show()
 
     # Define the actuator model matrix
     rbf_matrices = rbf_matrix(centers)
 
-    PSF = PointSpreadFunction(rbf_matrices)
+    PSF = PointSpreadFunction(rbf_matrices, all_one=False)
 
     c_act = 1./(2*np.pi) * np.random.uniform(-1, 1, size=N_act)
 
     # for idx in range(N_WAVES):
-    #     PSF.plot_PSF(c_act, wave_idx=idx)
+    #     im, s = PSF.compute_PSF(0*c_act, wave_idx=idx)
+    #     print(np.sum(im), s)
+    #     PSF.plot_PSF(0*c_act, wave_idx=idx)
     # plt.show()
 
     phase0 = np.dot(rbf_matrices[0][0], c_act)
@@ -322,17 +336,17 @@ if __name__ == "__main__":
     plt.clim(p0, -p0)
     for c in centers[0][0]:
         plt.scatter(c[0], c[1], color='black', s=4)
-    plt.xlim([-1.1*RHO_APER, 1.1*RHO_APER])
-    plt.ylim([-1.1*RHO_APER, 1.1*RHO_APER])
+    plt.xlim([-1.1*RHO_APER/waves_ratio[0], 1.1*RHO_APER/waves_ratio[0]])
+    plt.ylim([-1.1*RHO_APER/waves_ratio[0], 1.1*RHO_APER/waves_ratio[0]])
     plt.title(r'%d Actuators | Wavefront [$\lambda$]' % N_act)
-    plt.show()
+    # plt.show()
 
     """ Monochromatic to Broadband comparison """
     # Compare the PSF at a single wavelength
     # and the broadband from averaging across channels
 
-    psf_onewave, _s = PSF.compute_PSF(c_act, wave_idx=0)
-    psf_broad = PSF.broadband_PSF(c_act)
+    psf_onewave, _s = PSF.compute_PSF(0*c_act, wave_idx=N_WAVES//2)
+    psf_broad = PSF.broadband_PSF(0*c_act)
     psf_diff = psf_onewave - psf_broad
 
     cmin = min(np.min(psf_diff), -np.max(psf_diff))
@@ -402,17 +416,18 @@ if __name__ == "__main__":
 
         return model
 
-    coef_strength = 1.25 / (2*np.pi)
+    coef_strength = 1.7 / (2*np.pi)
     foc = 1 / (2*np.pi)
     N_train, N_test = 10000, 1000
+    # N_train, N_test = 100, 100
     training_PSF, test_PSF, training_coef, test_coef = generate_training_set(PSF, N_train, N_test, foc=foc, Z=coef_strength)
 
 
 
-    np.save('training_PSF', training_PSF)
-    np.save('test_PSF', test_PSF)
-    np.save('training_coef', training_coef)
-    np.save('test_coef', test_coef)
+    # np.save('training_PSF', training_PSF)
+    # np.save('test_PSF', test_PSF)
+    # np.save('training_coef', training_coef)
+    # np.save('test_coef', test_coef)
 
     # Select the first Wavelength Channel
     def select_monochromatic(PSF_datacube, wave_idx=0):
@@ -554,10 +569,10 @@ if __name__ == "__main__":
         plt.xlabel(r'Strehl ratio [ ]')
 
         plt.xlim([0.25, 1.0])
-        plt.ylim([0, 250])
+        plt.ylim([0, 200])
 
     strehl_ratios(PSF, test_PSF, test_coef, guess_coef_mono, guess_coef_broad)
-    plt.show()
+    # plt.show()
 
     def RMS_wavefront(PSF_model, test_coef, guess_coef_mono, guess_coef_broad):
 
@@ -589,12 +604,103 @@ if __name__ == "__main__":
         plt.axvline(med_broad, linestyle='--', color='green', label=r'Median = %.2f,  $\sigma$ = %.2f' % (med_broad, sigma_broad))
         plt.hist(RMS_broad, bins=20, histtype='step', color='green', label='Broadband')
         plt.legend()
-        plt.xlim([0, 250])
+        plt.xlim([0, 350])
+        plt.ylim([0, 200])
         plt.xlabel(r'RMS wavefront [nm]')
 
 
     RMS_wavefront(PSF, test_coef, guess_coef_mono, guess_coef_broad)
     plt.show()
+
+
+    ### Polychromatic PSF training
+
+    # Compute the Polychromatic equivalents
+    train_broad_PSF = average_broadband(training_PSF)
+    test_broad_PSF = average_broadband(test_PSF)
+
+    calibration_model_poly = create_model_monochrom("POLYCHROM")
+    # Train the model
+    train_history = calibration_model_poly.fit(x=train_broad_PSF, y=training_coef, validation_data=(test_broad_PSF, test_coef),
+                                          epochs=10, batch_size=32, shuffle=True, verbose=1)
+    guess_coef_poly = calibration_model_poly.predict(test_broad_PSF)
+    residual_coef_poly = test_coef - guess_coef_poly
+    norm_resi_poly = np.mean(norm(residual_coef_poly, axis=-1)) / N_act
+
+    # The Monochromatic Model
+    guess_coef_mono = calibration_model.predict(test_mono_PSF)
+    residual_coef_mono = test_coef - guess_coef_mono
+    norm_resi_mono = np.mean(norm(residual_coef_mono, axis=-1)) / N_act
+
+    print("\nPerformance Comparison | Monochromatic vs Polychromatic")
+    print("Norm Test Coef: %.4f" % (norm(test_coef)))
+    print("Monocrhomatic || Norm Residual: %.4f" % (norm(residual_coef_mono)))
+    print("Polychromatic || Norm Residual: %.4f" % (norm(residual_coef_poly)))
+
+    RMS_wavefront(PSF, test_coef, guess_coef_mono, guess_coef_poly)
+
+
+    # Results at 1.5 um
+    bws = np.array([50, 100, 150, 200, 300, 500])
+    medians_mono = np.array([54.20, 55.51, 56.29, 56.66, 56.46, 58.5])
+    rms_mono = np.array([13.81, 12.2, 12.55, 14.52, 14.81, 14.32])
+    medians_broad = np.array([65.31, 77.02, 91.04, 104.43, 123.37, 146.09])
+    rms_broad = np.array([14.53, 12.66, 13.37, 13.67, 15.59, 17.31])
+    deltas_ = medians_broad - medians_mono
+    rms_delta = np.sqrt(rms_mono**2 + rms_broad**2)
+
+    XMAX = 550
+    _x = np.linspace(0, XMAX, 50)
+    alpha = 0.25
+
+    plt.figure()
+    # plt.scatter(bws, deltas_)
+    plt.plot(_x, alpha*_x, linestyle='--', color='black')
+    plt.errorbar(bws, deltas_, yerr=rms_delta, fmt='o')
+    plt.xlabel(r'Bandwidth [nm] | Central Wavelength 1.5 $\mu$m')
+    plt.ylabel(r'Increase in Median RMS wavefront error [nm]')
+    plt.xlim([0, XMAX])
+    plt.ylim([0, alpha*XMAX])
+    plt.show()
+
+
+    # Lower Strehl
+    # Results at 1.5 um116.83	123.59	116.27	116.69	112.89116.83	123.59	116.27	116.69	112.89
+    bws = np.array([50, 100, 250, 500, 750, 1000])
+    medians_mono = np.array([116.83, 123.59, 116.27, 116.69, 112.89, 115.52])
+    rms_mono = np.array([26.62, 30.48, 25.19, 25.02, 26.23, 24.32])
+    medians_broad = np.array([120.62, 137.52, 162.28, 182.96, 194.74, 199.49])
+    rms_broad = np.array([26.14, 27.98, 23.43, 24.09, 23.98, 25.33])
+    deltas_ = medians_broad - medians_mono
+    rms_delta = np.sqrt(rms_mono**2 + rms_broad**2)
+
+    XMAX = 1100
+    _x = np.linspace(0, XMAX, 50)
+    alpha = 0.5
+
+    plt.figure()
+    # plt.scatter(bws, deltas_)
+    # plt.plot(_x, alpha*_x, linestyle='--', color='black')
+    plt.errorbar(bws, deltas_, yerr=rms_delta, fmt='o')
+    plt.xlabel(r'Bandwidth [nm] | Central Wavelength 1.5 $\mu$m')
+    plt.ylabel(r'Increase in Median RMS wavefront error [nm]')
+    plt.xlim([0, XMAX])
+    plt.ylim([0, 140])
+    # plt.xticks(list(np.arange(0, 1100, 50)))
+    plt.grid(True)
+    plt.show()
+
+    plt.figure()
+    plt.errorbar(bws, medians_mono, yerr=rms_mono, fmt='o', label='Monochromatic')
+    plt.errorbar(bws, medians_broad, yerr=rms_broad, fmt='o', label='Polychromatic')
+    plt.xlim([0, XMAX])
+    plt.ylim([50, 250])
+    plt.xlabel(r'Bandwidth [nm]')
+    plt.ylabel(r'Median RMS wavefront [nm]')
+    plt.grid(True)
+    plt.legend(loc=2)
+    plt.show()
+
 
 
 
