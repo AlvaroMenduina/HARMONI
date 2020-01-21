@@ -549,6 +549,12 @@ if __name__ == "__main__":
 
 
     def update_PSF(PSF_model, coef):
+        """
+        Used to generate a new set of PSF images after calibration
+        :param PSF_model: the PSF model to be used
+        :param coef: typically the residual coefficients
+        :return:
+        """
 
         N_samples = coef.shape[0]
         defocus = foc * np.load('defocus.npy')
@@ -629,6 +635,189 @@ if __name__ == "__main__":
     plt.xlabel(r'RMS wavefront BEFORE [nm]')
     plt.ylabel(r'RMS wavefront AFTER [nm]')
     # plt.show()
+
+    ### ============================================================================================================ ###
+    #                            Robust training?
+    ### ============================================================================================================ ###
+
+    # Could we make the model robust against scale errors by using data augmentation?
+    # Let us create several PSF models with varying spaxel scales
+    # and use them to generate multiple copies of the same wavefront across scales
+
+    SPAX_ERR = 0.10  # Percentage of error [10%]
+
+    WAVE_MIN = WAVE * (1 - SPAX_ERR)
+    WAVE_MAX = WAVE * (1 + SPAX_ERR)
+    N_WAVES = 9
+
+    centers_robust = actuator_centres_multiwave(N_actuators=20, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
+                                                N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX, radial=True)
+
+    rbf_matrices_robust = rbf_matrix_multiwave(centers_robust, alpha_pc=alpha_pc, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
+                                               N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX)
+
+    waves = np.linspace(WAVE_MIN, WAVE_MAX, N_WAVES, endpoint=True)
+    waves_ratio = waves / WAVE
+
+    # Plot the actuators for each Wavelength
+    for i, wave_r in enumerate(waves_ratio):
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        circ1 = Circle((0, 0), RHO_APER/wave_r, linestyle='--', fill=None)
+        circ2 = Circle((0, 0), RHO_OBSC/wave_r, linestyle='--', fill=None)
+        ax.add_patch(circ1)
+        ax.add_patch(circ2)
+        for c in centers_robust[i][0]:
+            ax.scatter(c[0], c[1], color='red', s=10)
+            ax.scatter(c[0], c[1], color='black', s=10)
+        ax.set_aspect('equal')
+        plt.xlim([-1, 1])
+        plt.ylim([-1, 1])
+        # plt.title('%d actuators' %N_act)
+        plt.title('%.3f Wave' %wave_r)
+    plt.show()
+
+    PSF_robust_list = [PointSpreadFunctionFast(rbf_matrices_robust[i]) for i in range(N_WAVES)]
+
+    def robust_training(PSF_model_list, N_samples=1000, foc=1.0, Z=1.0):
+        """
+        Data Augmentation approach to generate a training set
+        across a range of Spaxel Scale Errors.
+        For a given list of PSF models with varying spaxel scales
+        we generate copies of PSF images with the same wavefront
+        :param PSF_model_list: list of PSF models with varying spaxel scales [PSF(3.8 mas), PSF(4.0 mas),...]
+        :param N_samples: Number of examples per PSF model
+        :param foc: strength of defocus term
+        :param Z: nominal strength of aberrations (needed to scale with the N actuators)
+        :return: a [N_WAVES * N_samples, pix, pix, 2] PSF datacube, a [N_WAVES * N_samples, N_act] coefficients array
+        """
+
+        # Find out how many SPAXEL SCALES we have
+        N_SCALES = len(PSF_model_list)
+        N_act = PSF_model_list[N_SCALES//2].N_act
+        coef = Z * np.random.uniform(low=-1, high=1, size=(N_samples, N_act))
+        new_coef = np.empty((N_samples * N_SCALES, N_act))
+        defocus = foc * np.load('defocus.npy')
+        dataset = np.empty((N_samples * N_SCALES, pix, pix, 2))
+
+        for k, model in enumerate(PSF_model_list):
+            print("\nModel %d / %d" % (k+1, N_SCALES))
+            for i in range(N_samples):
+
+                if i % 50 == 0:
+                    print(i)
+
+                im0, _s = model.compute_PSF(coef[i])                # Nominal image
+                dataset[k*N_samples + i, :, :, 0] = im0
+                im_foc, _s = model.compute_PSF(coef[i] + defocus)   # Defocused image
+                dataset[k*N_samples + i, :, :, 1] = im_foc
+                new_coef[k*N_samples + i] = coef[i]
+
+        return dataset, new_coef
+
+    # Generate a robust training set
+    train_PSF_robust, train_coef_robust = robust_training(PSF_robust_list, N_samples=10000, foc=foc,Z=coef_strength)
+
+    # Test the performance on a new dataset with the SAME sampling as in training
+    N_robust = 1000
+    test_PSF_robust, test_coef_robust = robust_training(PSF_robust_list, N_samples=N_robust, foc=foc, Z=coef_strength)
+
+    calibration_model_robust = create_model("ROBUST")
+    train_history = calibration_model_robust.fit(x=train_PSF_robust, y=train_coef_robust,
+                                                 validation_data=(test_PSF_robust, test_coef_robust),
+                                                 epochs=20, batch_size=32, shuffle=True, verbose=1)
+
+    guess_coef_robust = calibration_model_robust.predict(test_PSF_robust)
+    residual_coef_robust = test_coef_robust - guess_coef_robust
+
+    # Check the performance for each scale
+    spaxel_errors = np.linspace(-SPAX_ERR, SPAX_ERR, N_WAVES, endpoint=True)
+    for i, spaxel_error, _model in enumerate(zip(spaxel_errors, PSF_robust_list)):
+        print(spaxel_error)
+        RMS = []
+        _testPSF = test_PSF_robust[i * N_robust : (i+1) * N_robust]
+        _testcoef = test_coef_robust[i * N_robust : (i+1) * N_robust]
+        _guess = calibration_model_robust.predict(_testPSF)
+        for k in range(N_robust):
+            _wave = np.dot(_model.RBF_flat, _testcoef[k])
+            _pred = np.dot(_model.RBF_flat, _guess[k])
+            RMS.append(np.std(WAVE * 1e3 * (_wave - _pred)))
+        mu = np.mean(RMS)
+        std = np.std(RMS)
+        print(mu, std)
+
+    ###
+    # Test the performance at scale outside the training [in between the examples]
+    ###
+    SPAX_ERR = 0.125  # Percentage of error [10%]
+
+    WAVE_MIN = WAVE * (1 - SPAX_ERR)
+    WAVE_MAX = WAVE * (1 + SPAX_ERR)
+    N_WAVES = 9
+    spax_err_out = np.linspace(-SPAX_ERR, SPAX_ERR, N_WAVES, endpoint=True)
+
+    centers_robust_out = actuator_centres_multiwave(N_actuators=20, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
+                                                    N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX, radial=True)
+
+    rbf_matrices_robust_out = rbf_matrix_multiwave(centers_robust_out, alpha_pc=alpha_pc, rho_aper=RHO_APER,
+                                                   rho_obsc=RHO_OBSC, N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX)
+
+    PSF_robust_out_list = [PointSpreadFunctionFast(rbf_matrices_robust_out[i]) for i in range(N_WAVES)]
+
+    N_robust = 1000
+    test_PSF_robust_out, test_coef_robust_out = robust_training(PSF_robust_out_list, N_samples=N_robust,
+                                                                foc=foc, Z=coef_strength)
+
+    plt.figure()
+    # Start with the examples FROM the training range of scales
+    mus_in = []
+    stds_in = []
+    for i, spaxel_error, _model in enumerate(zip(spaxel_errors, PSF_robust_list)):
+        print(spaxel_error)
+        RMS = []
+        _testPSF = test_PSF_robust[i * N_robust : (i+1) * N_robust]
+        _testcoef = test_coef_robust[i * N_robust : (i+1) * N_robust]
+        _guess = calibration_model_robust.predict(_testPSF)
+        for k in range(N_robust):
+            _wave = np.dot(_model.RBF_flat, _testcoef[k])
+            _pred = np.dot(_model.RBF_flat, _guess[k])
+            RMS.append(np.std(WAVE * 1e3 * (_wave - _pred)))
+        mu = np.mean(RMS)
+        std = np.std(RMS)
+        print(mu, std)
+        mus_in.append(mu)
+        stds_in.append(std)
+    # plt.plot(spaxel_errors, mus_in, color='black')
+    plt.errorbar(spaxel_errors, y=mus_in, yerr=stds_in, label='Robust Training')
+
+    # Continue with the dataset OUTSIDE the training scales
+    mus_out = []
+    std_out = []
+    for i, spaxel_error, _model in enumerate(zip(spax_err_out, PSF_robust_out_list)):
+        print(spaxel_error)
+        RMS = []
+        _testPSF = test_PSF_robust_out[i * N_robust : (i+1) * N_robust]
+        _testcoef = test_coef_robust_out[i * N_robust : (i+1) * N_robust]
+        _guess = calibration_model_robust.predict(_testPSF)
+        for k in range(N_robust):
+            _wave = np.dot(_model.RBF_flat, _testcoef[k])
+            _pred = np.dot(_model.RBF_flat, _guess[k])
+            RMS.append(np.std(WAVE * 1e3 * (_wave - _pred)))
+        mu = np.mean(RMS)
+        std = np.std(RMS)
+        print(mu, std)
+        mus_out.append(mu)
+        std_out.append(std)
+    # plt.plot(spax_err_out, mus_in, color='black')
+    plt.errorbar(spax_err_out, y=mus_out, yerr=std_out, label='Robust Training')
+
+
+
+
+    ### ============================================================================================================ ###
+    #                            Repeat the calibration one more iteration
+    ### ============================================================================================================ ###
+
 
     ## Comparison Nominal VS Error, after 3 iterations.
     RMS_nom, RMS_err = [], []
