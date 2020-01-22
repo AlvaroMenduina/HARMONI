@@ -1,5 +1,5 @@
 """
-What is the effect of errors in the Nyquist-Shannon sampling criterion
+What is the effect of errors in the Nyquist-Shannon sampling criterion?
 
 What happens to the performance when you show the model
 PSF images that have a slightly different spaxel scale??
@@ -10,6 +10,7 @@ import numpy as np
 from numpy.fft import fft2, fftshift
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
+from time import time
 
 from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten
 from keras.models import Sequential
@@ -67,6 +68,7 @@ def check_spaxel_scale(rho_aper, wavelength):
     SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
     print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wavelength))
 
+
 WAVE = 1.5
 SPAXEL_MAS = 4
 RHO_APER = rho_spaxel_scale(SPAXEL_MAS, WAVE)
@@ -84,6 +86,7 @@ def invert_mask(x, mask):
     result = np.zeros((N, N))
     result[i,j] = x
     return result
+
 
 def invert_mask_datacube(x, mask):
     """
@@ -267,6 +270,19 @@ def actuator_centres_multiwave(N_actuators, rho_aper=RHO_APER, rho_obsc=RHO_OBSC
 
 def rbf_matrix_multiwave(centres, alpha_pc=1, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
                          N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX):
+    """
+    Compute the Model Matrices for each wavelength case
+    The matrices and masks are rescaled in aperture radius
+    to account for wavelength effects
+    :param centres:
+    :param alpha_pc:
+    :param rho_aper:
+    :param rho_obsc:
+    :param N_waves:
+    :param wave0:
+    :param waveN:
+    :return:
+    """
 
     waves = np.linspace(wave0, waveN, N_waves, endpoint=True)
     waves_ratio = waves / WAVE
@@ -636,6 +652,22 @@ if __name__ == "__main__":
     plt.ylabel(r'RMS wavefront AFTER [nm]')
     # plt.show()
 
+    ## Comparison Nominal VS Error, after 3 iterations.
+    RMS_nom, RMS_err = [], []
+    for k in range(N_test):
+        wavefront_nom = WAVE * 1e3 * np.dot(PSF_nom.RBF_flat, residual_coef3[k])
+        RMS_nom.append(np.std(wavefront_nom))
+        wavefront_ee = WAVE * 1e3 * np.dot(PSF_error.RBF_flat, residual_coef_error3[k])
+        RMS_err.append(np.std(wavefront_ee))
+
+    plt.figure()
+    plt.hist(RMS_nom, bins=20, histtype='step')
+    plt.hist(RMS_err, bins=20, histtype='step')
+    # plt.show()
+
+    print(np.mean(RMS_nom), np.std(RMS_nom))
+    print(np.mean(RMS_err), np.std(RMS_err))
+
     ### ============================================================================================================ ###
     #                            Robust training?
     ### ============================================================================================================ ###
@@ -700,11 +732,13 @@ if __name__ == "__main__":
         defocus = foc * np.load('defocus.npy')
         dataset = np.empty((N_samples * N_SCALES, pix, pix, 2))
 
+        start = time()
         for k, model in enumerate(PSF_model_list):
             print("\nModel %d / %d" % (k+1, N_SCALES))
+            start_model = time()
             for i in range(N_samples):
 
-                if i % 50 == 0:
+                if i % 100 == 0:
                     print(i)
 
                 im0, _s = model.compute_PSF(coef[i])                # Nominal image
@@ -712,10 +746,18 @@ if __name__ == "__main__":
                 im_foc, _s = model.compute_PSF(coef[i] + defocus)   # Defocused image
                 dataset[k*N_samples + i, :, :, 1] = im_foc
                 new_coef[k*N_samples + i] = coef[i]
+            end_model = time()
+            time_model = end_model - start_model
+            print("Current Model took: %.2f min" % (time_model / 60))
+            total_time = time_model - start
+            print("Total time passed: %.2f min" % (total_time / 60))
+            ETA = total_time / (k + 1) * N_SCALES - total_time
+            print("Current ETA: %.2f min" % (ETA / 60))
 
         return dataset, new_coef
 
     # Generate a robust training set
+    N_train_rob = 10000
     train_PSF_robust, train_coef_robust = robust_training(PSF_robust_list, N_samples=10000, foc=foc,Z=coef_strength)
 
     # Test the performance on a new dataset with the SAME sampling as in training
@@ -723,37 +765,66 @@ if __name__ == "__main__":
     test_PSF_robust, test_coef_robust = robust_training(PSF_robust_list, N_samples=N_robust, foc=foc, Z=coef_strength)
 
     calibration_model_robust = create_model("ROBUST")
+    # train_history = calibration_model_robust.fit(x=train_PSF_robust[4*N_train_rob:5*N_train_rob], y=train_coef_robust[4*N_train_rob:5*N_train_rob],
+    #                                              validation_data=(test_PSF_robust[4*N_robust:5*N_robust], test_coef_robust[4*N_robust:5*N_robust]),
+    #                                              epochs=10, batch_size=32, shuffle=True, verbose=1)
+
     train_history = calibration_model_robust.fit(x=train_PSF_robust, y=train_coef_robust,
                                                  validation_data=(test_PSF_robust, test_coef_robust),
-                                                 epochs=20, batch_size=32, shuffle=True, verbose=1)
+                                                 epochs=10, batch_size=32, shuffle=True, verbose=1)
 
+    ### Iteration 1 ###
     guess_coef_robust = calibration_model_robust.predict(test_PSF_robust)
     residual_coef_robust = test_coef_robust - guess_coef_robust
 
+    # Update the PSF images
+    test_PSF_robust2 = [update_PSF(PSF_robust_list[i], residual_coef_robust[i*N_robust:(i+1)*N_robust]) for i in range(N_WAVES)]
+    test_PSF_robust2 = np.concatenate(test_PSF_robust2, axis=0)
+
+    ### Iteration 2 ###
+    guess_coef_robust2 = calibration_model_robust.predict(test_PSF_robust2)
+    residual_coef_robust2 = residual_coef_robust - guess_coef_robust2
+
+    test_PSF_robust3 = [update_PSF(PSF_robust_list[i], residual_coef_robust2[i*N_robust:(i+1)*N_robust]) for i in range(N_WAVES)]
+    test_PSF_robust3 = np.concatenate(test_PSF_robust3, axis=0)
+
+    ### Iteration 3 ###
+    guess_coef_robust3 = calibration_model_robust.predict(test_PSF_robust3)
+    residual_coef_robust3 = residual_coef_robust2 - guess_coef_robust3
+
     # Check the performance for each scale
+    mus_in = []
+    stds_in = []
     spaxel_errors = np.linspace(-SPAX_ERR, SPAX_ERR, N_WAVES, endpoint=True)
-    for i, spaxel_error, _model in enumerate(zip(spaxel_errors, PSF_robust_list)):
+    for i, (spaxel_error, _model) in enumerate(zip(spaxel_errors, PSF_robust_list)):
         print(spaxel_error)
+        # j = i
         RMS = []
-        _testPSF = test_PSF_robust[i * N_robust : (i+1) * N_robust]
-        _testcoef = test_coef_robust[i * N_robust : (i+1) * N_robust]
-        _guess = calibration_model_robust.predict(_testPSF)
+        # _testPSF = test_PSF_robust[j * N_robust : (j+1) * N_robust]
+        _coef = residual_coef_robust3[i * N_robust : (i+1) * N_robust]
+        # _guess = calibration_model_robust.predict(_testPSF)
         for k in range(N_robust):
-            _wave = np.dot(_model.RBF_flat, _testcoef[k])
-            _pred = np.dot(_model.RBF_flat, _guess[k])
-            RMS.append(np.std(WAVE * 1e3 * (_wave - _pred)))
+            _wave = np.dot(_model.RBF_flat, _coef[k])
+            # _pred = np.dot(_model.RBF_flat, _guess[k])
+            RMS.append(np.std(WAVE * 1e3 * (_wave)))
         mu = np.mean(RMS)
         std = np.std(RMS)
         print(mu, std)
+        mus_in.append(mu)
+        stds_in.append(std)
+
+    ### ============================================================================================================ ###
+    #                     What about points within the range but not in the training?
+    ### ============================================================================================================ ###
 
     ###
     # Test the performance at scale outside the training [in between the examples]
     ###
-    SPAX_ERR = 0.125  # Percentage of error [10%]
+    SPAX_ERR = 0.125  # Percentage of error [12.5%]
 
     WAVE_MIN = WAVE * (1 - SPAX_ERR)
     WAVE_MAX = WAVE * (1 + SPAX_ERR)
-    N_WAVES = 9
+    N_WAVES = 8
     spax_err_out = np.linspace(-SPAX_ERR, SPAX_ERR, N_WAVES, endpoint=True)
 
     centers_robust_out = actuator_centres_multiwave(N_actuators=20, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
@@ -768,75 +839,102 @@ if __name__ == "__main__":
     test_PSF_robust_out, test_coef_robust_out = robust_training(PSF_robust_out_list, N_samples=N_robust,
                                                                 foc=foc, Z=coef_strength)
 
-    plt.figure()
-    # Start with the examples FROM the training range of scales
-    mus_in = []
-    stds_in = []
-    for i, spaxel_error, _model in enumerate(zip(spaxel_errors, PSF_robust_list)):
-        print(spaxel_error)
-        RMS = []
-        _testPSF = test_PSF_robust[i * N_robust : (i+1) * N_robust]
-        _testcoef = test_coef_robust[i * N_robust : (i+1) * N_robust]
-        _guess = calibration_model_robust.predict(_testPSF)
-        for k in range(N_robust):
-            _wave = np.dot(_model.RBF_flat, _testcoef[k])
-            _pred = np.dot(_model.RBF_flat, _guess[k])
-            RMS.append(np.std(WAVE * 1e3 * (_wave - _pred)))
-        mu = np.mean(RMS)
-        std = np.std(RMS)
-        print(mu, std)
-        mus_in.append(mu)
-        stds_in.append(std)
-    # plt.plot(spaxel_errors, mus_in, color='black')
-    plt.errorbar(spaxel_errors, y=mus_in, yerr=stds_in, label='Robust Training')
+    ### Iteration 1 ###
+    guess_coef_robust_out = calibration_model_robust.predict(test_PSF_robust_out)
+    residual_coef_robust_out = test_coef_robust_out - guess_coef_robust_out
+
+    # Update the PSF images
+    test_PSF_robust_out2 = [update_PSF(PSF_robust_out_list[i], residual_coef_robust_out[i*N_robust:(i+1)*N_robust]) for i in range(N_WAVES)]
+    test_PSF_robust_out2 = np.concatenate(test_PSF_robust_out2, axis=0)
+
+    ### Iteration 2 ###
+    guess_coef_robust_out2 = calibration_model_robust.predict(test_PSF_robust_out2)
+    residual_coef_robust_out2 = residual_coef_robust_out - guess_coef_robust_out2
+
+    test_PSF_robust_out3 = [update_PSF(PSF_robust_out_list[i], residual_coef_robust_out2[i*N_robust:(i+1)*N_robust]) for i in range(N_WAVES)]
+    test_PSF_robust_out3 = np.concatenate(test_PSF_robust_out3, axis=0)
+
+    ### Iteration 3 ###
+    guess_coef_robust_out3 = calibration_model_robust.predict(test_PSF_robust_out3)
+    residual_coef_robust_out3 = residual_coef_robust2 - guess_coef_robust3
+
 
     # Continue with the dataset OUTSIDE the training scales
     mus_out = []
     std_out = []
-    for i, spaxel_error, _model in enumerate(zip(spax_err_out, PSF_robust_out_list)):
+    for i, (spaxel_error, _model) in enumerate(zip(spax_err_out, PSF_robust_out_list)):
         print(spaxel_error)
         RMS = []
-        _testPSF = test_PSF_robust_out[i * N_robust : (i+1) * N_robust]
-        _testcoef = test_coef_robust_out[i * N_robust : (i+1) * N_robust]
-        _guess = calibration_model_robust.predict(_testPSF)
+        _coef = residual_coef_robust_out3[i * N_robust : (i+1) * N_robust]
         for k in range(N_robust):
-            _wave = np.dot(_model.RBF_flat, _testcoef[k])
-            _pred = np.dot(_model.RBF_flat, _guess[k])
-            RMS.append(np.std(WAVE * 1e3 * (_wave - _pred)))
+            _wave = np.dot(_model.RBF_flat, _coef[k])
+            RMS.append(np.std(WAVE * 1e3 * (_wave)))
         mu = np.mean(RMS)
         std = np.std(RMS)
         print(mu, std)
         mus_out.append(mu)
         std_out.append(std)
-    # plt.plot(spax_err_out, mus_in, color='black')
-    plt.errorbar(spax_err_out, y=mus_out, yerr=std_out, label='Robust Training')
 
+    ### It seems it can generalize outside the trained range... same performance for 12.5% as for +-10% range
+    # Test how far out you can go
+    limits = np.array([-20, -17.5, -15.0, -13.5, -11., 11., 13.5, 15.0, 17.5, 20.0])
+    mu_limits, std_limits = [], []
+    for lim in limits:
+        print("\n%.1f" % lim)
+        SPAX_ERR = 0.01*lim  # Go further out of the training range
+        WAVE_MIN = WAVE
+        WAVE_MAX = WAVE * (1 + SPAX_ERR)
+        N_WAVES = 2
+        # spax_err_out = np.linspace(-SPAX_ERR, SPAX_ERR, N_WAVES, endpoint=True)
 
+        centers_robust_limit = actuator_centres_multiwave(N_actuators=20, rho_aper=RHO_APER, rho_obsc=RHO_OBSC,
+                                                          N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX, radial=True)
 
+        rbf_matrices_robust_limit = rbf_matrix_multiwave(centers_robust_limit, alpha_pc=alpha_pc, rho_aper=RHO_APER,
+                                                         rho_obsc=RHO_OBSC, N_waves=N_WAVES, wave0=WAVE_MIN, waveN=WAVE_MAX)
+
+        PSF_limit = PointSpreadFunctionFast(rbf_matrices_robust_limit[1])
+
+        test_PSF_limit, _PSF, test_coef_limit, _coef = generate_training_set(PSF_limit, N_train=1000, N_test=1, foc=foc,
+                                                                             Z=coef_strength)
+
+        ### Iteration 1 ###
+        guess_coef_robust_lim = calibration_model_robust.predict(test_PSF_limit)
+        residual_coef_robust_lim = test_coef_limit - guess_coef_robust_lim
+        test_PSF_limit2 = update_PSF(PSF_limit, residual_coef_robust_lim)
+
+        ### Iteration 2 ###
+        guess_coef_robust_lim2 = calibration_model_robust.predict(test_PSF_limit2)
+        residual_coef_robust_lim2 = residual_coef_robust_lim - guess_coef_robust_lim2
+        test_PSF_limit3 = update_PSF(PSF_limit, residual_coef_robust_lim2)
+
+        ### Iteration 3 ###
+        guess_coef_robust_lim3 = calibration_model_robust.predict(test_PSF_limit3)
+        residual_coef_robust_lim3 = residual_coef_robust_lim2 - guess_coef_robust_lim3
+
+        RMS_lim = []
+        for k in range(residual_coef_robust_lim3.shape[0]):
+            _wave = np.dot(PSF_limit.RBF_flat, residual_coef_robust_lim3[k])
+            RMS_lim.append(np.std(WAVE * 1e3 * _wave))
+        mu_lim = np.mean(RMS_lim)
+        std_lim = np.std(RMS_lim)
+        print(mu_lim, std_lim)
+        mu_limits.append(mu_lim)
+        std_limits.append(std_lim)
+
+    # ### Record the results
+    # limits = np.array([-20, -17.5, -15.0, -13.5, -11, 15.0, 17.5, 20.0])
+    # mu_limits = [154.26, 118.32, 77.27, 57.6, 47.16, 60.57, 82.26, 110.03]
+    # std_limits = [23.52, 16.21, 9.03,  6.19, 4.768, 7.15, 10.71, 14.84]
 
     ### ============================================================================================================ ###
     #                            Repeat the calibration one more iteration
     ### ============================================================================================================ ###
 
 
-    ## Comparison Nominal VS Error, after 3 iterations.
-    RMS_nom, RMS_err = [], []
-    for k in range(N_test):
-        wavefront_nom = WAVE * 1e3 * np.dot(PSF_nom.RBF_flat, residual_coef3[k])
-        RMS_nom.append(np.std(wavefront_nom))
-        wavefront_ee = WAVE * 1e3 * np.dot(PSF_error.RBF_flat, residual_coef_error3[k])
-        RMS_err.append(np.std(wavefront_ee))
-
-    plt.figure()
-    plt.hist(RMS_nom, bins=20, histtype='step')
-    plt.hist(RMS_err, bins=20, histtype='step')
-    # plt.show()
-
-    print(np.mean(RMS_nom), np.std(RMS_nom))
-    print(np.mean(RMS_err), np.std(RMS_err))
-
-
     #### Error as a function of % SPAXEL ERROR
+
+    # Nominal Case
     pc_err = [-10.0, -7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5, 10.0]   # Watch Out: + means coarser
     mean_nom = [44.54]
     std_nom = [3.81]
@@ -851,6 +949,20 @@ if __name__ == "__main__":
     plt.ylabel(r'Mean RMS wavefront after calibration [nm]')
     plt.grid(True)
     # plt.ylim([0, 250])
+    plt.show()
+
+    ### Robust Case:
+
+    plt.figure()
+    plt.plot(pc_err, mean_err, color='black')
+    plt.errorbar(pc_err, mean_err, yerr=std_err, fmt='o', label='Nominal Scale')
+    plt.errorbar(-100*spaxel_errors, mus_in, yerr=stds_in, fmt='o', label='[Robust] Training Points')
+    plt.errorbar(-100*spax_err_out[1:-1], mus_out[1:-1], yerr=std_out[1:-1], fmt='s', label='[Robust] Within Range')
+    plt.errorbar(-limits, mu_limits, yerr=std_limits, fmt='D', label='[Robust] Generalization')
+    plt.xlabel(r'Error in sampling [per cent]')
+    plt.ylabel(r'Mean RMS wavefront after calibration [nm]')
+    plt.grid(True)
+    plt.legend(title='Training')
     plt.show()
 
 
