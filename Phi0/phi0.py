@@ -14,8 +14,6 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 import matplotlib.cm as cm
 
-import keras
-from keras import models
 from keras.layers import Dense, Conv2D, MaxPooling2D, Flatten, Activation, Dropout
 from keras.models import Sequential
 from keras import backend as K
@@ -219,38 +217,6 @@ class PointSpreadFunction(object):
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
 
-def generate_dataset(PSF_model, N_train=1000, N_test=100, foc=1.0, Z=1.0):
-
-    N_act = PSF_model.N_act
-    N_samples = N_train + N_test
-    N_channels = 2
-
-    # Perfect PSF (N_samples N_PIX, N_PIX) - For the Loss function
-    im_perfect, _s = PSF_model.compute_PSF(np.zeros(N_act), crop=False)
-    perfect_PSFs = np.zeros((N_samples, N_PIX, N_PIX))           # Store the PSF N_sample times
-
-    # defocus = np.random.uniform(low=-1.25, high=1.25, size=N_act)
-    # np.save('defocus', defocus)
-    defocus = foc * np.load('defocus.npy')
-
-    coef = Z * np.random.uniform(low=-1, high=1, size=(N_samples, N_act))
-    dataset = np.zeros((N_samples, pix, pix, N_channels))
-
-    for i in range(N_samples):
-        if i%100 == 0:
-            print(i)
-        im0, _s = PSF_model.compute_PSF(coef[i])
-        images = [im0]
-        imfoc, _s = PSF_model.compute_PSF(coef[i] + defocus)
-        images.append(imfoc)
-        dataset[i] = np.moveaxis(np.array(images), 0, -1)
-        # NOTE: Tensorflow does not have FFTSHIFT operation. So we have to fftshift the Perfect PSF
-        # back to the weird un-shifted format.
-        perfect_PSFs[i] = fftshift(im_perfect)
-
-    return dataset, coef, perfect_PSFs
-
-
 if __name__ == "__main__":
 
     plt.rc('font', family='serif')
@@ -282,6 +248,10 @@ if __name__ == "__main__":
 
     class NoiseEffects(object):
 
+        """
+        A variety of Noise Effects to add to PSF images
+        """
+
         def __init__(self):
 
             pass
@@ -298,7 +268,34 @@ if __name__ == "__main__":
 
             return PSF_images_noisy
 
+        def add_bad_pixels(self, PSF_images, p_bad=0.20, max_bad_pixels=3, BAD_PIX=1.0):
+
+            N_samples, pix, N_chan = PSF_images.shape[0], PSF_images.shape[1], PSF_images.shape[-1]
+
+            # Randomly select which PSF images [nom, foc] will have bad_pixels
+            which_images_nom = np.random.binomial(n=1, p=p_bad, size=N_samples)
+            index_nom = np.argwhere(which_images_nom == 1)
+            which_images_foc = np.random.binomial(n=1, p=p_bad, size=N_samples)
+            index_foc = np.argwhere(which_images_foc == 1)
+
+            # Nominal Channel
+            for i_nom in index_nom:
+                how_many = np.random.randint(low=1, high=max_bad_pixels)        # How many bad pixels?
+                for j in range(how_many):                                       # Which (x, y) pixels?
+                    x_bad, y_bad = np.random.choice(pix, size=1)[0], np.random.choice(pix, size=1)[0]
+                    PSF_images[i_nom[0], x_bad, y_bad, 0] = BAD_PIX
+
+            # Defocus Channel
+            for i_foc in index_foc:
+                how_many = np.random.randint(low=1, high=max_bad_pixels)        # How many bad pixels?
+                for j in range(how_many):                                       # Which (x, y) pixels?
+                    x_bad, y_bad = np.random.choice(pix, size=1)[0], np.random.choice(pix, size=1)[0]
+                    PSF_images[i_foc[0], x_bad, y_bad, 1] = BAD_PIX
+
+            return PSF_images
+
     class Calibration(object):
+
         def __init__(self, PSF_model, diversity_strength=1./(2*np.pi), noise_effects=NoiseEffects()):
 
             self.PSF_model = PSF_model
@@ -413,7 +410,7 @@ if __name__ == "__main__":
 
         def train_calibration_model(self, images_batches, coefs_batches, test_images, test_coefs,
                                     N_loops=10, epochs_loop=50, verbose=1, plot_val_loss=False,
-                                    readout_noise=False, RMS_readout=[1./100, 1./50]):
+                                    readout_noise=False, RMS_readout=[1./100]):
 
             N_batches = len(images_batches)
             N_train = images_batches[0].shape[0]
@@ -430,12 +427,16 @@ if __name__ == "__main__":
                     if readout_noise:
                         i_noise = np.random.choice(range(len(RMS_readout)))         # Randomly select the RMS Readout
                         clean_images = self.noise_effects.add_readout_noise(clean_images, RMS_READ=RMS_readout[i_noise])
+                        noisy_test_images = self.noise_effects.add_readout_noise(test_images, RMS_READ=RMS_readout[i_noise])
+
+                    else:
+                        noisy_test_images = test_images
 
                     train_history = self.calibration_model.fit(x=clean_images, y=clean_coefs,
                                                                epochs=epochs_loop, batch_size=N_train,
                                                                shuffle=False, verbose=verbose)
                     loss.extend(train_history.history['loss'])
-                    val_loss.append(self.validation_loss(test_images, test_coefs))
+                    val_loss.append(self.validation_loss(noisy_test_images, test_coefs))
 
             if plot_val_loss:
                 plt.figure()
@@ -461,7 +462,7 @@ if __name__ == "__main__":
             print("RMS  After: %.1f +- %.1f nm (%.1f median)" % (mu, std, med))
             return RMS0, RMS
 
-        def calibrate_iterations(self, test_images, test_coefs, N_iter=3):
+        def calibrate_iterations(self, test_images, test_coefs, N_iter=3, readout_noise=False, RMS_readout=1./200):
 
             images_before = test_images
             coefs_before = test_coefs
@@ -475,8 +476,12 @@ if __name__ == "__main__":
                 RMS_evolution.append(rms_pair)
 
                 # Update the PSF and coefs
-                images_before = cal.update_PSF(coefs_after, )
+                images_before = cal.update_PSF(coefs_after)
                 coefs_before = coefs_after
+
+                if readout_noise:
+                    images_before = self.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
+
             return RMS_evolution
 
         def plot_RMS_evolution(self, RMS_evolution):
@@ -500,40 +505,15 @@ if __name__ == "__main__":
 
 
 
-        # def read_out_noise(training_set, train_coef, N_copies=3):
-        #     """
-        #     Add READ OUT NOISE to the clean PSF
-        #     :param training_set:
-        #     :param train_coef:
-        #     :param N_copies:
-        #     :return:
-        #     """
-        #     RMS_READ = 1. / 100
-        #
-        #     N_train, pix, N_chan = training_set.shape[0], training_set.shape[1], training_set.shape[-1]
-        #     N_act = train_coef.shape[-1]
-        #     augmented_PSF = np.empty((N_copies * N_train, pix, pix, N_chan))
-        #     augmented_coef = np.empty((N_copies * N_train, N_act))
-        #     for k in range(N_train):
-        #         coef = train_coef[k].copy()
-        #         PSF = training_set[k].copy()
-        #         for i in range(N_copies):
-        #             read_out = np.random.normal(loc=0, scale=RMS_READ, size=(pix, pix, N_chan))
-        #             # plt.figure()
-        #             # plt.imshow(read_out[:,:,0])
-        #             # plt.colorbar()
-        #             # plt.show()
-        #             augmented_PSF[N_copies * k + i] = PSF + read_out
-        #             augmented_coef[N_copies * k + i] = coef
-        #     return augmented_PSF, augmented_coef
-
-
     cal = Calibration(PSF_model=PSF)
     coef_strength = 1.5 / (2 * np.pi)
     N_batches = 20
     N_train, N_test = 500, 1000
     train_batches, coef_batches, test_images, test_coefs, perfect_PSFs = cal.generate_datasets(N_batches, N_train,
                                                                                                N_test, coef_strength)
+    # _perfect_PSFs = cal.noise_effects.add_readout_noise(perfect_PSFs[:,:,:, np.newaxis], RMS_READ=1./200)
+
+
     cal.create_calibration_model()
 
     # Some bits for the Loss function definition
@@ -563,11 +543,61 @@ if __name__ == "__main__":
     # Compile the calibration model
     cal.calibration_model.compile(optimizer='adam', loss=loss)
     loss, validation = cal.train_calibration_model(train_batches, coef_batches, test_images, test_coefs,
-                                                   N_loops=20, epochs_loop=25, verbose=1, plot_val_loss=True,
-                                                   readout_noise=True, RMS_readout=[1./100])
+                                                   N_loops=25, epochs_loop=10, verbose=1, plot_val_loss=True,
+                                                   readout_noise=True, RMS_readout=[1./50])
 
     RMS_evolution = cal.calibrate_iterations(test_images, test_coefs, N_iter=4)
     cal.plot_RMS_evolution(RMS_evolution)
+    plt.show()
+
+    ### Read Out Noise
+
+    noisy_test_images = cal.noise_effects.add_readout_noise(test_images, RMS_READ=1./200)
+
+
+    def calibrate_iterations(test_images, test_coefs, N_iter=3, readout_noise=False, RMS_readout=1./200):
+
+        images_before = test_images
+        coefs_before = test_coefs
+        RMS_evolution = []
+        for k in range(N_iter):
+            print("\nNCPA Calibration | Iteration %d/%d" % (k + 1, N_iter))
+            predicted_coefs = cal.calibration_model.predict(images_before)
+            coefs_after = coefs_before + predicted_coefs  # Remember we predict the Corrections!
+            rms_before, rms_after = cal.calculate_RMS(coefs_before, coefs_after)
+            rms_pair = [rms_before, rms_after]
+            RMS_evolution.append(rms_pair)
+
+            # Update the PSF and coefs
+            images_before = cal.update_PSF(coefs_after)
+            coefs_before = coefs_after
+
+            if readout_noise:
+                images_before = cal.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
+
+        return RMS_evolution
+
+    RMS_evolution = calibrate_iterations(noisy_test_images, test_coefs, N_iter=4,
+                                         readout_noise=True, RMS_readout=1./200)
+
+    cal.plot_RMS_evolution(RMS_evolution)
+    plt.show()
+
+    ###
+    SNR = [50, 100, 200, 300, 400, 500, 750, 1000]
+    mus_ = [79.4, 54.0, 41.5, 34.1, 31.5, 27.1, 25.7, 24.1]
+    stds_ = [17.1, 11.4, 8.5, 7.7, 6.8, 5.8, 6.4, 5.8]
+
+    # plt.scatter(SNR, mus_)
+
+    plt.figure()
+
+    # plt.plot(pc_err, mean_err, color='black')
+    plt.errorbar(SNR, mus_, yerr=stds_, fmt='o')
+    plt.xlabel(r'SNR')
+    plt.ylabel(r'RMS wavefront after calibration [nm]')
+    plt.grid(True)
+    plt.xlim([0, 1200])
     plt.show()
 
 
