@@ -217,6 +217,7 @@ class PointSpreadFunction(object):
         plt.colorbar()
         plt.clim(vmin=0, vmax=1)
 
+
 if __name__ == "__main__":
 
     plt.rc('font', family='serif')
@@ -257,6 +258,15 @@ if __name__ == "__main__":
             pass
 
         def add_readout_noise(self, PSF_images, RMS_READ):
+            """
+            Add Readout Noise in the form of additive Gaussian noise
+            at a given RMS_READ equal to 1 / SNR, the Signal To Noise ratio
+
+            Assuming the perfect PSF has a peak of 1.0
+            :param PSF_images: datacube of [N_samples, pix, pix, 2] nominal and defocus PSF images
+            :param RMS_READ: 1/ SNR
+            :return:
+            """
 
             N_samples, pix, N_chan = PSF_images.shape[0], PSF_images.shape[1], PSF_images.shape[-1]
             PSF_images_noisy = np.zeros_like(PSF_images)
@@ -267,6 +277,27 @@ if __name__ == "__main__":
                     PSF_images_noisy[k, :, :, j] = PSF_images[k, :, :, j] + read_out
 
             return PSF_images_noisy
+
+        def add_flat_field(self, PSF_images, flat_delta):
+            """
+            Add Flat Field uncertainties in the form of a multiplicative map
+            of Uniform Noise [1 - delta, 1 + delta]
+
+            Such that if delta is 10 %, the pixel sensitivity is known to +- 10 %
+            :param PSF_images: datacube of [N_samples, pix, pix, 2] nominal and defocus PSF images
+            :param flat_delta: range of the Flat Field uncertainty [1- delta, 1 + delta]
+            :return:
+            """
+
+            N_samples, pix, N_chan = PSF_images.shape[0], PSF_images.shape[1], PSF_images.shape[-1]
+            print(r"Adding Flat Field errors [1 - $\delta$, 1 + $\delta$]: $\delta$=%.3f" % flat_delta)
+            # sigma_uniform = flat_delta / np.sqrt(3)
+
+            for k in range(N_samples):
+                for j in range(N_chan):
+                    flat_field = np.random.uniform(low=1-flat_delta, high=1 + flat_delta, size=(pix, pix))
+                    PSF_images[k, :, :, j] *= flat_field
+            return PSF_images
 
         def add_bad_pixels(self, PSF_images, p_bad=0.20, max_bad_pixels=3, BAD_PIX=1.0):
 
@@ -304,11 +335,19 @@ if __name__ == "__main__":
 
         def generate_datasets(self, N_batches, N_train, N_test, coef_strength, rescale=0.35):
             """
-            Generate
-            :param N_batches:
-            :param N_train:
-            :param N_test:
-            :param coef_strength:
+            Generate the [clean] datasets necessary to train a calibration model
+            We split the training in N_batches of size N_train PSF images
+
+            The function generates a total of (N_batches * N_train + N_test) PSF images with random aberrations
+
+            [perfect_PSFs] is a datacube of fftshifted PSF images with no aberrations.
+            We need them to evaluate the loss function.
+
+            :param N_batches: How many batches of size N_train to create
+            :param N_train: Number of PSF images within a batch
+            :param N_test: Number of PSF images to test the performance
+            :param coef_strength: Strength of the aberration coefficients, used to modulate the RMS
+            :param rescale: Rescale the Training Coefficients between [1] and [rescale] to cover a wider range of RMS
             :return:
             """
 
@@ -360,7 +399,8 @@ if __name__ == "__main__":
 
         def update_PSF(self, coefs):
             """
-            Updates the PSF images after calibration
+            Updates the PSF images after calibration. We use this to run the calibration
+            for several iterations until it converges
             :param coefs: residual coefficients
             :return:
             """
@@ -401,6 +441,13 @@ if __name__ == "__main__":
             return
 
         def validation_loss(self, test_images, test_coefs):
+            """
+            Validation loss to see how the model performs
+            We compare the norm of the residual coefficients to the initial norm
+            :param test_images:
+            :param test_coefs:
+            :return:
+            """
             guess_coef = self.calibration_model.predict(test_images)
             residual = test_coefs + guess_coef
             norm_coefs = norm(test_coefs, axis=1)
@@ -410,28 +457,74 @@ if __name__ == "__main__":
 
         def train_calibration_model(self, images_batches, coefs_batches, test_images, test_coefs,
                                     N_loops=10, epochs_loop=50, verbose=1, plot_val_loss=False,
-                                    readout_noise=False, RMS_readout=[1./100]):
+                                    readout_noise=False, RMS_readout=[1./100],
+                                    flat_field=False, flat_delta=[1./100, 2.5/100, 5./100]):
+            """
+            Train a CNN calibration model to estimate the aberrations from PSF images
+
+            We use batches because the loss function accepts only a FIXED length for the datacubes
+            In particular, of size N_train. If we want to train with many examples, this blows up the
+            GPU memory, so we run N_batches of size N_train, N_loop times
+
+            In other words, if N_loops = 5, N_batches = 10, N_train = 1000,
+            we loop 5 times over a training set of 10,000 images, in 10 batches of 1,000.
+            This is very helpful as it allow us to add NOISE EFFECTS multiple times (random instances)
+            and make the calibration more robust to such effects
+
+            NOISE_EFFECTS | We can add:
+                - READOUT NOISE only
+                - FLAT FIELD and READOUT NOISE
+                - Nothing at all
+            for each case of noise, we can cover a certain range, by randomly selecting from the list
+
+            :param images_batches: list of the form [train_images1, train_images2, ...] ("clean")
+            :param coefs_batches: list of the form [train_coefs1, train_coefs2, ...] ("clean")
+            :param test_images: datacube of test PSF images ("clean")
+            :param test_coefs: datacube of test coefficients
+            :param N_loops: Number of loops to run over all batches of images
+            :param epochs_loop: Number of epochs per loop to train the model
+            :param verbose: Keras verbose option: 0 silent, 1 display stuff
+            :param plot_val_loss: whether to plot the validation loss evolution at the end
+            :param readout_noise: whether to add READOUT NOISE
+            :param RMS_readout: how much READOUT NOISE to add, list of RMS [1/SNR1, 1/ SNR2]
+            :param flat_field: whether to add FLAT FIELD errors
+            :param flat_delta: how much FLAT FIELD to add, list of deltas [delta1, delta2]
+            :return:
+            """
 
             N_batches = len(images_batches)
             N_train = images_batches[0].shape[0]
             loss, val_loss = [], []
             print("\nTraining the Calibration Model")
-            for i_times in range(N_loops):
-                for k_batch in range(N_batches):
+            for i_times in range(N_loops):                  # Loop over all batches N_loops times
+                for k_batch in range(N_batches):            # Loop over each training batch
                     print("\nIteration %d || Batch #%d (%d samples)" % (i_times + 1, k_batch + 1, N_train))
 
                     clean_images = images_batches[k_batch]
                     clean_coefs = coefs_batches[k_batch]
 
                     # Noise effects
-                    if readout_noise:
+                    if flat_field is True and readout_noise is True:
+                        print("--0--")
+                        i_flat = np.random.choice(range(len(flat_delta)))  # Randomly select the Flat Field
+                        clean_images = self.noise_effects.add_flat_field(clean_images, flat_delta=flat_delta[i_flat])
+                        noisy_test_images = self.noise_effects.add_flat_field(test_images, flat_delta=flat_delta[i_flat])
+
+                        i_noise = np.random.choice(range(len(RMS_readout)))         # Randomly select the RMS Readout
+                        clean_images = self.noise_effects.add_readout_noise(clean_images, RMS_READ=RMS_readout[i_noise])
+                        noisy_test_images = self.noise_effects.add_readout_noise(noisy_test_images, RMS_READ=RMS_readout[i_noise])
+
+                    if flat_field is False and readout_noise is True:
+                        print("--1--")
                         i_noise = np.random.choice(range(len(RMS_readout)))         # Randomly select the RMS Readout
                         clean_images = self.noise_effects.add_readout_noise(clean_images, RMS_READ=RMS_readout[i_noise])
                         noisy_test_images = self.noise_effects.add_readout_noise(test_images, RMS_READ=RMS_readout[i_noise])
 
-                    else:
+                    if flat_field is False and readout_noise is False:
+                        print("--2--")
                         noisy_test_images = test_images
 
+                    # Allergen Notice: At this point clean_images may contain noise
                     train_history = self.calibration_model.fit(x=clean_images, y=clean_coefs,
                                                                epochs=epochs_loop, batch_size=N_train,
                                                                shuffle=False, verbose=verbose)
@@ -443,9 +536,16 @@ if __name__ == "__main__":
                 plt.plot(val_loss)
                 plt.xlabel('Epoch')
                 plt.ylabel('Validation Loss')
+
             return loss, val_loss
 
         def calculate_RMS(self, coef_before, coef_after):
+            """
+            Using the PSF model, calculate the RMS wavefront BEFORE and AFTER corrections
+            :param coef_before:
+            :param coef_after:
+            :return:
+            """
 
             N_samples = coef_before.shape[0]
             print("\nCalculating RMS before / after for %d samples" % N_samples)
@@ -462,9 +562,33 @@ if __name__ == "__main__":
             print("RMS  After: %.1f +- %.1f nm (%.1f median)" % (mu, std, med))
             return RMS0, RMS
 
-        def calibrate_iterations(self, test_images, test_coefs, N_iter=3, readout_noise=False, RMS_readout=1./200):
+        def calibrate_iterations(self, test_images, test_coefs, N_iter=3,
+                                 readout_noise=False, RMS_readout=1./200,
+                                 flat_field=False, flat_delta=5. / 100):
+            """
+            Run the calibration for several iterations
+            :param test_images: datacube of test PSF images ("clean")
+            :param test_coefs: datacube of test coefficients ("clean")
+            :param N_iter: how many iterations to run
+            :param readout_noise: whether to add READOUT NOISE
+            :param RMS_readout: how much READOUT NOISE to add, list of RMS [1/SNR1, 1/ SNR2]
+            :param flat_field: whether to add FLAT FIELD errors
+            :param flat_delta: how much FLAT FIELD to add, list of deltas [delta1, delta2]
+            :return:
+            """
 
-            images_before = test_images
+            if flat_field is True and readout_noise is True:
+                flat_test_images = self.noise_effects.add_flat_field(test_images, flat_delta=flat_delta)
+                images_before = self.noise_effects.add_readout_noise(flat_test_images, RMS_READ=RMS_readout)
+
+            if flat_field is False and readout_noise is True:
+                images_before = self.noise_effects.add_readout_noise(test_images, RMS_READ=RMS_readout)
+
+            if flat_field is False and readout_noise is False:
+                images_before = test_images
+            else:
+                raise ValueError
+
             coefs_before = test_coefs
             RMS_evolution = []
             for k in range(N_iter):
@@ -479,12 +603,26 @@ if __name__ == "__main__":
                 images_before = cal.update_PSF(coefs_after)
                 coefs_before = coefs_after
 
-                if readout_noise:
+                if flat_field is True and readout_noise is True:
+                    images_before = self.noise_effects.add_flat_field(images_before, flat_delta=flat_delta)
                     images_before = self.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
+
+                if flat_field is False and readout_noise is True:
+                    images_before = self.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
+
+                if flat_field is False and readout_noise is False:
+                    pass
+
+                else:
+                    raise ValueError
 
             return RMS_evolution
 
         def plot_RMS_evolution(self, RMS_evolution):
+            """
+            Plot the evolution of RMS wavefront with calibration iterations
+            :param RMS_evolution: list of pairs of RMS [(BEFORE, AFTER)_0, ..., (BEFORE, AFTER)_N]
+            """
 
             N_pairs = len(RMS_evolution)  # Pairs of [Before, After]
             blues = cm.Blues(np.linspace(0.5, 1.0, N_pairs))
@@ -504,6 +642,11 @@ if __name__ == "__main__":
             plt.ylabel(r'RMS wavefront AFTER [nm]')
 
 
+    # ================================================================================================================ #
+    #
+    # ================================================================================================================ #
+
+    """ Create the Calibration Object and generate the CLEAN datasets """
 
     cal = Calibration(PSF_model=PSF)
     coef_strength = 1.5 / (2 * np.pi)
@@ -513,7 +656,7 @@ if __name__ == "__main__":
                                                                                                N_test, coef_strength)
     # _perfect_PSFs = cal.noise_effects.add_readout_noise(perfect_PSFs[:,:,:, np.newaxis], RMS_READ=1./200)
 
-
+    """ Create the Calibration Model """
     cal.create_calibration_model()
 
     # Some bits for the Loss function definition
@@ -542,46 +685,21 @@ if __name__ == "__main__":
 
     # Compile the calibration model
     cal.calibration_model.compile(optimizer='adam', loss=loss)
+
+    """ Train the model """
+
+    RMS_READ = 1. / 500
+
     loss, validation = cal.train_calibration_model(train_batches, coef_batches, test_images, test_coefs,
                                                    N_loops=25, epochs_loop=10, verbose=1, plot_val_loss=True,
-                                                   readout_noise=True, RMS_readout=[1./50])
+                                                   readout_noise=True, RMS_readout=[RMS_READ],
+                                                   flat_field=False, flat_delta=[0.0])
 
-    RMS_evolution = cal.calibrate_iterations(test_images, test_coefs, N_iter=4)
+    RMS_evolution = cal.calibrate_iterations(test_images, test_coefs, N_iter=4,
+                                             readout_noise=True, RMS_readout=RMS_READ)
     cal.plot_RMS_evolution(RMS_evolution)
     plt.show()
 
-    ### Read Out Noise
-
-    noisy_test_images = cal.noise_effects.add_readout_noise(test_images, RMS_READ=1./200)
-
-
-    def calibrate_iterations(test_images, test_coefs, N_iter=3, readout_noise=False, RMS_readout=1./200):
-
-        images_before = test_images
-        coefs_before = test_coefs
-        RMS_evolution = []
-        for k in range(N_iter):
-            print("\nNCPA Calibration | Iteration %d/%d" % (k + 1, N_iter))
-            predicted_coefs = cal.calibration_model.predict(images_before)
-            coefs_after = coefs_before + predicted_coefs  # Remember we predict the Corrections!
-            rms_before, rms_after = cal.calculate_RMS(coefs_before, coefs_after)
-            rms_pair = [rms_before, rms_after]
-            RMS_evolution.append(rms_pair)
-
-            # Update the PSF and coefs
-            images_before = cal.update_PSF(coefs_after)
-            coefs_before = coefs_after
-
-            if readout_noise:
-                images_before = cal.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
-
-        return RMS_evolution
-
-    RMS_evolution = calibrate_iterations(noisy_test_images, test_coefs, N_iter=4,
-                                         readout_noise=True, RMS_readout=1./200)
-
-    cal.plot_RMS_evolution(RMS_evolution)
-    plt.show()
 
     ###
     SNR = [50, 100, 200, 300, 400, 500, 750, 1000]
@@ -597,7 +715,8 @@ if __name__ == "__main__":
     plt.xlabel(r'SNR')
     plt.ylabel(r'RMS wavefront after calibration [nm]')
     plt.grid(True)
-    plt.xlim([0, 1200])
+    plt.xlim([0, 1000])
+    plt.ylim([0, 100])
     plt.show()
 
 
