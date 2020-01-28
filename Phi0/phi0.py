@@ -571,23 +571,24 @@ if __name__ == "__main__":
             :param test_coefs: datacube of test coefficients ("clean")
             :param N_iter: how many iterations to run
             :param readout_noise: whether to add READOUT NOISE
-            :param RMS_readout: how much READOUT NOISE to add, list of RMS [1/SNR1, 1/ SNR2]
+            :param RMS_readout: how much READOUT NOISE to add, RMS 1/SNR
             :param flat_field: whether to add FLAT FIELD errors
-            :param flat_delta: how much FLAT FIELD to add, list of deltas [delta1, delta2]
+            :param flat_delta: how much FLAT FIELD to add, delta [1 - delta, 1 + delta]
             :return:
             """
 
             if flat_field is True and readout_noise is True:
+                print("--0--")
                 flat_test_images = self.noise_effects.add_flat_field(test_images, flat_delta=flat_delta)
                 images_before = self.noise_effects.add_readout_noise(flat_test_images, RMS_READ=RMS_readout)
 
             if flat_field is False and readout_noise is True:
+                print("--1--")
                 images_before = self.noise_effects.add_readout_noise(test_images, RMS_READ=RMS_readout)
 
             if flat_field is False and readout_noise is False:
+                print("--2--")
                 images_before = test_images
-            else:
-                raise ValueError
 
             coefs_before = test_coefs
             RMS_evolution = []
@@ -599,22 +600,24 @@ if __name__ == "__main__":
                 rms_pair = [rms_before, rms_after]
                 RMS_evolution.append(rms_pair)
 
+                if k == N_iter - 1:
+                    break
                 # Update the PSF and coefs
                 images_before = cal.update_PSF(coefs_after)
                 coefs_before = coefs_after
 
                 if flat_field is True and readout_noise is True:
+                    print("--0--")
                     images_before = self.noise_effects.add_flat_field(images_before, flat_delta=flat_delta)
                     images_before = self.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
 
                 if flat_field is False and readout_noise is True:
+                    print("--1--")
                     images_before = self.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
 
                 if flat_field is False and readout_noise is False:
+                    print("--2--")
                     pass
-
-                else:
-                    raise ValueError
 
             return RMS_evolution
 
@@ -688,18 +691,113 @@ if __name__ == "__main__":
 
     """ Train the model """
 
+    readout_noise = True
     RMS_READ = 1. / 500
+    flat_field = False
+    flat_delta = 0.0
 
     loss, validation = cal.train_calibration_model(train_batches, coef_batches, test_images, test_coefs,
                                                    N_loops=25, epochs_loop=10, verbose=1, plot_val_loss=True,
-                                                   readout_noise=True, RMS_readout=[RMS_READ],
-                                                   flat_field=False, flat_delta=[0.0])
+                                                   readout_noise=readout_noise, RMS_readout=[RMS_READ],
+                                                   flat_field=flat_field, flat_delta=[flat_delta])
 
     RMS_evolution = cal.calibrate_iterations(test_images, test_coefs, N_iter=4,
-                                             readout_noise=True, RMS_readout=RMS_READ)
+                                             readout_noise=readout_noise, RMS_readout=RMS_READ,
+                                             flat_field=flat_field, flat_delta=flat_delta)
     cal.plot_RMS_evolution(RMS_evolution)
     plt.show()
 
+
+    def calibrate_iterations(test_images, test_coefs, N_iter=3,
+                             readout_noise=False, RMS_readout=1. / 200,
+                             flat_field=False, flat_delta=5. / 100):
+
+        if flat_field is True and readout_noise is True:
+            print("--0--")
+            flat_test_images = cal.noise_effects.add_flat_field(test_images, flat_delta=flat_delta)
+            images_before = cal.noise_effects.add_readout_noise(flat_test_images, RMS_READ=RMS_readout)
+
+        if flat_field is False and readout_noise is True:
+            print("--1--")
+            images_before = cal.noise_effects.add_readout_noise(test_images, RMS_READ=RMS_readout)
+
+        if flat_field is False and readout_noise is False:
+            print("--2--")
+            images_before = test_images
+
+        coefs_before = test_coefs
+        RMS_evolution = []
+        for k in range(N_iter):
+            print("\nNCPA Calibration | Iteration %d/%d" % (k + 1, N_iter))
+            predicted_coefs = cal.calibration_model.predict(images_before)
+            coefs_after = coefs_before + predicted_coefs  # Remember we predict the Corrections!
+            rms_before, rms_after = cal.calculate_RMS(coefs_before, coefs_after)
+            rms_pair = [rms_before, rms_after]
+            RMS_evolution.append(rms_pair)
+
+            # Update the PSF and coefs
+            images_before = cal.update_PSF(coefs_after)
+            coefs_before = coefs_after
+
+            if flat_field is True and readout_noise is True:
+                print("--0--")
+                images_before = cal.noise_effects.add_flat_field(images_before, flat_delta=flat_delta)
+                images_before = cal.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
+
+            if flat_field is False and readout_noise is True:
+                print("--1--")
+                images_before = cal.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
+
+            if flat_field is False and readout_noise is False:
+                print("--2--")
+                pass
+
+        return RMS_evolution
+
+    RMS_evolution = calibrate_iterations(test_images, test_coefs, N_iter=5,
+                                             readout_noise=readout_noise, RMS_readout=RMS_READ,
+                                             flat_field=flat_field, flat_delta=flat_delta)
+
+    cal.plot_RMS_evolution(RMS_evolution)
+    plt.show()
+
+    # ================================================================================================================ #
+    #
+    # ================================================================================================================ #
+
+    readout_noise = True
+
+    flat_field = False
+    flat_delta = 0.0
+
+    # Loop over the READOUT NOISE values
+    N_READOUT = 20
+    SNR = np.linspace(50, 1000, N_READOUT)
+    MUS_READOUT, STDS_READOUT = [], []
+    for snr in SNR:
+
+        loss, validation = cal.train_calibration_model(train_batches, coef_batches, test_images, test_coefs,
+                                                       N_loops=10, epochs_loop=10, verbose=0, plot_val_loss=True,
+                                                       readout_noise=readout_noise, RMS_readout=[1. / snr],
+                                                       flat_field=flat_field, flat_delta=[flat_delta])
+
+        RMS_evolution = cal.calibrate_iterations(test_images, test_coefs, N_iter=4,
+                                                 readout_noise=readout_noise, RMS_readout=1. / snr,
+                                                 flat_field=flat_field, flat_delta=flat_delta)
+
+        final_RMS = RMS_evolution[-1][-1]
+        mu_rms = np.mean(final_RMS)
+        MUS_READOUT.append(mu_rms)
+        std_rms = np.std(final_RMS)
+        STDS_READOUT.append(std_rms)
+
+
+
+
+
+    # ================================================================================================================ #
+    #
+    # ================================================================================================================ #
 
     ###
     SNR = [50, 100, 200, 300, 400, 500, 750, 1000]
