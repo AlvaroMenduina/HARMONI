@@ -301,6 +301,8 @@ if __name__ == "__main__":
 
         def add_bad_pixels(self, PSF_images, p_bad=0.20, max_bad_pixels=3, BAD_PIX=1.0):
 
+            print("Adding Bad Pixels")
+
             N_samples, pix, N_chan = PSF_images.shape[0], PSF_images.shape[1], PSF_images.shape[-1]
 
             # Randomly select which PSF images [nom, foc] will have bad_pixels
@@ -458,7 +460,8 @@ if __name__ == "__main__":
         def train_calibration_model(self, images_batches, coefs_batches, test_images, test_coefs,
                                     N_loops=10, epochs_loop=50, verbose=1, plot_val_loss=False,
                                     readout_noise=False, RMS_readout=[1./100],
-                                    flat_field=False, flat_delta=[1./100, 2.5/100, 5./100]):
+                                    flat_field=False, flat_delta=[1./100, 2.5/100, 5./100],
+                                    bad_pixels=False):
             """
             Train a CNN calibration model to estimate the aberrations from PSF images
 
@@ -520,6 +523,11 @@ if __name__ == "__main__":
                         clean_images = self.noise_effects.add_readout_noise(clean_images, RMS_READ=RMS_readout[i_noise])
                         noisy_test_images = self.noise_effects.add_readout_noise(test_images, RMS_READ=RMS_readout[i_noise])
 
+                        if bad_pixels is True:
+                            clean_images = self.noise_effects.add_bad_pixels(clean_images)
+                            noisy_test_images = self.noise_effects.add_bad_pixels(noisy_test_images)
+
+
                     if flat_field is False and readout_noise is False:
                         print("--2--")
                         noisy_test_images = test_images
@@ -564,7 +572,8 @@ if __name__ == "__main__":
 
         def calibrate_iterations(self, test_images, test_coefs, N_iter=3,
                                  readout_noise=False, RMS_readout=1./200,
-                                 flat_field=False, flat_delta=5. / 100):
+                                 flat_field=False, flat_delta=5. / 100,
+                                 bad_pixels=False, show_example=False):
             """
             Run the calibration for several iterations
             :param test_images: datacube of test PSF images ("clean")
@@ -585,10 +594,17 @@ if __name__ == "__main__":
             if flat_field is False and readout_noise is True:
                 print("--1--")
                 images_before = self.noise_effects.add_readout_noise(test_images, RMS_READ=RMS_readout)
+                if bad_pixels is True:
+                    images_before = self.noise_effects.add_bad_pixels(images_before, p_bad=1.0)
 
             if flat_field is False and readout_noise is False:
                 print("--2--")
                 images_before = test_images
+
+            if show_example:
+                plt.figure()
+                plt.imshow(images_before[0, :, :, 0])
+                plt.colorbar()
 
             coefs_before = test_coefs
             RMS_evolution = []
@@ -614,10 +630,17 @@ if __name__ == "__main__":
                 if flat_field is False and readout_noise is True:
                     print("--1--")
                     images_before = self.noise_effects.add_readout_noise(images_before, RMS_READ=RMS_readout)
+                    if bad_pixels is True:
+                        images_before = self.noise_effects.add_bad_pixels(images_before, p_bad=1)
 
                 if flat_field is False and readout_noise is False:
                     print("--2--")
                     pass
+
+                if show_example:
+                    plt.figure()
+                    plt.imshow(images_before[0, :, :, 0])
+                    plt.colorbar()
 
             return RMS_evolution
 
@@ -692,18 +715,18 @@ if __name__ == "__main__":
     """ Train the model """
 
     readout_noise = True
-    RMS_READ = 1. / 500
-    flat_field = False
-    flat_delta = 0.0
+    RMS_READ = 1. / 750
+    flat_field = True
+    flat_delta = 0.2
 
     loss, validation = cal.train_calibration_model(train_batches, coef_batches, test_images, test_coefs,
-                                                   N_loops=25, epochs_loop=10, verbose=1, plot_val_loss=True,
+                                                   N_loops=10, epochs_loop=10, verbose=1, plot_val_loss=True,
                                                    readout_noise=readout_noise, RMS_readout=[RMS_READ],
-                                                   flat_field=flat_field, flat_delta=[flat_delta])
+                                                   flat_field=False, flat_delta=[0.0])
 
     RMS_evolution = cal.calibrate_iterations(test_images, test_coefs, N_iter=4,
                                              readout_noise=readout_noise, RMS_readout=RMS_READ,
-                                             flat_field=flat_field, flat_delta=flat_delta)
+                                             flat_field=True, flat_delta=flat_delta)
     cal.plot_RMS_evolution(RMS_evolution)
     plt.show()
 
@@ -791,6 +814,49 @@ if __name__ == "__main__":
         std_rms = np.std(final_RMS)
         STDS_READOUT.append(std_rms)
 
+    # In case you get tired and stop it running before it ends
+    N = len(MUS_READOUT)
+
+    plt.figure()
+    plt.errorbar(SNR[:N], MUS_READOUT, yerr=STDS_READOUT, fmt='o')
+    plt.xlabel(r'SNR')
+    plt.ylabel(r'RMS wavefront after calibration [nm]')
+    plt.grid(True)
+    plt.xlim([0, SNR[N]])
+    plt.ylim([0, 100])
+    plt.show()
+
+    # ================================================================================================================ #
+    #                   BAD PIXELS
+    # ================================================================================================================ #
+
+
+    PSF_images = train_batches[0]
+
+    bad_PSF_images = cal.noise_effects.add_bad_pixels(PSF_images, p_bad=0.20, max_bad_pixels=3, BAD_PIX=1.0)
+    for i in range(10):
+        plt.figure()
+        plt.imshow(bad_PSF_images[i, :, :, 1])
+        plt.colorbar()
+    plt.show()
+
+    readout_noise = True
+    RMS_READ = 1. / 750
+    flat_field = False
+    flat_delta = 0.0
+
+    loss, validation = cal.train_calibration_model(train_batches, coef_batches, test_images, test_coefs,
+                                                   N_loops=20, epochs_loop=10, verbose=1, plot_val_loss=True,
+                                                   readout_noise=readout_noise, RMS_readout=[RMS_READ],
+                                                   flat_field=False, flat_delta=[0.0],
+                                                   bad_pixels=True)
+
+    RMS_evolution = cal.calibrate_iterations(test_images, test_coefs, N_iter=4,
+                                             readout_noise=readout_noise, RMS_readout=RMS_READ,
+                                             flat_field=False, flat_delta=flat_delta,
+                                             bad_pixels=True)
+    cal.plot_RMS_evolution(RMS_evolution)
+    plt.show()
 
 
 
