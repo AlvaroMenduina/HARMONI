@@ -22,18 +22,51 @@ from numpy.linalg import norm as norm
 
 # PARAMETERS
 Z = 1.5                    # Strength of the aberrations -> relates to the Strehl ratio
-pix = 64                    # Pixels to crop the PSF
+pix = 32                    # Pixels to crop the PSF
 N_PIX = 512                 # Pixels for the Fourier arrays
-RHO_APER = 0.25              # Size of the aperture relative to the physical size of the Fourier arrays
-RHO_OBSC = 0.075             # Central obscuration
 
 # SPAXEL SCALE
-wave = 1.5                 # 1 micron
+WAVE = 1.5                 # 1.5 microns
 ELT_DIAM = 39
 MILIARCSECS_IN_A_RAD = 206265000
-SPAXEL_RAD = RHO_APER * wave / ELT_DIAM * 1e-6
-SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
-print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wave))
+
+def rho_spaxel_scale(spaxel_scale=4.0, wavelength=1.0):
+    """
+    Compute the aperture radius necessary to have a
+    certain SPAXEL SCALE [in mas] at a certain WAVELENGTH [in microns]
+
+    That would be the aperture radius in an array ranging from [-1, 1] in physical length
+    For example, if rho = 0.5, then the necessary aperture is a circle of half the size of the array
+
+    We can use the inverse of that to get the "oversize" in physical units in our arrays to match a given scale
+    :param spaxel_scale: [mas]
+    :param wavelength: [microns]
+    :return:
+    """
+
+    scale_rad = spaxel_scale / MILIARCSECS_IN_A_RAD
+    rho = scale_rad * ELT_DIAM / (wavelength * 1e-6)
+    return rho
+
+
+def check_spaxel_scale(rho_aper, wavelength):
+    """
+    Checks the spaxel scale at a certain wavelength, for a given aperture radius
+    defined for a [-1, 1] physical array
+    :param rho_aper: radius of the aperture, relative to an array of size [-1, 1]
+    :param wavelength: wavelength of interest (the PSF grows in size with wavelength, changing the spaxel scale)
+    :return:
+    """
+
+    SPAXEL_RAD = rho_aper * wavelength / ELT_DIAM * 1e-6
+    SPAXEL_MAS = SPAXEL_RAD * MILIARCSECS_IN_A_RAD
+    print('%.2f mas spaxels at %.2f microns' %(SPAXEL_MAS, wavelength))
+
+
+# SPAXEL SCALE
+SPAXEL_MAS = 4.0    # [mas] spaxel scale at wave0
+RHO_APER = rho_spaxel_scale(spaxel_scale=SPAXEL_MAS, wavelength=WAVE)
+RHO_OBSC = 0.3 * RHO_APER  # Central obscuration (30% of ELT)
 
 def invert_mask(x, mask):
     """
@@ -125,7 +158,7 @@ def plot_actuators(centers):
     plt.ylim([-1, 1])
     plt.title('%d actuators' %N_act)
 
-def actuator_matrix(centres, alpha=0.75, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
+def actuator_matrix(centres, alpha_pc=1, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     """
     Computes the matrix containing the Influence Function of each actuator
     Returns a matrix of size [N_PIX, N_PIX, N_actuators] where each [N_PIX, N_PIX, k] slice
@@ -139,6 +172,7 @@ def actuator_matrix(centres, alpha=0.75, rho_aper=RHO_APER, rho_obsc=RHO_OBSC):
     :param rho_obsc:
     :return:
     """
+    alpha = 1 / np.sqrt(np.log(100 / alpha_pc))
     #TODO: Update the Model to something other than a Gaussian
 
     cent, delta = centres
@@ -264,7 +298,8 @@ if __name__ == "__main__":
     N_act = len(centers[0])
     plot_actuators(centers)
 
-    rbf_mat = actuator_matrix(centers)        # Actuator matrix
+    alpha_pc = 20
+    rbf_mat = actuator_matrix(centers, alpha_pc=alpha_pc)        # Actuator matrix
 
     PSF = PointSpreadFunctionFast(rbf_mat)
 
@@ -275,10 +310,10 @@ if __name__ == "__main__":
 
     """ Generate a training set of random PSF with aberrations """
 
-    def generate_PSF(PSF_model, N_samples, batch_size=100):
+    def generate_PSF(PSF_model, N_samples, batch_size=1000):
         coef_rand = np.random.uniform(low=-Z, high=Z, size=(N_samples, N_act))
         N_batches = N_samples // batch_size
-        dataset = []
+        batches = []
         print("\nGenerating a dataset of %d PSF examples" % N_samples)
         print("Task divided in %d batches of %d images" % (N_batches, batch_size))
         for k in range(N_batches):
@@ -287,14 +322,14 @@ if __name__ == "__main__":
             nom_c = coef_rand[k * batch_size:(k + 1) * batch_size]
             img_nominal = PSF_model.compute_PSF(nom_c)
             data[:, :, :, 0] = img_nominal[0]
-            dataset.append(data)
-        dataset = np.concatenate(dataset, axis=0)
+            batches.append(data)
+        dataset = np.concatenate(batches, axis=0)
 
-        return dataset, coef_rand
-    N_samples = 5000
-    PSF_img, PSF_coef = generate_PSF(PSF, N_samples)
+        return dataset, batches, coef_rand
+    N_samples = 20000
+    PSF_img, PSF_batches, PSF_coef = generate_PSF(PSF, N_samples)
 
-    def photon_noise(PSF_array, factor, copies=5):
+    def photon_noise(PSF_array, low, high, copies=5):
         """
         Rescales the PSF according to Poisson noise
         to simulate photon noise:
@@ -305,6 +340,7 @@ if __name__ == "__main__":
         :return:
 
         """
+        print("Adding Photon Noise")
         N_samples = PSF_array.shape[0]
         pix = PSF_array.shape[1]
         copy_array = np.zeros((N_samples * copies, pix, pix, 1))
@@ -313,69 +349,91 @@ if __name__ == "__main__":
             a_copy = PSF_array[k].copy()
             for j in range(copies):
                 copy_array[copies*k + j] = a_copy
-                factor = np.random.uniform(low=20, high=200)
+                factor = np.random.uniform(low=low, high=high)
                 noisy_PSF[copies*k + j] = (np.random.poisson(lam=a_copy * factor)) / (factor)
         return copy_array, noisy_PSF
-    N_copies = 10
-    photon_factor = 50
-    PSF_img_copy, PSF_img_photon = photon_noise(PSF_img, photon_factor, N_copies)
 
-    k = 1
-    f, (ax1, ax2, ax3) = plt.subplots(1, 3)
-    ax1 = plt.subplot(1, 3, 1)
-    img1 = ax1.imshow(PSF_img_copy[k, :,:,0])
-    ax1.get_xaxis().set_visible(False)
-    ax1.get_yaxis().set_visible(False)
-    ax1.set_title('Nominal PSF')
 
-    ax2 = plt.subplot(1, 3, 2)
-    img2 = ax2.imshow(PSF_img_photon[k, :,:,0])
-    ax2.get_xaxis().set_visible(False)
-    ax2.get_yaxis().set_visible(False)
-    ax2.set_title(r'Photon Noise')
-
-    res_photon = PSF_img_copy - PSF_img_photon
-    ax3 = plt.subplot(1, 3, 3)
-    img3 = ax3.imshow(res_photon[k, :,:,0])
-    ax3.get_xaxis().set_visible(False)
-    ax3.get_yaxis().set_visible(False)
-    ax3.set_title(r'Residual Photon Noise')
-    plt.show()
+    # photon_factor = 50
+    # PSF_img_copy, PSF_img_photon = photon_noise(PSF_img, photon_factor, N_copies)
+    #
+    # k = 10
+    # f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    # ax1 = plt.subplot(1, 3, 1)
+    # img1 = ax1.imshow(PSF_img_copy[k, :,:,0])
+    # ax1.get_xaxis().set_visible(False)
+    # ax1.get_yaxis().set_visible(False)
+    # ax1.set_title('Nominal PSF')
+    #
+    # ax2 = plt.subplot(1, 3, 2)
+    # img2 = ax2.imshow(PSF_img_photon[k, :,:,0])
+    # ax2.get_xaxis().set_visible(False)
+    # ax2.get_yaxis().set_visible(False)
+    # ax2.set_title(r'Photon Noise')
+    #
+    # res_photon = PSF_img_copy - PSF_img_photon
+    # ax3 = plt.subplot(1, 3, 3)
+    # img3 = ax3.imshow(res_photon[k, :,:,0])
+    # ax3.get_xaxis().set_visible(False)
+    # ax3.get_yaxis().set_visible(False)
+    # ax3.set_title(r'Residual Photon Noise')
+    # plt.show()
 
     """ (3) Autoencoder Model """
     K.clear_session()
     N_channels = 1          # 1 Nominal, 1 Defocused PSF
     input_shape = (pix, pix, 1,)
 
+    k_size = 3
     model = models.Sequential()
-    model.add(Conv2D(16, kernel_size=(3, 3), strides=(1, 1),
+    model.add(Conv2D(64, kernel_size=(k_size, k_size), strides=(1, 1),
                      activation='relu',
                      input_shape=input_shape, padding='same'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Conv2D(8, (3, 3), activation='relu', padding='same'))
+    model.add(Conv2D(32, (k_size, k_size), activation='relu', padding='same'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    # model.add(Conv2D(8, (3, 3), activation='relu', padding='same'))
+    # model.add(Conv2D(8, (k_size, k_size), activation='relu', padding='same'))
     # model.add(MaxPooling2D(pool_size=(2, 2)))
     # ### Encoded
-    # model.add(Conv2D(8, (3, 3), activation='relu', padding='same'))
+    # model.add(Conv2D(8, (k_size, k_size), activation='relu', padding='same'))
     # model.add(UpSampling2D((2, 2)))
-    model.add(Conv2D(8, (3, 3), activation='relu', padding='same'))
+    model.add(Conv2D(16, (k_size, k_size), activation='relu', padding='same'))
     model.add(UpSampling2D((2, 2)))
-    model.add(Conv2D(16, (3, 3), activation='relu', padding='same'))
+    model.add(Conv2D(32, (k_size, k_size), activation='relu', padding='same'))
     model.add(UpSampling2D((2, 2)))
-    model.add(Conv2D(1, (3, 3), activation='sigmoid', padding='same'))
+    model.add(Conv2D(1, (k_size, k_size), activation='sigmoid', padding='same'))
     model.summary()
 
     model.compile(optimizer='adam', loss='binary_crossentropy')
+    # model.compile(optimizer='adam', loss='mean_squared_error')
 
-    N_train = N_copies*800
-    train_noisy, train_clean = PSF_img_photon[:N_train], PSF_img_copy[:N_train]
-    test_noisy, test_clean = PSF_img_photon[N_train:], PSF_img_copy[N_train:]
+    # N_total = N_copies * N_samples
+    # N_train = N_total * 80 // 100
+    # train_noisy, train_clean = PSF_img_photon[:N_train], PSF_img_copy[:N_train]
+    # test_noisy, test_clean = PSF_img_photon[N_train:], PSF_img_copy[N_train:]
 
-    epochs = 100
+    N_copies = 15
+    N_loops = 15
+    epochs = 5
+    N_batches = len(PSF_batches)
     ### Run the TRAINING
-    model.fit(train_noisy, train_clean, epochs=epochs, shuffle=True,
-              verbose=2, validation_data=(test_noisy, test_clean))
+
+    low, high = 50, 250
+
+    for i in range(N_loops):
+        print("Loop: %d / %d" % (i+1, N_loops))
+        for k in range(N_batches - 1):
+            print("Batch: %d / %d" % (k + 1, N_batches))
+            train_clean, train_noisy = photon_noise(PSF_batches[k], low=low, high=high, copies=N_copies)
+            test_clean, test_noisy = photon_noise(PSF_batches[-1], low=low, high=high, copies=2)
+            model.fit(train_noisy, train_clean, epochs=epochs, shuffle=True,
+                      verbose=1, validation_data=(test_noisy, test_clean))
+
+            clean_img = model.predict(test_noisy)
+            residual = test_clean - clean_img
+            RMS = np.std(residual, axis=(1, 2))
+            mean_RMS = np.mean(RMS)
+            print(mean_RMS)
 
     clean_img = model.predict(test_noisy)
     residual = test_clean - clean_img
